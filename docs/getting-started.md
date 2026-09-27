@@ -164,9 +164,11 @@ test('shows the menu', async () => {
 
 The [guide](guide.md) covers everything else:
 
+- [Main menu](guide.md#main-menu-reply-keyboard): buttons on the reply keyboard, and `contact` / `location` dialogue steps
+- [Back buttons](guide.md#back) and [media](guide.md#media): videos, documents, albums
 - [Middlewares](guide.md#middlewares): login checks and admin-only pages
 - [Text formatting](guide.md#text-formatting): Markdown, HTML, escaping
 - [Button params](guide.md#button-params-inline-or-stored): tamper-proof buttons
 - [Deep links](guide.md#deep-links): `t.me/yourbot?start=…`
-- [Sending without an update](guide.md#sending-without-an-update): notifications from cron jobs and webhooks
+- [Sending without an update](guide.md#sending-without-an-update): notifications from cron jobs and webhooks, and [broadcasts](guide.md#broadcast)
 - [Anti-spam](guide.md#anti-spam), [Languages](guide.md#languages), [Storage](guide.md#storage)

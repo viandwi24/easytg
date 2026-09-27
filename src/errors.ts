@@ -8,6 +8,14 @@ export class EasyTGError extends Error {
   }
 }
 
+/** Thrown by a page's `.params(parse)`: the incoming params are invalid. Shown to users as "page not found". */
+export class InvalidParamsError extends EasyTGError {
+  constructor(message = 'Invalid params') {
+    super(message);
+    this.name = 'InvalidParamsError';
+  }
+}
+
 function describe(error: unknown): string {
   if (error instanceof GrammyError) return error.description;
   return error instanceof Error ? error.message : String(error);
@@ -31,6 +39,22 @@ export function isMessageUnavailable(error: unknown): boolean {
     text.includes('there is no media in the message to edit') ||
     text.includes('there is no caption in the message to edit')
   );
+}
+
+/** The chat can't be messaged anymore: the user blocked the bot, deleted their account, or the bot left the chat. */
+export function isBlockedByUser(error: unknown): boolean {
+  return error instanceof GrammyError && (error.error_code === 403 || error.description.includes('chat not found'));
+}
+
+/** The message to edit or delete doesn't exist (anymore). */
+export function isMessageNotFound(error: unknown): boolean {
+  const text = describe(error);
+  return text.includes('message to edit not found') || text.includes('message to delete not found') || text.includes('MESSAGE_ID_INVALID');
+}
+
+/** Seconds Telegram asks to wait (HTTP 429 "Too Many Requests"), or undefined for other errors. */
+export function retryAfter(error: unknown): number | undefined {
+  return error instanceof GrammyError && error.error_code === 429 ? (error.parameters.retry_after ?? 1) : undefined;
 }
 
 /** The callback query was already answered or expired. */

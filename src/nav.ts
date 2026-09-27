@@ -1,11 +1,12 @@
 import type { Context } from 'grammy';
 import type { InlineKeyboardButton } from 'grammy/types';
-import { EXIT_ID, normalizeParams, type ParamsInput } from './callback';
+import { BACK_ID, EXIT_ID, normalizeParams, type ParamsInput } from './callback';
 import type { EasyTG } from './engine';
+import { EasyTGError } from './errors';
 import type { Dialogue, Page } from './define';
 import { DialogueStart, Redirect, type ButtonOptions, type Params, type ParamsArgs } from './types';
 
-type Target<P> = Page<P, any> | Dialogue<any, P, any>;
+type Target<P> = Page<P, any, any> | Dialogue<any, P, any>;
 
 /**
  * Builds buttons and navigation results for the current update. You get one
@@ -45,6 +46,16 @@ export class Nav<C extends Context = Context> {
     return this.button(text, this.app.homePage);
   }
 
+  /**
+   * Button back to the page this menu showed before (with its params), or
+   * `false` when there is none, e.g. in a freshly sent message. Falsy entries
+   * are dropped from keyboards, so it can be used as is:
+   * `keyboard: [[nav.back(), nav.home()]]`.
+   */
+  back(text = this.app.textsFor(this.ctx).back): InlineKeyboardButton | false {
+    return this.app.canGoBack(this.ctx) ? { text, callback_data: `p|${BACK_ID}` } : false;
+  }
+
   /** Button that deletes the message. */
   close(text = this.app.textsFor(this.ctx).close): InlineKeyboardButton {
     return { text, callback_data: `p|${EXIT_ID}` };
@@ -59,18 +70,27 @@ export class Nav<C extends Context = Context> {
     return this.app.deepLinkFor(this.ctx, target.id, params, options);
   }
 
+  /**
+   * Link button. Telegram only accepts `http://`, `https://` and `tg://` URLs
+   * (no `mailto:` or `tel:`): others throw here instead of failing at send time.
+   */
   url(text: string, url: string): InlineKeyboardButton {
+    if (!/^(https?|tg):\/\//i.test(url)) {
+      throw new EasyTGError(`nav.url("${text}"): Telegram only allows http(s):// and tg:// links, got "${url}"`);
+    }
     return { text, url };
   }
 
+  /** Mini App button; Telegram requires an https:// URL. */
   webApp(text: string, url: string): InlineKeyboardButton {
+    if (!/^https:\/\//i.test(url)) throw new EasyTGError(`nav.webApp("${text}"): Mini Apps need an https:// URL, got "${url}"`);
     return { text, web_app: { url } };
   }
 
   /** Return this from a render or middleware to show another page instead. */
-  redirect<P = Params>(target: Page<P, any>, ...args: ParamsArgs<P>): Redirect;
+  redirect<P = Params>(target: Page<P, any, any>, ...args: ParamsArgs<P>): Redirect;
   redirect(target: string, params?: ParamsInput): Redirect;
-  redirect(target: Page<any, any> | string, params?: ParamsInput): Redirect {
+  redirect(target: Page<any, any, any> | string, params?: ParamsInput): Redirect {
     return new Redirect(typeof target === 'string' ? target : target.id, normalizeParams(params));
   }
 

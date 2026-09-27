@@ -13,6 +13,8 @@ import { EasyTGError } from './errors';
 export const MAX_CALLBACK_BYTES = 64;
 export const DIALOGUE_BUTTON_ID = '_db';
 export const EXIT_ID = 'exit';
+/** Callback id of `nav.back()`. */
+export const BACK_ID = '_bk';
 
 const ID_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 

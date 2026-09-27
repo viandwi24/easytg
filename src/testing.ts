@@ -5,7 +5,7 @@
  *   import { createTestBot } from 'easytg/testing';
  */
 import { Bot, GrammyError, type Context } from 'grammy';
-import type { Update } from 'grammy/types';
+import type { Update, UserFromGetMe } from 'grammy/types';
 import type { StorageAdapter } from './storage';
 
 export interface ApiCall {
@@ -21,8 +21,15 @@ export type Responder = (payload: Record<string, any>) => unknown;
  * - `calls`, `find(method)`, `methods()` inspect what the bot sent
  * - `responders[method]` customise API responses
  */
-export function createTestBot<C extends Context = Context>() {
-  const bot = new Bot<C>('123:TEST', {
+export interface TestBotOptions {
+  /** Override the bot's identity, e.g. `{ id: 2, username: 'second_bot' }` to test several bots. */
+  botInfo?: Partial<UserFromGetMe>;
+  /** First message id the fake API hands out. Default 1000. */
+  firstMessageId?: number;
+}
+
+export function createTestBot<C extends Context = Context>(options: TestBotOptions = {}) {
+  const bot = new Bot<C>(`${options.botInfo?.id ?? 1}:TEST`, {
     botInfo: {
       id: 1,
       is_bot: true,
@@ -31,13 +38,14 @@ export function createTestBot<C extends Context = Context>() {
       can_join_groups: true,
       can_read_all_group_messages: false,
       supports_inline_queries: false,
-    } as any,
+      ...options.botInfo,
+    } as UserFromGetMe,
   });
 
   const calls: ApiCall[] = [];
   const sent: { message_id: number }[] = [];
   const responders: Record<string, Responder> = {};
-  let nextMessageId = 1000;
+  let nextMessageId = options.firstMessageId ?? 1000;
 
   bot.api.config.use(async (_prev, method, payload) => {
     const p = (payload ?? {}) as Record<string, any>;
@@ -48,15 +56,29 @@ export function createTestBot<C extends Context = Context>() {
       if (result instanceof Error) throw result;
       return { ok: true, result } as any;
     }
-    if (method.startsWith('send')) {
+    const message = (text?: string) => {
       const result = {
         message_id: nextMessageId++,
         date: 1,
         chat: { id: p.chat_id, type: p.chat_id < 0 ? 'group' : 'private' },
-        text: p.text,
+        text,
       };
       sent.push(result);
+      return result;
+    };
+    if (method.startsWith('send')) {
+      // Like Telegram, an album comes back as one message per item.
+      const result = method === 'sendMediaGroup' ? (p.media as unknown[]).map(() => message()) : message(p.text);
       return { ok: true, result } as any;
+    }
+    // Copies return only { message_id }; forwards return the new message. Batch variants return one per id.
+    if (method === 'copyMessage' || method === 'forwardMessage') {
+      const { message_id } = message(p.caption);
+      const result = method === 'copyMessage' ? { message_id } : sent.at(-1);
+      return { ok: true, result } as any;
+    }
+    if (method === 'copyMessages' || method === 'forwardMessages') {
+      return { ok: true, result: (p.message_ids as number[]).map(() => ({ message_id: message().message_id })) } as any;
     }
     return { ok: true, result: true } as any;
   });
@@ -135,8 +157,10 @@ export function createTestBot<C extends Context = Context>() {
   return helpers;
 }
 
-export function telegramError(description: string) {
-  return new GrammyError(description, { ok: false, error_code: 400, description }, 'x', {});
+/** A Telegram API error to return from a responder, e.g. `telegramError('Forbidden: bot was blocked by the user', { code: 403 })`. */
+export function telegramError(description: string, options: { code?: number; retryAfter?: number } = {}) {
+  const parameters = options.retryAfter !== undefined ? { retry_after: options.retryAfter } : undefined;
+  return new GrammyError(description, { ok: false, error_code: options.code ?? 400, description, parameters }, 'x', {});
 }
 
 /**

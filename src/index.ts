@@ -9,8 +9,11 @@ export {
   type DialoguesOptions,
   type I18nOptions,
   type OpenOptions,
+  type BroadcastOptions,
+  type EditMessageTarget,
 } from './engine';
 export { page, dialogue, withContext, type Page, type Dialogue } from './define';
+export { replyMenu, type ReplyMenu, type MenuButton, type MenuLabel, type ReplyMenuOptions } from './menu';
 export type { Nav } from './nav';
 export type { Session, SessionSetOptions } from './session';
 export {
@@ -26,10 +29,11 @@ export {
 } from './format';
 export { paginate, type PaginateOptions, type Pagination } from './pagination';
 export { isProactive, type SendTarget } from './proactive';
+export type { BroadcastProgress, BroadcastResult, BroadcastSettings } from './broadcast';
 export { MemoryStorage, withPrefix, type StorageAdapter } from './storage';
 export { defaultTexts, type EasyTGTexts } from './texts';
 export type { Logger } from './logger';
-export { EasyTGError } from './errors';
+export { EasyTGError, InvalidParamsError, isBlockedByUser, isMessageNotFound, retryAfter } from './errors';
 export type { AntiSpamOptions, SpamEvent } from './antispam';
 export type { CallbackParamsMode } from './callback-store';
 export type { ParamValue, ParamsInput } from './callback';
@@ -41,11 +45,17 @@ export type {
   ButtonOptions,
   Collected,
   DeliveryMode,
+  DialogueContact,
   DialogueEndArgs,
   DialogueFile,
+  DialogueLocation,
   DialogueStep,
   FileKind,
-  ImageSource,
+  AlbumItem,
+  CopySource,
+  MediaFields,
+  MediaSource,
+  MediaType,
   KeyboardInput,
   KeyboardRow,
   Middleware,

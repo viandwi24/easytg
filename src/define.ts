@@ -28,12 +28,13 @@ import type {
  * `definePage({ id, render })` makes TypeScript give up on pages that
  * reference each other.)
  */
-export class Page<P = Params, C extends Context = Context> {
+export class Page<P = Params, C extends Context = Context, R = P> {
   readonly kind = 'page' as const;
-  /** Phantom field carrying the params type. */
+  /** Phantom field carrying the params type (as passed to buttons and links). */
   declare readonly __params?: P;
 
-  /** @internal */ renderFn?: (args: RenderArgs<P, C>) => Awaitable<RenderResult>;
+  /** @internal */ renderFn?: (args: RenderArgs<R, C>) => Awaitable<RenderResult>;
+  /** @internal */ parseFn?: (raw: P) => R;
   /** @internal */ readonly middlewares: Middleware<C>[] = [];
   /** @internal */ deepLinkEnabled = false;
 
@@ -57,7 +58,22 @@ export class Page<P = Params, C extends Context = Context> {
     return this;
   }
 
-  render(fn: (args: RenderArgs<P, C>) => Awaitable<RenderResult>): this {
+  /**
+   * Validate and convert the incoming params before render. Throw (e.g.
+   * `InvalidParamsError`) to reject them: button presses then show "page not
+   * found". Buttons and links keep using the raw (string) params.
+   *
+   *   page<{ id: string }>('episode')
+   *     .params((raw) => ({ id: toInt(raw.id) }))
+   *     .render(({ params }) => …)   // params.id: number
+   */
+  params<R2>(parse: (raw: P) => R2): Page<P, C, R2> {
+    const self = this as unknown as Page<P, C, R2>;
+    self.parseFn = parse;
+    return self;
+  }
+
+  render(fn: (args: RenderArgs<R, C>) => Awaitable<RenderResult>): this {
     if (this.renderFn) throw new EasyTGError(`Page "${this.id}" already has a render`);
     this.renderFn = fn;
     return this;

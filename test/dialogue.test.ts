@@ -76,7 +76,7 @@ describe('dialogues', () => {
       { answers: { name: 'Alice', plan: 'pro', card: 'ALICE A' }, params: { source: 'cmd' } },
     ]);
 
-    const session = await t.app.session({ chat: { id: 7 }, from: { id: 7 } } as any);
+    const session = await t.app.session({ me: { id: 1 }, chat: { id: 7 }, from: { id: 7 } } as any);
     expect(session.has(DIALOGUE_STATE_KEY)).toBe(false);
     t.reset();
     await t.message('after');

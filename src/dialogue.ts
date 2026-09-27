@@ -1,5 +1,5 @@
 import type { Context } from 'grammy';
-import type { InlineKeyboardButton, Message } from 'grammy/types';
+import type { InlineKeyboardButton, KeyboardButton, Message, ReplyKeyboardMarkup } from 'grammy/types';
 import type { Dialogue } from './define';
 import { EasyTGError } from './errors';
 import type { EasyTG } from './engine';
@@ -27,10 +27,17 @@ interface DialogueState {
   /** Prompt/ack/error messages to clean up on the next input. */
   messages: number[];
   collected?: Collected;
+  /** The last prompt put buttons on the reply keyboard; they must be replaced when moving on. */
+  replyKeyboard?: boolean;
 }
 
 type AnyDialogue<C extends Context> = Dialogue<any, any, C>;
 type AnyStep<C extends Context> = DialogueStep<any, C>;
+
+/** Steps whose buttons live on the reply keyboard (they send messages, not callbacks). */
+function usesReplyKeyboard(step: DialogueStep<any, any>) {
+  return step.type === 'contact' || step.type === 'location' || (step.type === 'choice' && !!step.reply);
+}
 
 /** Control button kinds, carried as `k` in the callback params. */
 const Kind = { Choice: 'c', Action: 'a', Back: 'b', Cancel: 'x', Done: 'd' } as const;
@@ -84,6 +91,7 @@ export class DialogueRunner<C extends Context> {
     const state: DialogueState = { id: def.id, run: randomRun(), step: 0, params, answers: {}, messages: [] };
     session.set(DIALOGUE_STATE_KEY, state);
     this.app.logger.debug(`Dialogue "${def.id}" started`);
+    await this.app.emit('dialogueStart', { ctx, dialogue: def.id, params });
     await this.show(ctx, session, def, state);
   }
 
@@ -99,20 +107,54 @@ export class DialogueRunner<C extends Context> {
       return false; // let the command handler run
     }
 
-    // Service messages (payments, web app data, members joining, …) aren't
-    // dialogue input: let the app's own handlers see them.
     const message = ctx.message!;
     const text = message.text;
     const file = extractFile(message);
-    if (text === undefined && !file) return false;
+    const texts = this.app.textsFor(ctx);
 
     const step = await this.currentStep(ctx, def, state);
+    if (step && usesReplyKeyboard(step)) {
+      // Back and Cancel are reply buttons here too: they arrive as their label.
+      if (text === texts.cancel) {
+        await this.cancel(ctx, { render: true });
+        return true;
+      }
+      if (text === texts.back && def.backEnabled && state.step > 0) {
+        await this.goBack(ctx, session, def, state);
+        return true;
+      }
+      if (step.type === 'contact' && message.contact) {
+        const contact = message.contact;
+        if (!step.allowOthers && contact.user_id !== ctx.from?.id) {
+          return this.reject(ctx, session, def, state, texts.contactNotYours);
+        }
+        return this.submit(ctx, session, def, state, step, {
+          phoneNumber: contact.phone_number,
+          firstName: contact.first_name,
+          lastName: contact.last_name,
+          userId: contact.user_id,
+          vcard: contact.vcard,
+        });
+      }
+      if (step.type === 'location' && message.location) {
+        const { latitude, longitude, horizontal_accuracy } = message.location;
+        return this.submit(ctx, session, def, state, step, { latitude, longitude, horizontalAccuracy: horizontal_accuracy });
+      }
+      if (step.type === 'choice' && text !== undefined) {
+        const option = step.options.find((o) => o.text === text);
+        if (option) return this.submit(ctx, session, def, state, step, option.value);
+      }
+    }
+
+    // Service messages (payments, web app data, members joining, …) aren't
+    // dialogue input: let the app's own handlers see them.
+    if (text === undefined && !file) return false;
+
     if (!step) {
       await this.finish(ctx, session, def, state);
       return true;
     }
 
-    const texts = this.app.textsFor(ctx);
 
     switch (step.type) {
       case 'text':
@@ -127,6 +169,10 @@ export class DialogueRunner<C extends Context> {
         return this.reject(ctx, session, def, state, texts.expectChoice);
       case 'collect':
         return this.collect(ctx, session, def, state, step, text, file);
+      case 'contact':
+        return this.reject(ctx, session, def, state, texts.expectContact);
+      case 'location':
+        return this.reject(ctx, session, def, state, texts.expectLocation);
     }
   }
 
@@ -157,13 +203,7 @@ export class DialogueRunner<C extends Context> {
       }
       case Kind.Back: {
         if (!def.backEnabled || state.step === 0) return false;
-        await this.clear(ctx, state);
-        const previous = steps[state.step - 1];
-        state.step -= 1;
-        if (previous) delete state.answers[previous.id];
-        delete state.collected;
-        session.set(DIALOGUE_STATE_KEY, state);
-        await this.show(ctx, session, def, state);
+        await this.goBack(ctx, session, def, state);
         return true;
       }
       case Kind.Cancel:
@@ -190,7 +230,7 @@ export class DialogueRunner<C extends Context> {
    * kept message (the prompt whose Cancel was pressed), or that message is
    * deleted when there is no result.
    */
-  async cancel(ctx: C, options: { render: boolean; keepMessageId?: number }): Promise<boolean> {
+  async cancel(ctx: C, options: { render: boolean; keepMessageId?: number; reason?: 'user' | 'command' }): Promise<boolean> {
     const session = await this.app.session(ctx);
     const active = this.active(session);
     if (!active) return false;
@@ -198,6 +238,8 @@ export class DialogueRunner<C extends Context> {
 
     session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, state, options.keepMessageId);
+    if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).cancelled);
+    await this.app.emit('dialogueCancel', { ctx, dialogue: def.id, answers: state.answers, reason: options.reason ?? (options.render ? 'user' : 'command') });
     const result = def.cancelFn ? await def.cancelFn(this.endArgs(ctx, session, state)) : undefined;
 
     if (options.render) {
@@ -205,6 +247,17 @@ export class DialogueRunner<C extends Context> {
       else await this.app.closeMessage(ctx);
     }
     return true;
+  }
+
+  private async goBack(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState) {
+    const steps = await this.steps(ctx, def, state);
+    await this.clear(ctx, state);
+    const previous = steps[state.step - 1];
+    state.step -= 1;
+    if (previous) delete state.answers[previous.id];
+    delete state.collected;
+    session.set(DIALOGUE_STATE_KEY, state);
+    await this.show(ctx, session, def, state);
   }
 
   // ---- internals -----------------------------------------------------------
@@ -226,6 +279,8 @@ export class DialogueRunner<C extends Context> {
     if (!active) return;
     session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, active.state, keepMessageId);
+    if (active.state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).cancelled);
+    await this.app.emit('dialogueCancel', { ctx, dialogue: active.def.id, answers: active.state.answers, reason: 'replaced' });
     try {
       await active.def.cancelFn?.(this.endArgs(ctx, session, active.state));
     } catch (error) {
@@ -255,6 +310,21 @@ export class DialogueRunner<C extends Context> {
     // Resolved again every time, so dynamic steps can depend on the latest answers.
     const step = await this.currentStep(ctx, def, state);
     if (!step) return this.finish(ctx, session, def, state);
+    const text = typeof step.text === 'function' ? await step.text(this.helpers(ctx, session, state)) : step.text;
+    const { photo, video, animation, document, audio } = step;
+    const media = { photo, video, animation, document, audio, parseMode: step.parseMode };
+
+    if (usesReplyKeyboard(step)) {
+      if (step.actions?.length) throw new EasyTGError(`Step "${step.id}" uses the reply keyboard and can't have actions`);
+      state.replyKeyboard = true;
+      await this.sendTracked(ctx, session, state, { text, ...media }, 'send', this.replyKeyboard(ctx, def, state, step));
+      return;
+    }
+    if (state.replyKeyboard) {
+      // Leaving a reply-keyboard step: put the menu back (or remove the buttons).
+      state.replyKeyboard = false;
+      await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
+    }
 
     const keyboard: InlineKeyboardButton[][] = [];
     if (step.type === 'choice') {
@@ -267,9 +337,25 @@ export class DialogueRunner<C extends Context> {
       keyboard.push(step.actions.map((a) => this.button(ctx, state, step, a.text, Kind.Action, a.id)));
     }
     keyboard.push(this.controls(ctx, def, state, step));
+    await this.sendTracked(ctx, session, state, { text, ...media, keyboard });
+  }
 
-    const text = typeof step.text === 'function' ? await step.text(this.helpers(ctx, session, state)) : step.text;
-    await this.sendTracked(ctx, session, state, { text, photo: step.photo, parseMode: step.parseMode, keyboard });
+  private replyKeyboard(ctx: C, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>): ReplyKeyboardMarkup {
+    const texts = this.app.textsFor(ctx);
+    const rows: KeyboardButton[][] = [];
+    if (step.type === 'contact') rows.push([{ text: step.button ?? texts.shareContact, request_contact: true }]);
+    if (step.type === 'location') rows.push([{ text: step.button ?? texts.shareLocation, request_location: true }]);
+    if (step.type === 'choice') {
+      const columns = Math.max(1, step.columns ?? 1);
+      for (let i = 0; i < step.options.length; i += columns) {
+        rows.push(step.options.slice(i, i + columns).map((o) => ({ text: o.text })));
+      }
+    }
+    const controls: KeyboardButton[] = [];
+    if (def.backEnabled && state.step > 0) controls.push({ text: texts.back });
+    controls.push({ text: texts.cancel });
+    rows.push(controls);
+    return { keyboard: rows, resize_keyboard: true, is_persistent: true };
   }
 
   private controls(ctx: C, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>): InlineKeyboardButton[] {
@@ -283,8 +369,15 @@ export class DialogueRunner<C extends Context> {
     return { text, callback_data: this.app.controlData(ctx, { r: state.run, s: step.id, k: kind, v: value }) };
   }
 
-  private async sendTracked(ctx: C, session: Session, state: DialogueState, content: PageContent, mode: DeliveryMode = 'send') {
-    const delivery = await this.app.deliverContent(ctx, content, mode);
+  private async sendTracked(
+    ctx: C,
+    session: Session,
+    state: DialogueState,
+    content: PageContent,
+    mode: DeliveryMode = 'send',
+    sendMarkup?: ReplyKeyboardMarkup,
+  ) {
+    const delivery = await this.app.deliverContent(ctx, content, mode, sendMarkup);
     if (delivery) state.messages.push(...delivery.sent);
     session.set(DIALOGUE_STATE_KEY, state);
   }
@@ -350,7 +443,9 @@ export class DialogueRunner<C extends Context> {
   private async finish(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState) {
     session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, state);
+    if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
+    await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, answers: state.answers });
     const result = await def.finishFn!(this.endArgs(ctx, session, state));
     await this.app.present(ctx, result, 'send');
   }

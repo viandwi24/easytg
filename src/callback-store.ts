@@ -7,8 +7,10 @@ import type { StorageAdapter } from './storage';
  * - `auto`   — inline when it fits, stored server-side otherwise. Default.
  * - `stored` — always server-side when there are params; inline params from
  *              clients are rejected, so params can't be forged.
+ * - `signed` — inline plus a short HMAC (needs `buttons.secret`): can't be
+ *              forged either, and nothing is written to storage.
  */
-export type CallbackParamsMode = 'inline' | 'auto' | 'stored';
+export type CallbackParamsMode = 'inline' | 'auto' | 'stored' | 'signed';
 
 export interface StoredCallback {
   /** target id (page or dialogue) */
@@ -37,18 +39,23 @@ export class CallbackStore {
     private keyPrefix = 'cb:',
   ) {}
 
+  private key(token: string, scope: string) {
+    return scope ? `${this.keyPrefix}${scope}:${token}` : this.keyPrefix + token;
+  }
+
   tokenFor(entry: StoredCallback, chatId?: number): string {
     const params = Object.keys(entry.q).sort().map((k) => [k, entry.q[k]]);
     const material = JSON.stringify([entry.p, params, entry.u ?? null, chatId ?? null]);
     return createHash('sha256').update(material).digest('base64url').slice(0, 16); // 96 bits
   }
 
-  write(token: string, entry: StoredCallback) {
-    return this.storage.set(this.keyPrefix + token, entry, this.ttlSeconds);
+  /** `scope` namespaces keys, e.g. per bot. */
+  write(token: string, entry: StoredCallback, scope = '') {
+    return this.storage.set(this.key(token, scope), entry, this.ttlSeconds);
   }
 
-  async resolve(token: string, userId: number | undefined): Promise<ResolvedCallback> {
-    const entry = (await this.storage.get(this.keyPrefix + token)) as StoredCallback | null | undefined;
+  async resolve(token: string, userId: number | undefined, scope = ''): Promise<ResolvedCallback> {
+    const entry = (await this.storage.get(this.key(token, scope))) as StoredCallback | null | undefined;
     if (!entry || typeof entry.p !== 'string' || typeof entry.q !== 'object') return { status: 'expired' };
     if (entry.u !== undefined && entry.u !== userId) return { status: 'forbidden' };
     return { status: 'ok', id: entry.p, params: { ...entry.q } };

@@ -72,12 +72,15 @@ bot.command('start', (ctx) => app.open(ctx, home));
 
 ## Features
 
-- 🧭 **Pages & navigation.** Describe screens, not API calls. Send, reply, edit, text ↔ photo and long-text splitting are handled for you.
+- 🧭 **Pages & navigation.** Describe screens, not API calls. Send, reply, edit, media swaps and long-text splitting are handled for you. `nav.back()` remembers where the user came from.
+- ⌨️ **Both keyboards.** Inline buttons on pages, plus a main menu on the reply keyboard (`replyMenu`).
+- 🖼 **Media.** Photos, videos, GIFs, documents, audio, albums and copies of existing messages, with optional `protectContent`.
 - 🔒 **Type-safe links.** `nav.button('Open', order, { id })` fails to compile if a param is missing or misspelled, even when pages link to each other in cycles.
-- 📝 **Dialogues.** Multi-step forms with validation, choices, file uploads, Back/Cancel and dynamic steps.
-- 🛡️ **Secure by default.** Escaping `md`/`html` templates, optional tamper-proof button params, owner-only group menus, and anti-spam with events.
+- 📝 **Dialogues.** Multi-step forms with validation, choices, file uploads, phone number and location sharing, Back/Cancel and dynamic steps.
+- 🛡️ **Secure by default.** Escaping `md`/`html` templates, signed or stored tamper-proof button params, validated params, owner-only group menus, and anti-spam with events.
 - 💾 **Sessions** per user, saved once per update, with per-key and session TTLs. Any database fits the 3-method `StorageAdapter`.
-- 🔗 **Deep links, notifications, i18n.** `t.me/bot?start=…` links, `sendTo` from cron jobs and webhooks, and per-user language for built-in texts.
+- 🔗 **Deep links, notifications, broadcasts, i18n.** `t.me/bot?start=…` links, `sendTo` from cron jobs and webhooks, paced `broadcast` to thousands of users, and per-user language for built-in texts.
+- 📊 **Events** for analytics: `pageView`, `dialogueStart` / `dialogueFinish` / `dialogueCancel`, `spam`, `error`.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first, works on Node ≥ 18.
 
@@ -122,7 +125,8 @@ Next, **[Getting started](docs/getting-started.md)** walks through building a sm
 | | |
 |---|---|
 | **`page(id).render(fn)`** | A screen. `render` returns `{ text, photo, keyboard }`, a redirect, or a dialogue to start. |
-| **`nav`** | Builds buttons and navigation: `nav.button`, `nav.self`, `nav.home`, `nav.close`, `nav.redirect`, `nav.deepLink`. |
+| **`nav`** | Builds buttons and navigation: `nav.button`, `nav.self`, `nav.back`, `nav.home`, `nav.close`, `nav.redirect`, `nav.deepLink`. |
+| **`replyMenu([...])`** | A main menu on the reply keyboard; its buttons open pages or start dialogues. |
 | **`dialogue(id).steps([...])`** | A multi-step form. Answers arrive typed in `onFinish`. |
 | **`session`** | Key/value state per user and chat, saved automatically. |
 | **Middlewares** | Run before every page and dialogue, for login checks, admin-only screens and logging. |
@@ -143,10 +147,15 @@ const signup = dialogue<{ name: string; plan: string }>('signup')
 | Example | Shows |
 |---|---|
 | [`getting-started.ts`](examples/getting-started.ts) | The shop bot from the getting-started guide |
+| [`shop.ts`](examples/shop.ts) | Reply-keyboard menu, catalog with pagination and Back, album gallery, checkout with size, phone number and location |
+| [`media.ts`](examples/media.ts) | Photo, video, GIF, document (generated), audio and album pages |
+| [`course.ts`](examples/course.ts) | Members-only videos copied from a storage channel with `protectContent`, access requests approved by an admin, `app.edit`, auto-delete via the `sent` event |
+| [`broadcast.ts`](examples/broadcast.ts) | Newsletter: subscriptions, admin-only compose dialogue, paced broadcast with live progress, events |
 | [`captcha.ts`](examples/captcha.ts) | Button and typed captchas, server-side answers, per-key TTL |
 | [`notify.ts`](examples/notify.ts) | SQLite storage, tamper-proof buttons, `sendTo` notifications |
 | [`storage/sqlite.ts`](examples/storage/sqlite.ts) | A complete `StorageAdapter` |
 | [`locales/id.ts`](examples/locales/id.ts) | Translating the built-in texts |
+| [`testing.test.ts`](examples/testing.test.ts) | Testing a bot with `easytg/testing`: navigation, dialogues, errors, broadcasts |
 
 ```bash
 BOT_TOKEN=123:abc bun run examples/captcha.ts
@@ -156,9 +165,9 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Guide](docs/guide.md)**: the full reference.
-  - [Pages](docs/guide.md#pages) · [Dialogues](docs/guide.md#dialogues) · [Text formatting](docs/guide.md#text-formatting) · [Sessions](docs/guide.md#sessions)
+  - [Pages](docs/guide.md#pages) · [Media](docs/guide.md#media) · [Main menu](docs/guide.md#main-menu-reply-keyboard) · [Dialogues](docs/guide.md#dialogues) · [Text formatting](docs/guide.md#text-formatting) · [Sessions](docs/guide.md#sessions)
   - [Middlewares](docs/guide.md#middlewares) · [Anti-spam](docs/guide.md#anti-spam) · [Events](docs/guide.md#events) · [Deep links](docs/guide.md#deep-links)
-  - [Languages](docs/guide.md#languages) · [Notifications (`sendTo`)](docs/guide.md#sending-without-an-update) · [Storage](docs/guide.md#storage) · [Security](docs/guide.md#security-notes)
+  - [Languages](docs/guide.md#languages) · [Notifications (`sendTo`)](docs/guide.md#sending-without-an-update) · [Broadcast](docs/guide.md#broadcast) · [Storage](docs/guide.md#storage) · [Security](docs/guide.md#security-notes)
   - [All options](docs/guide.md#options) · [Testing](docs/guide.md#testing-your-bot)
 - **[Changelog](CHANGELOG.md)**
 

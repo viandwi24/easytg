@@ -159,9 +159,9 @@ describe('storage adapters', () => {
     bot.command('menu', (ctx) => app.open(ctx, menu));
     await message('/menu', { userId: 5, chatType: 'group' });
 
-    expect(log.some((l) => l.startsWith('callbacks.set bot1:cb:'))).toBe(true);
-    expect(log).toContain('default.set bot1:session:-100:5');
-    expect(log.some((l) => l.startsWith('callbacks.set bot1:msgowner:-100:'))).toBe(true); // menu metadata lives with buttons
+    expect(log.some((l) => l.startsWith('callbacks.set bot1:cb:1:'))).toBe(true);
+    expect(log).toContain('default.set bot1:session:1:-100:5'); // bot id 1 is part of the key
+    expect(log.some((l) => l.startsWith('callbacks.set bot1:msgowner:1:-100:'))).toBe(true); // menu metadata lives with buttons
     expect(log.some((l) => l.startsWith('default.set bot1:cb:'))).toBe(false);
   });
 

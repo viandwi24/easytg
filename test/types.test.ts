@@ -61,6 +61,24 @@ page('api').render(({ app, ctx, nav }) => {
   return { photo: 'FILE', keyboard: [[nav.home()]] };
 });
 
+// `.params(parse)`: render sees the parsed type, links keep the raw one, and
+// pages using it can still reference each other in cycles.
+const episode = page<{ id: string }>('episode')
+  .params((raw) => ({ id: Number(raw.id) }))
+  .render(({ params, nav }) => {
+    const id: number = params.id;
+    // @ts-expect-error parsed params are numbers, not strings
+    const wrong: string = params.id;
+    return { text: `${id}${wrong}`, keyboard: [[nav.button('Next', episode, { id: id + 1 }), nav.button('List', episodes)]] };
+  });
+const episodes = page('episodes').render(({ nav }) => ({
+  keyboard: [
+    [nav.button('First', episode, { id: '1' })],
+    // @ts-expect-error links still need the raw params
+    [nav.button('Broken', episode)],
+  ],
+}));
+
 test('typed navigation compiles', () => {
-  expect(new EasyTG({ logger: false }).register(home, order, signup)).toBeDefined();
+  expect(new EasyTG({ logger: false }).register(home, order, signup, episode, episodes)).toBeDefined();
 });
