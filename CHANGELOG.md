@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.2.0 (2026-09-27)
+
 - **Breaking:** storage keys include the bot id (`session:<bot>:…`, `cb:<bot>:…`, `msgowner:<bot>:…`) so bots can share a storage. Set `scopeKeysByBot: false` to keep the 0.1 format.
 - **Breaking:** button param names starting with `_` are reserved.
 - Per-button delivery: `nav.button(…, { mode: 'send' })` keeps the pressed message; `buttons.mediaToText: 'keep'` keeps media messages.
