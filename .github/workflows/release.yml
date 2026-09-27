@@ -1,0 +1,73 @@
+name: Release
+
+# Pushing a tag v<version> (see `bun run release`) publishes to npm and then
+# creates the GitHub release, with notes taken from CHANGELOG.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # npm trusted publishing (OIDC) and provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1
+      - run: npm install -g npm@latest
+
+      - name: Check the tag and read the release notes
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version v$VERSION"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          # Prereleases (1.2.0-beta.1) go to the "next" dist-tag so they don't become "latest".
+          if [[ "$VERSION" == *-* ]]; then
+            echo "NPM_TAG=next" >> "$GITHUB_ENV"
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "NPM_TAG=latest" >> "$GITHUB_ENV"
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
+          # The "## <version> (date)" section of CHANGELOG.md becomes the release notes.
+          awk -v heading="## $VERSION " 'index($0, heading) == 1 { found = 1; next } /^## / { found = 0 } found' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no \"## $VERSION\" section"
+            exit 1
+          fi
+
+          # Already on npm (e.g. the first version was published by hand): only create the release.
+          if npm view "easytg@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::easytg@$VERSION is already on npm, skipping publish"
+            echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
+          fi
+
+      - run: bun install --frozen-lockfile
+
+      # prepublishOnly runs typecheck, tests and build before anything is uploaded.
+      - name: Publish to npm
+        if: env.SKIP_PUBLISH != '1'
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
+        env:
+          # Only needed without trusted publishing.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ env.VERSION }}
+          body_path: release-notes.md
+          prerelease: ${{ env.PRERELEASE == 'true' }}

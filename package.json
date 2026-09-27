@@ -1,0 +1,67 @@
+{
+  "name": "easytg",
+  "version": "0.1.0",
+  "description": "Page-based Telegram bot UIs on top of grammY: one page definition, rendered the same whether it is sent, replied or edited.",
+  "license": "MIT",
+  "author": "viandwi24",
+  "homepage": "https://github.com/viandwi24/easytg#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/viandwi24/easytg.git"
+  },
+  "bugs": {
+    "url": "https://github.com/viandwi24/easytg/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "bun": "./src/testing.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "telegram",
+    "bot",
+    "grammy",
+    "ui",
+    "inline-keyboard",
+    "dialogue"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && bun build ./src/index.ts ./src/testing.ts --outdir dist --target node --packages external && tsc -p tsconfig.build.json",
+    "example:captcha": "bun run examples/captcha.ts",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build",
+    "example:notify": "bun run examples/notify.ts",
+    "release": "bun run scripts/release.ts"
+  },
+  "peerDependencies": {
+    "grammy": "^1.30.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "grammy": "^1.46.0",
+    "typescript": "^7"
+  }
+}
