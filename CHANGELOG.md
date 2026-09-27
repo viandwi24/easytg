@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.1.0 (2026-09-27)
+
 First release, grown out of the original `telegram.ts` concept.
 
 - Pages: `page<P>(id).use(...).render(...)` with type-checked navigation (`nav.button`, `nav.self`, `nav.redirect`); declared params must be strings.
@@ -25,3 +27,4 @@ First release, grown out of the original `telegram.ts` concept.
 - Long texts are split across messages (4096 / 1024 caption limits), tags kept balanced.
 - Group menus can only be used by their owner (`restrictToOwner`).
 - `easytg/testing`: fake Telegram API, `verifyStorageAdapter`.
+
