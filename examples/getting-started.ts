@@ -4,7 +4,7 @@
  *   BOT_TOKEN=123:abc bun run examples/getting-started.ts
  */
 import { Bot } from 'grammy';
-import { EasyTG, dialogue, md, page } from '../src';
+import { EasyTG, dialogue, md, page, replyMenu } from '../src';
 
 const products = [
   { id: 'tea', name: 'Green tea', price: 3 },
@@ -66,7 +66,13 @@ const myOrders = page('orders').render(({ session, nav }) => {
   };
 });
 
-// 5. Wire it up.
+// 6. A main menu on the reply keyboard.
+const mainMenu = replyMenu([
+  [replyMenu.button('🛍 Products', productList), replyMenu.button('🧾 My orders', myOrders)],
+  [replyMenu.close()], // "✖️ Close menu" removes the keyboard again
+]);
+
+// Wire it up.
 const token = process.env.BOT_TOKEN;
 if (!token) {
   console.error('Missing BOT_TOKEN. Usage: BOT_TOKEN=123:abc bun run examples/getting-started.ts');
@@ -74,9 +80,12 @@ if (!token) {
 }
 
 const bot = new Bot(token);
-const app = new EasyTG().register(home, productList, productDetail, orderForm, myOrders);
+const app = new EasyTG({ menu: mainMenu }).register(home, productList, productDetail, orderForm, myOrders);
 
 bot.use(app); // before your other handlers
-bot.command('start', (ctx) => app.open(ctx, home));
+bot.command('start', async (ctx) => {
+  await app.showMenu(ctx, 'Welcome! Use the menu below.');
+  await app.open(ctx, home);
+});
 
 await bot.start({ onStart: (me) => console.log(`@${me.username} is running. Send /start in Telegram.`) });

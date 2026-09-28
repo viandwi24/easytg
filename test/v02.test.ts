@@ -386,3 +386,70 @@ describe('link buttons', () => {
     expect(t.errors.map(String)).toEqual([expect.stringContaining('http(s):// and tg://'), expect.stringContaining('https://')]);
   });
 });
+
+describe('0.2.1', () => {
+  test('sendTo / edit errors reach the error event with emitProactiveErrors (and are still thrown)', async () => {
+    const t = setup({ emitProactiveErrors: true });
+    const events: string[] = [];
+    t.app.on('error', ({ source }) => void events.push(source));
+    t.app.register(page('p').render(() => ({ text: 'x' })));
+    t.responders.sendMessage = () => telegramError('Forbidden: bot was blocked by the user', { code: 403 });
+    await expect(t.app.sendTo(t.bot, 5, 'p')).rejects.toThrow();
+    t.responders.editMessageText = () => telegramError('Bad Request: something odd');
+    await expect(t.app.edit(t.bot, { chatId: 5, messageId: 1 }, 'p')).rejects.toThrow();
+    // broadcast failures are reported in its result, not as error events
+    const news = page('news').render(() => ({ text: 'news' }));
+    t.app.register(news);
+    const result = await t.app.broadcast(t.bot, [5, 6], news, { perSecond: 1000 });
+    expect(result.blocked).toBe(2);
+    expect(events).toEqual(['sendTo', 'edit']);
+  });
+
+  test('no "no user" warning for sendTo to a group without a user', async () => {
+    const warnings: string[] = [];
+    const t = createTestBot();
+    const app = new EasyTG({ logger: { debug() {}, info() {}, warn: (m) => void warnings.push(m), error() {} } });
+    app.register(page('g').render(() => ({ text: 'hello group' })));
+    await app.sendTo(t.bot, -100, 'g');
+    expect(t.find('sendMessage')).toHaveLength(1);
+    expect(warnings).toEqual([]);
+  });
+
+  test('busy, double-tap and anti-spam state is per bot', async () => {
+    const storage = new MemoryStorage();
+    const make = (id: number) => {
+      const t = setup({ storage, antiSpam: { limit: 2 }, buttons: { doubleTapMs: 1000 } }, { botInfo: { id } });
+      let renders = 0;
+      t.app.register(page('p').render(() => ((renders++), { text: 'p' })));
+      return { ...t, renders: () => renders };
+    };
+    const [a, b] = [make(1), make(2)];
+    // the same button data and message id on two bots is not a double tap
+    await a.press('p|p', { messageId: 5 });
+    await b.press('p|p', { messageId: 5 });
+    expect([a.renders(), b.renders()]).toEqual([1, 1]);
+
+    // one app instance serving two bots: limits are counted per bot
+    const app = new EasyTG({ logger: false, antiSpam: { limit: 1 } });
+    const one = createTestBot({ botInfo: { id: 1 } });
+    const two = createTestBot({ botInfo: { id: 2 } });
+    one.bot.use(app);
+    two.bot.use(app);
+    let handled = 0;
+    one.bot.on('message', () => void handled++);
+    two.bot.on('message', () => void handled++);
+    await one.message('a');
+    await one.message('b'); // limited on bot 1
+    await two.message('c'); // bot 2 is unaffected
+    expect(handled).toBe(2);
+    expect(app.isLimited(7, 1)).toBe(true);
+    expect(app.isLimited(7, 2)).toBe(false);
+    expect(app.isLimited(7)).toBe(true); // on any bot
+
+    app.releaseUser(7);
+    app.limitUser(8, 60_000); // no bot id: every bot
+    await one.message('x', { userId: 8 });
+    await two.message('y', { userId: 8 });
+    expect(handled).toBe(2);
+  });
+});

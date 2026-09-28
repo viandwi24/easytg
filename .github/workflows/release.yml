@@ -61,7 +61,11 @@ jobs:
       # prepublishOnly runs typecheck, tests and build before anything is uploaded.
       - name: Publish to npm
         if: env.SKIP_PUBLISH != '1'
-        run: npm publish --provenance --access public --tag "$NPM_TAG"
+        run: |
+          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
+            echo "::error::npm refused the publish. Usually: no Trusted Publisher on npmjs.com (easytg → Settings → Trusted Publisher → GitHub Actions: user viandwi24, repository easytg, workflow release.yml, environment empty), or no NPM_TOKEN secret. Fix it, then re-run this workflow; no new tag is needed."
+            exit 1
+          fi
         env:
           # Only needed without trusted publishing.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

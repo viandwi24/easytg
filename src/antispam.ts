@@ -43,13 +43,13 @@ export type SpamVerdict =
 const STRIKE_RESET_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Sliding-window rate limit per user, kept in memory (per process). With
- * several bot processes, each one counts separately.
+ * Sliding-window rate limit, kept in memory (per process). Keys are
+ * `<bot id>:<user id>`, or `*:<user id>` for limits that apply to every bot.
  */
 export class SpamGuard {
-  private readonly hits = new Map<number, number[]>();
-  private readonly blockedUntil = new Map<number, number>();
-  private readonly strikes = new Map<number, { count: number; last: number }>();
+  private readonly hits = new Map<string, number[]>();
+  private readonly blockedUntil = new Map<string, number>();
+  private readonly strikes = new Map<string, { count: number; last: number }>();
   private checks = 0;
 
   constructor(
@@ -58,42 +58,50 @@ export class SpamGuard {
     readonly cooldownMs: number,
   ) {}
 
-  check(userId: number, now = Date.now()): SpamVerdict {
+  check(key: string, now = Date.now()): SpamVerdict {
     if (++this.checks % 1000 === 0) this.sweep(now);
 
-    const until = this.blockedUntil.get(userId);
+    const until = this.blockedUntil.get(key);
     if (until !== undefined) {
       if (until > now) return { status: 'blocked', until };
-      this.blockedUntil.delete(userId);
+      this.blockedUntil.delete(key);
     }
 
-    const recent = (this.hits.get(userId) ?? []).filter((t) => t > now - this.windowMs);
+    const recent = (this.hits.get(key) ?? []).filter((t) => t > now - this.windowMs);
     recent.push(now);
     if (recent.length <= this.limit) {
-      this.hits.set(userId, recent);
+      this.hits.set(key, recent);
       return { status: 'ok' };
     }
 
-    this.hits.delete(userId);
+    this.hits.delete(key);
     const blockedUntil = now + this.cooldownMs;
-    this.blockedUntil.set(userId, blockedUntil);
-    const previous = this.strikes.get(userId);
+    this.blockedUntil.set(key, blockedUntil);
+    const previous = this.strikes.get(key);
     const strike = previous && now - previous.last < STRIKE_RESET_MS ? previous.count + 1 : 1;
-    this.strikes.set(userId, { count: strike, last: now });
+    this.strikes.set(key, { count: strike, last: now });
     return { status: 'limited', until: blockedUntil, count: recent.length, strike };
   }
 
-  block(userId: number, ms: number, now = Date.now()) {
-    this.blockedUntil.set(userId, now + ms);
+  block(key: string, ms: number, now = Date.now()) {
+    this.blockedUntil.set(key, now + ms);
   }
 
-  release(userId: number) {
-    this.blockedUntil.delete(userId);
-    this.hits.delete(userId);
+  /** Lift the limits of every key matching `match`. */
+  release(match: (key: string) => boolean) {
+    for (const map of [this.blockedUntil, this.hits]) {
+      for (const key of map.keys()) if (match(key)) map.delete(key);
+    }
   }
 
-  isBlocked(userId: number, now = Date.now()) {
-    return (this.blockedUntil.get(userId) ?? 0) > now;
+  isBlocked(key: string, now = Date.now()) {
+    return (this.blockedUntil.get(key) ?? 0) > now;
+  }
+
+  /** Whether any key matching `match` is blocked. */
+  isAnyBlocked(match: (key: string) => boolean, now = Date.now()) {
+    for (const [key, until] of this.blockedUntil) if (until > now && match(key)) return true;
+    return false;
   }
 
   private sweep(now: number) {

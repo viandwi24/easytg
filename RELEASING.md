@@ -64,7 +64,8 @@ exists, so the first version is published by hand.
    Actions** and enter:
    - Organization or user: `viandwi24`
    - Repository: `easytg`
-   - Workflow filename: `release.yml`
+   - Workflow filename: `release.yml` (the file name only)
+   - Environment: leave empty (the workflow uses none)
 
    Now GitHub Actions can publish without any token.
 4. Recommended: on the same page, set **Publishing access** to *Require
@@ -86,3 +87,15 @@ To skip trusted publishing:
 
 The workflow uses the token automatically. With a token, even the first
 version can be published from GitHub.
+
+## Troubleshooting
+
+**`npm error code ENEEDAUTH` in the Release workflow.** GitHub Actions has no
+permission to publish: the Trusted Publisher on npmjs.com is missing or
+doesn't match (user `viandwi24`, repository `easytg`, workflow
+`release.yml`, no environment), and there is no `NPM_TOKEN` secret. Fix it,
+then open the failed run in **Actions** and press **Re-run all jobs**. The tag
+already exists, so no new release is needed.
+
+**The tag doesn't match `package.json`.** Tags must be `v` + the exact version
+(`v0.2.0` for `"version": "0.2.0"`). `bun run release` always gets this right.

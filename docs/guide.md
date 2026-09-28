@@ -2,6 +2,7 @@
 
 The complete reference. New to easytg? Start with [Getting started](getting-started.md).
 
+- [Examples](#examples)
 - [Pages](#pages)
 - [Media](#media)
 - [Main menu (reply keyboard)](#main-menu-reply-keyboard)
@@ -20,6 +21,23 @@ The complete reference. New to easytg? Start with [Getting started](getting-star
 - [Error helpers](#error-helpers)
 - [Options](#options)
 - [Testing your bot](#testing-your-bot)
+
+## Examples
+
+Runnable bots (`BOT_TOKEN=… bun run examples/<file>`) that show features in context:
+
+| Example | Features |
+|---|---|
+| [`getting-started.ts`](../examples/getting-started.ts) | pages, typed navigation, a dialogue, sessions, main menu |
+| [`shop.ts`](../examples/shop.ts) | reply-keyboard menu with close button, pagination, `nav.back()`, photos, albums, `choice`/`contact`/`location` steps, events |
+| [`media.ts`](../examples/media.ts) | photo, video, GIF, generated document, audio, album |
+| [`course.ts`](../examples/course.ts) | `copy` from a storage channel, `protectContent`, `{ mode: 'send' }`, `.params(parse)`, signed buttons, `prepareProactive`, `allowedUsers`, `app.edit`, `sent` |
+| [`broadcast.ts`](../examples/broadcast.ts) | `broadcast` with progress, dialogue middlewares, `pageView`/`spam` events |
+| [`captcha.ts`](../examples/captcha.ts) | server-side answers, per-key session TTL, dialogues |
+| [`notify.ts`](../examples/notify.ts) | SQLite storage, `stored` buttons, `sendTo` |
+| [`storage/sqlite.ts`](../examples/storage/sqlite.ts) | a `StorageAdapter` |
+| [`locales/id.ts`](../examples/locales/id.ts) | translating built-in texts |
+| [`testing.test.ts`](../examples/testing.test.ts) | testing with `easytg/testing` |
 
 ## Pages
 
@@ -77,7 +95,8 @@ delete and resend. `message is not modified` is ignored.
 
 ### Keeping the pressed message
 
-A button normally replaces the message it is on. For messages the user should
+A button normally replaces the message it is on, including when the new page
+is a copy, an album or too long for one message. For messages the user should
 keep, such as a video or a document under which you offer "Next" or "All
 items", you have two options:
 
@@ -434,7 +453,10 @@ app.on('spam', async ({ ctx, userId, chatId, strike, count, until }) => {
 
 `app.limitUser(userId, ms)`, `app.releaseUser(userId)` and
 `app.isLimited(userId)` also work with `antiSpam: false`, for manual mutes.
-Counting happens in memory, per process.
+
+Limits are counted per bot, so one app instance can serve several bots. The
+methods above take an optional bot id as their last argument; without it they
+cover every bot. Counting happens in memory, per process.
 
 ## Events
 
@@ -450,7 +472,7 @@ const off = app.on('pageView', ({ ctx, page, params, mode }) => track(ctx.from?.
 | `dialogueFinish` | `{ ctx, dialogue, answers }` | a dialogue was completed |
 | `dialogueCancel` | `{ ctx, dialogue, answers, reason }` | `reason`: `user` (Cancel), `command` (a /command or menu button), `replaced` (another dialogue started) |
 | `spam` | `SpamEvent` | see [Anti-spam](#anti-spam) |
-| `error` | `{ error, ctx }` | an error while handling buttons, dialogue input, menu buttons or deep links; without a listener it is logged |
+| `error` | `{ error, ctx, source }` | an error while handling buttons, dialogue input, menu buttons or deep links (`source: 'update'`), or in `sendTo` / `edit` with `emitProactiveErrors`; without a listener it is logged |
 
 ## Deep links
 
@@ -680,6 +702,7 @@ new EasyTG<MyContext>({
   protectContent: false,           // protect_content on everything
   scopeKeysByBot: true,            // bot id in storage keys; false = 0.1 key format
   prepareProactive: undefined,     // (ctx) => … for sendTo / edit / broadcast contexts
+  emitProactiveErrors: false,      // also emit sendTo / edit errors as 'error' events
 
   session:   { storage, ttlSeconds: undefined, refreshOnActivity: true },
   buttons:   { storage, params: 'auto', secret, ttlSeconds: 2592000, doubleTapMs: 700, ownerOnly: true, mediaToText: 'replace' },

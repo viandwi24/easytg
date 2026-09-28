@@ -72,15 +72,16 @@ bot.command('start', (ctx) => app.open(ctx, home));
 
 ## Features
 
-- 🧭 **Pages & navigation.** Describe screens, not API calls. Send, reply, edit, media swaps and long-text splitting are handled for you. `nav.back()` remembers where the user came from.
-- ⌨️ **Both keyboards.** Inline buttons on pages, plus a main menu on the reply keyboard (`replyMenu`).
+- 🧭 **Pages & navigation.** Describe screens, not API calls. Send, reply, edit, media swaps and long-text splitting are handled for you. `nav.back()` remembers where the user came from, and `{ mode: 'send' }` keeps a message (like a video) instead of replacing it.
+- ⌨️ **Both keyboards.** Inline buttons on pages, plus a main menu on the reply keyboard (`replyMenu`) with its own close button.
 - 🖼 **Media.** Photos, videos, GIFs, documents, audio, albums and copies of existing messages, with optional `protectContent`.
 - 🔒 **Type-safe links.** `nav.button('Open', order, { id })` fails to compile if a param is missing or misspelled, even when pages link to each other in cycles.
 - 📝 **Dialogues.** Multi-step forms with validation, choices, file uploads, phone number and location sharing, Back/Cancel and dynamic steps.
-- 🛡️ **Secure by default.** Escaping `md`/`html` templates, signed or stored tamper-proof button params, validated params, owner-only group menus, and anti-spam with events.
+- 🛡️ **Secure by default.** Escaping `md`/`html` templates, signed or stored tamper-proof button params, params validation with `.params(parse)`, owner-only group menus (or `allowedUsers`), and anti-spam with events.
 - 💾 **Sessions** per user, saved once per update, with per-key and session TTLs. Any database fits the 3-method `StorageAdapter`.
-- 🔗 **Deep links, notifications, broadcasts, i18n.** `t.me/bot?start=…` links, `sendTo` from cron jobs and webhooks, paced `broadcast` to thousands of users, and per-user language for built-in texts.
-- 📊 **Events** for analytics: `pageView`, `dialogueStart` / `dialogueFinish` / `dialogueCancel`, `spam`, `error`.
+- 🔗 **Deep links, notifications, broadcasts, i18n.** `t.me/bot?start=…` links, `sendTo` and `app.edit` from cron jobs and webhooks, paced `broadcast` to thousands of users, and per-user language for built-in texts.
+- 📊 **Events** for analytics and cleanup: `pageView`, `sent`, `dialogueStart` / `dialogueFinish` / `dialogueCancel`, `spam`, `error`.
+- 🤖 **Multi-bot ready.** One app instance can serve several bots sharing one storage; sessions, buttons and rate limits stay per bot.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first, works on Node ≥ 18.
 
@@ -131,6 +132,7 @@ Next, **[Getting started](docs/getting-started.md)** walks through building a sm
 | **`session`** | Key/value state per user and chat, saved automatically. |
 | **Middlewares** | Run before every page and dialogue, for login checks, admin-only screens and logging. |
 | **`app.open(ctx, page)`** | Shows a page: edits the message when a button was pressed, replies otherwise. |
+| **`app.sendTo` / `app.edit` / `app.broadcast`** | Send or update pages without an incoming update: notifications, status cards, newsletters. |
 
 ```ts
 // A dialogue in a nutshell
@@ -165,10 +167,10 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Guide](docs/guide.md)**: the full reference.
-  - [Pages](docs/guide.md#pages) · [Media](docs/guide.md#media) · [Main menu](docs/guide.md#main-menu-reply-keyboard) · [Dialogues](docs/guide.md#dialogues) · [Text formatting](docs/guide.md#text-formatting) · [Sessions](docs/guide.md#sessions)
+  - [Pages](docs/guide.md#pages) · [Keeping messages](docs/guide.md#keeping-the-pressed-message) · [Validating params](docs/guide.md#validating-params) · [Media & copies](docs/guide.md#media) · [Main menu](docs/guide.md#main-menu-reply-keyboard) · [Dialogues](docs/guide.md#dialogues) · [Text formatting](docs/guide.md#text-formatting) · [Sessions](docs/guide.md#sessions)
   - [Middlewares](docs/guide.md#middlewares) · [Anti-spam](docs/guide.md#anti-spam) · [Events](docs/guide.md#events) · [Deep links](docs/guide.md#deep-links)
-  - [Languages](docs/guide.md#languages) · [Notifications (`sendTo`)](docs/guide.md#sending-without-an-update) · [Broadcast](docs/guide.md#broadcast) · [Storage](docs/guide.md#storage) · [Security](docs/guide.md#security-notes)
-  - [All options](docs/guide.md#options) · [Testing](docs/guide.md#testing-your-bot)
+  - [Languages](docs/guide.md#languages) · [Notifications (`sendTo`)](docs/guide.md#sending-without-an-update) · [Updating messages (`app.edit`)](docs/guide.md#updating-a-message-later) · [Broadcast](docs/guide.md#broadcast)
+  - [Storage](docs/guide.md#storage) · [Button params](docs/guide.md#button-params-inline-or-stored) · [Security](docs/guide.md#security-notes) · [Error helpers](docs/guide.md#error-helpers) · [All options](docs/guide.md#options) · [Testing](docs/guide.md#testing-your-bot)
 - **[Changelog](CHANGELOG.md)**
 
 ## Requirements

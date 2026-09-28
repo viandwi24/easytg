@@ -23,7 +23,7 @@ import { createConsoleLogger, silentLogger, type Logger } from './logger';
 import type { ReplyMenu } from './menu';
 import { Nav } from './nav';
 import { decodeDeepLink, deepLinkUrl, encodeDeepLinkInline, encodeDeepLinkStored, startPayload } from './deeplink';
-import { allowedUsersOf, createProactiveContext, type SendTarget } from './proactive';
+import { allowedUsersOf, createProactiveContext, isProactive, type SendTarget } from './proactive';
 import { sign, verify } from './sign';
 import {
   deliver,
@@ -102,6 +102,12 @@ export interface EasyTGOptions<C extends Context = Context> {
   buttons?: ButtonsOptions;
   deepLinks?: DeepLinksOptions;
   dialogues?: DialoguesOptions;
+  /**
+   * Also emit errors of `sendTo` and `edit` as `error` events (they are still
+   * thrown to the caller). `broadcast` reports failures in its result instead.
+   * Default false.
+   */
+  emitProactiveErrors?: boolean;
   /** Rate limit per user. Default on (20 updates / 10 s); `false` disables. */
   antiSpam?: AntiSpamOptions<C> | false;
   i18n?: I18nOptions<C>;
@@ -167,8 +173,12 @@ export interface I18nOptions<C extends Context = Context> {
 export interface EasyTGEvents<C extends Context = Context> {
   /** A user exceeded the anti-spam limit and is ignored until `until`. */
   spam: SpamEvent<C>;
-  /** An error was caught while handling a button press, dialogue input or deep link. */
-  error: { error: unknown; ctx: C };
+  /**
+   * An error was caught while handling a button press, dialogue input, menu
+   * button or deep link (`source: 'update'`), or in `sendTo` / `edit` with
+   * `emitProactiveErrors`.
+   */
+  error: { error: unknown; ctx: C; source: 'update' | 'sendTo' | 'edit' };
   /** New messages were sent (all of them, for text split across several messages). */
   sent: { ctx: C; chatId: number; messageIds: number[]; page?: string };
   /** A page was shown: `send` as a new message, `edit` in place. */
@@ -257,6 +267,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly scopeKeysByBot: boolean;
   private readonly secret?: string;
   private readonly prepareProactive?: (ctx: C) => Awaitable<void>;
+  private readonly emitProactiveErrors: boolean;
 
   constructor(options: EasyTGOptions<C> = {}) {
     const storage = options.storage ?? new MemoryStorage();
@@ -297,6 +308,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     this.protectContent = options.protectContent ?? false;
     this.scopeKeysByBot = options.scopeKeysByBot ?? true;
     this.prepareProactive = options.prepareProactive;
+    this.emitProactiveErrors = options.emitProactiveErrors ?? false;
   }
 
   // ---- registration --------------------------------------------------------
@@ -442,7 +454,22 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   sendTo(bot: BotLike, target: number | SendTarget, page: string, params?: ParamsInput): Promise<DeliveryResult | undefined>;
   async sendTo(bot: BotLike, target: number | SendTarget, page: Page<any, any, any> | string, params?: ParamsInput) {
     const ctx = await this.proactiveContext(bot, typeof target === 'number' ? { chatId: target } : target);
-    return this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'send' });
+    return this.reportingProactive(ctx, 'sendTo', () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'send' }));
+  }
+
+  /** sendTo without error events (broadcast reports failures in its result). */
+  private async deliverTo(bot: BotLike, target: number | SendTarget, pageId: string, params?: ParamsInput) {
+    const ctx = await this.proactiveContext(bot, typeof target === 'number' ? { chatId: target } : target);
+    return this.open(ctx, pageId, params, { mode: 'send' });
+  }
+
+  private async reportingProactive<T>(ctx: C, source: 'sendTo' | 'edit', run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (this.emitProactiveErrors) await this.emit('error', { error, ctx, source });
+      throw error;
+    }
   }
 
   /**
@@ -459,7 +486,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const scope = this.scope(ctx);
     scope.editTarget = { chatId: target.chatId, messageId: target.messageId };
     scope.noFallback = true;
-    return this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'edit' });
+    return this.reportingProactive(ctx, 'edit', () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'edit' }));
   }
 
   private async proactiveContext(bot: BotLike, target: SendTarget): Promise<C> {
@@ -484,7 +511,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   ): Promise<BroadcastResult> {
     const { params, ...settings } = (options ?? {}) as BroadcastOptions<Params>;
     this.page(page); // fail fast if it isn't registered
-    return runBroadcast(targets, (target) => this.sendTo(bot, target, page.id, params), settings);
+    return runBroadcast(targets, (target) => this.deliverTo(bot, target, page.id, params), settings);
   }
 
   /** Start a dialogue for the user of `ctx` (middlewares run first). */
@@ -524,17 +551,18 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   }
 
   /** Ignore all updates from a user for `ms` (works even with `antiSpam: false`). */
-  limitUser(userId: number, ms: number) {
-    this.spamGuard.block(userId, ms);
+  limitUser(userId: number, ms: number, botId?: number) {
+    this.spamGuard.block(`${botId ?? '*'}:${userId}`, ms);
   }
 
   /** Lift a limit set by anti-spam or `limitUser`. */
-  releaseUser(userId: number) {
-    this.spamGuard.release(userId);
+  releaseUser(userId: number, botId?: number) {
+    this.spamGuard.release((key) => (botId === undefined ? key.endsWith(`:${userId}`) : key === `${botId}:${userId}` || key === `*:${userId}`));
   }
 
-  isLimited(userId: number) {
-    return this.spamGuard.isBlocked(userId);
+  isLimited(userId: number, botId?: number) {
+    if (botId !== undefined) return this.spamGuard.isBlocked(`${botId}:${userId}`) || this.spamGuard.isBlocked(`*:${userId}`);
+    return this.spamGuard.isAnyBlocked((key) => key.endsWith(`:${userId}`));
   }
 
   /** False when the update must be dropped: the user is limited. */
@@ -547,7 +575,15 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const counts = config?.filter ? config.filter(ctx) : isInteraction(ctx);
     if (!counts || config?.exempt?.(ctx)) return true;
 
-    const verdict = config ? this.spamGuard.check(userId) : this.spamGuard.isBlocked(userId) ? { status: 'blocked' as const } : { status: 'ok' as const };
+    // Counted per bot, so one instance can serve several bots; manual limits may cover all of them.
+    const botId = ctx.me.id;
+    const verdict = this.spamGuard.isBlocked(`*:${userId}`)
+      ? { status: 'blocked' as const }
+      : config
+        ? this.spamGuard.check(`${botId}:${userId}`)
+        : this.spamGuard.isBlocked(`${botId}:${userId}`)
+          ? { status: 'blocked' as const }
+          : { status: 'ok' as const };
     if (verdict.status === 'ok') return true;
 
     let silenced = false;
@@ -564,7 +600,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         silence: () => void (silenced = true),
       });
       // A listener may have released the user.
-      if (!this.spamGuard.isBlocked(userId)) return true;
+      if (!this.isLimited(userId, botId)) return true;
     }
 
     const warn = verdict.status === 'limited' && config?.warn && !silenced;
@@ -688,7 +724,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
     // Double taps: one press per user at a time, and an identical press right
     // after the previous one finished is dropped.
-    const userKey = `${ctx.chat?.id}:${ctx.from?.id}`;
+    const userKey = `${ctx.me.id}:${ctx.chat?.id}:${ctx.from?.id}`;
     const signature = `${ctx.callbackQuery?.message?.message_id}|${data}`;
     if (this.busy.has(userKey)) {
       await this.answerCallback(ctx, { text: this.textsFor(ctx).busy });
@@ -1130,7 +1166,10 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private async loadSession(ctx: C): Promise<Session> {
     const key = sessionKey(ctx, this.botScope(ctx));
     if (!key) {
-      this.logger.warn('Update has no sender; using a temporary session that is not saved');
+      // Normal for sendTo/edit to a group without a user; unexpected for updates.
+      const message = 'No user for this context; using a temporary session that is not saved';
+      if (isProactive(ctx)) this.logger.debug(message);
+      else this.logger.warn(message);
       return new Session();
     }
     return new Session(await this.sessionStorage.get(key));
@@ -1166,7 +1205,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   }
 
   private async reportError(error: unknown, ctx: C) {
-    if ((await this.emit('error', { error, ctx })) === 0) this.logger.error('Error while handling update', error);
+    if ((await this.emit('error', { error, ctx, source: 'update' })) === 0) this.logger.error('Error while handling update', error);
   }
 }
 

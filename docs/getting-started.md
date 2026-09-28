@@ -141,7 +141,27 @@ pass a storage adapter backed by your database, e.g. the
 const app = new EasyTG({ storage: new SqliteStorage('bot.sqlite') });
 ```
 
-## 6. Test without Telegram
+## 6. A main menu
+
+Besides buttons in messages, bots often keep a menu on the keyboard below the
+input field. Its buttons open pages as new messages:
+
+```ts
+import { replyMenu } from 'easytg';
+
+const mainMenu = replyMenu([
+  [replyMenu.button('🛍 Products', productList), replyMenu.button('🧾 My orders', myOrders)],
+  [replyMenu.close()], // "✖️ Close menu" removes the keyboard again
+]);
+
+const app = new EasyTG({ menu: mainMenu }).register(/* … */);
+bot.command('start', (ctx) => app.showMenu(ctx, 'Welcome! Use the menu below.'));
+```
+
+A reply keyboard stays in the chat until the bot removes it, which is why the
+close button is there.
+
+## 7. Test without Telegram
 
 `easytg/testing` runs your bot against a fake Telegram API, with no token and
 no network:
@@ -164,11 +184,16 @@ test('shows the menu', async () => {
 
 The [guide](guide.md) covers everything else:
 
-- [Main menu](guide.md#main-menu-reply-keyboard): buttons on the reply keyboard, and `contact` / `location` dialogue steps
-- [Back buttons](guide.md#back) and [media](guide.md#media): videos, documents, albums
+- [Main menu](guide.md#main-menu-reply-keyboard): more on the reply keyboard, and `contact` / `location` dialogue steps
+- [Back buttons](guide.md#back) and [media](guide.md#media): videos, documents, albums, copies from a channel, `protectContent`
+- [Keeping the pressed message](guide.md#keeping-the-pressed-message) and [validating params](guide.md#validating-params) (`.params(parse)`)
+- [Updating a message later](guide.md#updating-a-message-later) (`app.edit`) and [events](guide.md#events) such as `sent` and `pageView`
 - [Middlewares](guide.md#middlewares): login checks and admin-only pages
 - [Text formatting](guide.md#text-formatting): Markdown, HTML, escaping
 - [Button params](guide.md#button-params-inline-or-stored): tamper-proof buttons
 - [Deep links](guide.md#deep-links): `t.me/yourbot?start=…`
 - [Sending without an update](guide.md#sending-without-an-update): notifications from cron jobs and webhooks, and [broadcasts](guide.md#broadcast)
 - [Anti-spam](guide.md#anti-spam), [Languages](guide.md#languages), [Storage](guide.md#storage)
+
+For complete bots, see the [examples](guide.md#examples): a shop, a media gallery,
+members-only video lessons, a newsletter, captchas and tests.

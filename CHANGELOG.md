@@ -5,6 +5,11 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+- `emitProactiveErrors` option: errors of `sendTo` and `edit` are also emitted as `error` events (still thrown). The `error` event now has a `source`: `update`, `sendTo` or `edit`.
+- Double-tap, busy and anti-spam state is kept per bot, so one app instance can serve several bots. `limitUser`, `releaseUser` and `isLimited` take an optional bot id (without it they cover every bot).
+- No "no user" warning for `sendTo` / `edit` to a group without a `userId`.
+- The Release workflow explains how to fix a refused npm publish.
+
 ## 0.2.0 (2026-09-27)
 
 - **Breaking:** storage keys include the bot id (`session:<bot>:…`, `cb:<bot>:…`, `msgowner:<bot>:…`) so bots can share a storage. Set `scopeKeysByBot: false` to keep the 0.1 format.
