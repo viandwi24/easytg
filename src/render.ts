@@ -12,8 +12,8 @@ import { EasyTGError, isMessageUnavailable, isNotModified } from './errors';
 import { resolveText, type ParseMode } from './format';
 import type { Logger } from './logger';
 import { threadIdOf } from './proactive';
-import { CAPTION_LIMIT, MESSAGE_LIMIT, splitText } from './split';
-import type { AlbumItem, CopySource, DeliveryMode, KeyboardInput, KeyboardRow, MediaSource, MediaType, PageContent } from './types';
+import { CAPTION_LIMIT, MESSAGE_LIMIT, splitText, visibleLength } from './split';
+import type { AlbumItem, CopySource, DeliveryMode, InvoiceContent, KeyboardInput, KeyboardRow, MediaSource, MediaType, PageContent } from './types';
 
 const MEDIA_TYPES: MediaType[] = ['photo', 'video', 'animation', 'document', 'audio'];
 
@@ -26,6 +26,7 @@ export interface PreparedContent {
   /** The first chunk is the album's caption (only when there is no keyboard). */
   albumCaption?: boolean;
   copy?: CopySource;
+  invoice?: InvoiceContent;
   reply_markup: InlineKeyboardMarkup;
   /** Replaces the inline keyboard on new messages (reply keyboards can't be edited in). */
   sendMarkup?: ReplyKeyboardMarkup | ReplyKeyboardRemove | ForceReply;
@@ -80,9 +81,24 @@ export function prepareContent(content: PageContent, defaultMode: ParseMode, pro
   const keyboard = normalizeKeyboard(content.keyboard);
   const resolved = resolveText(content.text, content.parseMode ?? defaultMode);
 
-  const kinds = [...MEDIA_TYPES.filter((type) => content[type] !== undefined), ...(content.album ? ['album'] : []), ...(content.copy ? ['copy'] : [])];
+  const kinds = [
+    ...MEDIA_TYPES.filter((type) => content[type] !== undefined),
+    ...(content.album ? ['album'] : []),
+    ...(content.copy ? ['copy'] : []),
+    ...(content.invoice ? ['invoice'] : []),
+  ];
   if (kinds.length > 1) {
-    throw new EasyTGError(`Content can have only one of photo, video, animation, document, audio, album or copy (got ${kinds.join(', ')})`);
+    throw new EasyTGError(`Content can have only one of photo, video, animation, document, audio, album, copy or invoice (got ${kinds.join(', ')})`);
+  }
+  if (content.invoice) {
+    if (resolved.text) throw new EasyTGError("Invoices can't have text: use invoice.title and invoice.description");
+    if (keyboard.length && !(keyboard[0]![0] as { pay?: boolean } | undefined)?.pay) throw new EasyTGError('The first button of an invoice keyboard must be nav.pay(...)');
+    return {
+      chunks: [''],
+      invoice: content.invoice,
+      reply_markup: { inline_keyboard: keyboard },
+      protect_content: content.protectContent ?? protect ? true : undefined,
+    };
   }
   const mediaType = MEDIA_TYPES.find((type) => content[type] !== undefined);
   const media = mediaType ? { type: mediaType, source: content[mediaType]! } : undefined;
@@ -96,7 +112,7 @@ export function prepareContent(content: PageContent, defaultMode: ParseMode, pro
   const albumCaption = !!album && keyboard.length === 0;
   const limits = media || copy || albumCaption ? [CAPTION_LIMIT, MESSAGE_LIMIT] : [MESSAGE_LIMIT];
   // MarkdownV2 is split as plain text: fine unless one entity spans a cut.
-  const chunks = resolved.text ? splitText(resolved.text, resolved.parse_mode === 'HTML', limits) : [''];
+  const chunks = resolved.text ? splitText(resolved.text, resolved.parse_mode === 'HTML', limits, resolved.parse_mode === 'MarkdownV2') : [''];
   return {
     chunks,
     parse_mode: resolved.text ? resolved.parse_mode : undefined,
@@ -138,7 +154,7 @@ export async function deliver(
   if (resolved === 'edit') {
     const editTarget = target ?? pressedMessage(ctx);
     if (editTarget) {
-      const edited = await tryEdit(host, ctx, content, editTarget);
+      const edited = await tryEdit(host, ctx, content, editTarget, options.fallbackToSend !== false);
       if (edited) return { result: edited, sent: [] };
     }
     if (options.fallbackToSend === false) return undefined;
@@ -146,14 +162,51 @@ export async function deliver(
   return send(host, ctx, content, resolved === 'reply');
 }
 
+/** Messages that went out before a delivery failed half-way, by error. */
+const partialSends = new WeakMap<object, number[]>();
+
+/**
+ * Ids of the messages that were sent before `error` interrupted a delivery
+ * of several messages (a long text, an album with a keyboard). Retrying the
+ * whole delivery would send them twice.
+ */
+export function sentBeforeError(error: unknown): number[] | undefined {
+  return typeof error === 'object' && error !== null ? partialSends.get(error) : undefined;
+}
+
 async function send(host: DeliveryHost, ctx: Context, content: PreparedContent, asReply: boolean): Promise<Delivery> {
-  const { chunks, media, album, copy, parse_mode, link_preview_options, protect_content } = content;
+  const messages: SentMessage[] = [];
+  try {
+    return await sendAll(host, ctx, content, asReply, messages);
+  } catch (error) {
+    if (messages.length && typeof error === 'object' && error !== null) partialSends.set(error, messages.map((m) => m.message_id));
+    throw error;
+  }
+}
+
+async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedContent, asReply: boolean, messages: SentMessage[]): Promise<Delivery> {
+  const { chunks, media, album, copy, invoice, parse_mode, link_preview_options, protect_content } = content;
+  if (invoice) {
+    const chat = ctx.chat;
+    if (!chat) throw new EasyTGError('invoice needs a chat to send to');
+    const { title, description, payload, currency, prices, providerToken, options } = invoice;
+    const replyTo = asReply && ctx.message ? { message_id: ctx.message.message_id, allow_sending_without_reply: true } : undefined;
+    const message = await ctx.api.sendInvoice(chat.id, title, description, payload, currency, prices, {
+      ...options,
+      provider_token: providerToken,
+      reply_markup: content.reply_markup.inline_keyboard.length ? content.reply_markup : undefined,
+      reply_parameters: replyTo,
+      protect_content,
+      message_thread_id: threadIdOf(ctx),
+    });
+    await host.onSent(ctx, [message]);
+    return { result: message, sent: [message.message_id] };
+  }
   if (!chunks[0] && !media && !album && !copy) {
     throw new EasyTGError('Cannot send a new message with only a keyboard: add `text` or media');
   }
   let replyTo = asReply && ctx.message ? { message_id: ctx.message.message_id, allow_sending_without_reply: true } : undefined;
 
-  const messages: SentMessage[] = [];
   let textChunks = chunks;
 
   if (album) {
@@ -255,24 +308,34 @@ function editor(ctx: Context, target: EditTarget) {
   };
 }
 
-/** Returns undefined when the message can't be edited and a new one should be sent. */
-async function tryEdit(host: DeliveryHost, ctx: Context, content: PreparedContent, target: EditTarget): Promise<DeliveryResult | undefined> {
+/**
+ * Returns undefined when the message can't be edited and a new one should be
+ * sent. The old message is only removed when `replace` is true, i.e. when a new
+ * one will actually take its place (`app.edit` never sends).
+ */
+async function tryEdit(
+  host: DeliveryHost,
+  ctx: Context,
+  content: PreparedContent,
+  target: EditTarget,
+  replace: boolean,
+): Promise<DeliveryResult | undefined> {
   const { message } = target;
+  const giveUp = async () => {
+    if (replace) await replacePressed(host, ctx, target);
+    return undefined;
+  };
   const inline = !!target.inlineMessageId;
   if (!inline && (target.chatId === undefined || target.messageId === undefined)) return undefined;
 
-  // Albums and copies can't be edited into a message, and neither can content
-  // that needs several messages: they replace the pressed one.
-  if (content.album || content.copy) {
-    if (inline) throw new EasyTGError(`${content.album ? 'Albums' : 'Copies'} can't be shown in inline-mode messages`);
-    await replacePressed(host, ctx, target);
-    return undefined;
+  // Albums, copies and invoices can't be edited into a message, and neither can
+  // content that needs several messages: they replace the pressed one.
+  if (content.album || content.copy || content.invoice) {
+    if (inline) throw new EasyTGError(`${content.album ? 'Albums' : content.copy ? 'Copies' : 'Invoices'} can't be shown in inline-mode messages`);
+    return giveUp();
   }
   if (content.chunks.length > 1) {
-    if (!inline) {
-      await replacePressed(host, ctx, target);
-      return undefined;
-    }
+    if (!inline) return giveUp();
     // Inline-mode messages have no chat to send more messages to: keep the first part.
     host.logger.warn('Text too long for an inline-mode message; showing only the first part');
     content = { ...content, chunks: [content.chunks[0]!] };
@@ -285,8 +348,10 @@ async function tryEdit(host: DeliveryHost, ctx: Context, content: PreparedConten
   const isTextMessage = message ? message.text !== undefined : undefined;
 
   let result: DeliveryResult;
+  // Only the buttons change: the text (and any continuation messages before it) stays.
+  const markupOnly = !text && !media;
   try {
-    if (!text && !media) {
+    if (markupOnly) {
       result = await edit.markup({ reply_markup });
     } else if (media) {
       // Same file already shown: only the caption and buttons change.
@@ -299,14 +364,14 @@ async function tryEdit(host: DeliveryHost, ctx: Context, content: PreparedConten
           );
     } else if (isTextMessage === false) {
       // Media -> text can't be edited in place.
-      await replacePressed(host, ctx, target);
-      return undefined;
+      return giveUp();
     } else {
       try {
         result = await edit.text(text, { parse_mode, reply_markup, link_preview_options: content.link_preview_options });
       } catch (error) {
         if (isTextMessage !== undefined || !String(error).includes('no text in the message')) throw error;
-        // `app.edit` on a media message: update its caption instead.
+        // `app.edit` on a media message: update its caption instead, if the text fits a caption.
+        if (visibleLength(text, parse_mode === 'HTML') > CAPTION_LIMIT) return giveUp();
         result = await edit.caption({ caption: text, parse_mode, reply_markup });
       }
     }
@@ -315,7 +380,7 @@ async function tryEdit(host: DeliveryHost, ctx: Context, content: PreparedConten
       result = true;
     } else if (!inline && isMessageUnavailable(error)) {
       host.logger.debug('Message cannot be edited, sending a new one instead', error);
-      if (message) await replacePressed(host, ctx, target); // don't leave the stale menu behind
+      if (replace) await replacePressed(host, ctx, target); // don't leave the stale menu behind
       return undefined;
     } else {
       throw error;
@@ -323,7 +388,7 @@ async function tryEdit(host: DeliveryHost, ctx: Context, content: PreparedConten
   }
 
   // The page fits in one message now: drop continuation messages of an earlier long render.
-  if (!inline) await deleteMessages(host, ctx, target.chatId!, await host.takeGroup(ctx, target.chatId!, target.messageId!));
+  if (!inline && !markupOnly) await deleteMessages(host, ctx, target.chatId!, await host.takeGroup(ctx, target.chatId!, target.messageId!));
   return result;
 }
 
@@ -355,7 +420,8 @@ export async function deleteMessages(host: { logger: Logger }, ctx: Context, cha
   if (!ids.length) return true;
   try {
     if (ids.length === 1) await ctx.api.deleteMessage(chatId, ids[0]!);
-    else await ctx.api.deleteMessages(chatId, ids);
+    // deleteMessages takes at most 100 ids per call.
+    else for (let i = 0; i < ids.length; i += 100) await ctx.api.deleteMessages(chatId, ids.slice(i, i + 100));
     return true;
   } catch (error) {
     host.logger.debug('Failed to delete messages', error);

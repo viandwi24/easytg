@@ -5,6 +5,67 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+A large release. **Breaking changes are listed first; see [docs/migration.md](docs/migration.md) for how to update.**
+
+### Breaking
+
+- **All durations are milliseconds.** `session.ttlSeconds` → `session.ttlMs`, `buttons.ttlSeconds` → `buttons.ttlMs`, `deepLinks.ttlSeconds` → `deepLinks.ttlMs`, `session.set(k, v, { ttlSeconds })` → `{ ttlMs }`, and a custom `StorageAdapter`'s `set(key, value, ttl)` now receives milliseconds (may be below one second).
+- `retryAfter(error)` (seconds) → `retryAfterMs(error)` (ms); `isBlockedByUser` → `isChatUnreachable`.
+- `app.limitUser`, `app.releaseUser` and `app.isLimited` return promises (limits can live in shared storage).
+- While a user is limited, all their updates are dropped (not only interactions); payments still pass. `exempt` users are never counted, but manual limits apply to them. The rate-limit window is fixed, starting with the first interaction.
+- `sequential` is on by default: one update per user and chat at a time (waits at most 8 s).
+- The example `examples/storage/sqlite.ts` is replaced by the built-in `SqliteStorage`, which takes an open database: `new SqliteStorage(new Database('bot.sqlite'))` (same table, existing data stays readable).
+- `verifyStorageAdapter(adapter, { keyPrefix, ttlMs })` takes options instead of a key prefix.
+- `MemoryStorage` stores JSON like the real adapters: a `Date` comes back as a string, a `Map` as `{}`, and `set(key, undefined)` throws.
+- Button params: `false` leaves the param out (was the truthy string `"false"`); `nav.startDialogue` params are strings like button params; `nav.redirect` / `nav.startDialogue` no longer take button options.
+- Code spans and blocks keep backslashes (only `\\` and `` \` `` are escapes there): `` `\d+` `` shows `\d+`.
+- Calling `onText`, `steps`, `onFinish` or `onCancel` twice throws.
+- `app.cancelDialogue` reports `reason: 'app'` (was `'command'`); `DialogueCancelReason` adds `'app'` and `'timeout'`.
+- `app.broadcast` sends up to 5 messages at once (`concurrency`, default 5).
+- `texts.collectReceived` / `texts.collectLimit` receive the Done label (`({ total, done })`, `({ max, done })`); new `texts.adminOnly`.
+- Docs are one markdown file per feature under `docs/` (index: `docs/README.md`); `docs/guide.md` is gone.
+
+### Added
+
+- **Storage:** built-in `SqliteStorage` (`bun:sqlite` or `better-sqlite3`) and `RedisStorage` (any Redis client, no dependency), imported from `easytg`. `StorageAdapter` gains optional atomic `increment` and `setIfAbsent`; `verifyStorageAdapter` checks them, and `verifyTaskStore` checks task stores.
+- **Several processes:** `cluster` shares rate limits, mutes, double-tap and busy checks, per-user ordering and queues through the storage.
+- **i18n for your messages:** `i18n.messages`, `fallbackLocale`, `t()` / `t.md()` / `t.html()` with placeholders and plural forms (in renders, middlewares, dialogues, menus; `app.t(ctx)` elsewhere). `app.setLocale(ctx, locale)` for language pickers; the language is remembered for `sendTo`, `sendLater` and broadcasts. `pt_BR` and `pt-br` are the same.
+- **Page text input:** `page.onText(handler, { mode, deleteInput })` for search boxes and the like.
+- **Queues:** `queues` option, `app.queue(name, job, { ctx })`, `app.enterQueue(ctx, name)`, `perUser` / `maxWaiting` / `timeoutMs`, `QueueFullError`, `QueueTimeoutError`, `queueWait` event.
+- **Scheduled tasks** saved in storage: `task<P>(id).run(fn)`, `app.schedule` (`delayMs`, `at`, `everyMs`, `id`, `botId`), `app.cancelTask`, `app.startScheduler(...bots)`, `app.runDueTasks(...bots)`, retries with backoff, `taskError` event. Helpers: `app.deleteLater(target, ids, { delayMs })`, `app.sendLater(target, page, { params, delayMs })`, `deleteAfterMs` and `refreshEveryMs` on page content, `app.broadcastLater(targets, page, options)` with the `broadcastBatch` event.
+- **Payments:** `invoice` content, `nav.pay()`, `payments.preCheckout` / `payments.onSuccess`, `payment` event.
+- **Inline mode:** `app.inlineResult(ctx, page, { params, title })` turns pages into inline query results with working buttons.
+- **Validation with schemas:** `page.params(schema)` and a `schema` on text steps accept any Standard Schema (zod, valibot, arktype…).
+- **Dialogue timeouts:** `dialogue(id).timeout(ms)` and `dialogues.timeoutMs`.
+- **Sessions:** `app.chatSession(ctx)` for chat-wide state; typed keys by declaring `interface SessionData` in `declare module 'easytg'`; `session.version` + `session.migrate` for data migrations.
+- **Groups:** `requireChatAdmin()` middleware.
+- `app.answer(ctx, toast)` answers a button press early.
+- `autoRetry()` API transformer that waits out 429s on every call; `isTransient(error)`.
+- `media.cacheFileIds`: photos and videos sent by URL are sent by their file id next time.
+- `update` event with `durationMs` and `outcome`; `pageView` has `chatId`, `userId` and `durationMs`; dialogue events have `params`.
+- `app` in dialogue step helpers and `onFinish` / `onCancel`.
+- Docs: API reference (`docs/app.md`), migration guide, inline mode, groups, scaling, queues, scheduler, payments, text input.
+- Examples: `search.ts`, `queue.ts`, `reminders.ts`, `payments.ts`, `production.ts`, `inline.ts`, `group.ts`; `notify.ts` and `course.ts` use the scheduler; `broadcast.ts` runs broadcasts in the background.
+
+### Fixed
+
+- `app.edit` deleted the target message (and sent nothing) when the page needed several messages, an album, a copy or an invoice.
+- A keyboard-only render on a long (split) message deleted its earlier parts.
+- `sendTo` / `edit` / `broadcast` for a user whose update was being handled overwrote each other's session changes.
+- Menus with `allowedUsers` became single-user after the first press.
+- Pages shown by a dialogue's `onFinish` / `onCancel` or by a middleware redirect weren't recorded (no Back, no `onText`, no `pageView`).
+- `collect` steps lost their Done button after an error, and a failed `validate` left the user stuck.
+- `nav.close()` left the page's text input active.
+- Re-entering a queue from the same update waited forever.
+- A broadcast retrying a 429 resent the parts of a long page that had gone out already.
+- MarkdownV2 text could be split between a backslash and the character it escapes; splits could produce messages of only spaces.
+- Code fences with languages like `c++`, `c#` or `objective-c` weren't recognised.
+- Scheduler: a task whose completion couldn't be saved ran again at once; one slow task held up all others; `stop()` then `start()` ran two poll loops; `deleteLater` didn't retry rate limits and network errors; `deleteAfterMs` deleted whatever page the message showed later.
+- SQLite: `safeIntegers` databases returned bigint task fields; opening a new database from several processes at once could fail with "database is locked".
+- Redis: `increment` extended the TTL of existing keys; task keys share a hash tag for Redis Cluster.
+- Anti-spam: concurrent updates past the limit gave several `spam` events and strikes.
+- Group menu ownership expired 7 days after sending, even while in use; nav history evicted menus by message id instead of by last use.
+
 ## 0.2.1 (2026-09-28)
 
 - `emitProactiveErrors` option: errors of `sendTo` and `edit` are also emitted as `error` events (still thrown). The `error` event now has a `source`: `update`, `sendTo` or `edit`.

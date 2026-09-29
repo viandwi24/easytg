@@ -44,8 +44,10 @@ function tagName(tag: string) {
  * Split text into chunks whose visible length fits the limits: `limits[0]`
  * for the first chunk, the last value for all following ones. Cuts at line
  * breaks when possible; in HTML, tags open at a cut are closed and reopened.
+ * With `escapes` (MarkdownV2), a cut never separates a `\\` from the
+ * character it escapes.
  */
-export function splitText(input: string, html: boolean, limits: number[]): string[] {
+export function splitText(input: string, html: boolean, limits: number[], escapes = false): string[] {
   const limitFor = (index: number) => limits[Math.min(index, limits.length - 1)]!;
   const chunks: string[] = [];
 
@@ -59,7 +61,8 @@ export function splitText(input: string, html: boolean, limits: number[]): strin
     const reopen = openAtStart.map((t) => t.raw).join('');
     const close = [...openAtEnd].reverse().map((t) => `</${t.name}>`).join('');
     const chunk = (reopen + body + close).replace(/^\n+|\n+$/g, '');
-    if (visibleLength(chunk, html) > 0) chunks.push(chunk);
+    // Telegram trims messages: a chunk of only spaces would be "message text is empty".
+    if (hasVisibleText(chunk, html)) chunks.push(chunk);
   };
 
   const push = (token: Token) => {
@@ -120,7 +123,7 @@ export function splitText(input: string, html: boolean, limits: number[]): strin
         if (rest.kind !== 'text') break;
         continue;
       }
-      let cut = cutPoint(rest.raw, room);
+      let cut = cutPoint(rest.raw, room, escapes);
       if (cut === 0 && size === 0) cut = Math.min(2, rest.raw.length); // limit smaller than one character: can't do better
       if (cut === 0) {
         // Not even one character fits (e.g. an emoji with one unit left): next chunk.
@@ -142,13 +145,23 @@ export function splitText(input: string, html: boolean, limits: number[]): strin
 }
 
 /** Where to cut `text` so the first part is at most `room` long: at a space if possible, never inside a surrogate pair. */
-function cutPoint(text: string, room: number) {
+function cutPoint(text: string, room: number, escapes: boolean) {
   let cut = room;
   const space = text.lastIndexOf(' ', room);
   if (space > room * 0.6) cut = space;
   const code = text.charCodeAt(cut);
   if (code >= 0xdc00 && code <= 0xdfff) cut -= 1; // don't split a surrogate pair
-  return cut;
+  if (escapes) {
+    // An odd run of backslashes before the cut: the last one escapes the next character.
+    let backslashes = 0;
+    while (cut - backslashes - 1 >= 0 && text[cut - backslashes - 1] === '\\') backslashes++;
+    if (backslashes % 2 === 1) cut -= 1;
+  }
+  return Math.max(0, cut);
+}
+
+function hasVisibleText(input: string, html: boolean): boolean {
+  return tokenize(input, html).some((t) => t.kind === 'entity' || (t.kind === 'text' && t.raw.trim() !== ''));
 }
 
 /** Visible length as Telegram counts it. */

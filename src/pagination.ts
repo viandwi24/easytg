@@ -26,12 +26,14 @@ export interface Pagination {
  *   const { offset, limit, buttons } = paginate(args, { total, perPage: 10 });
  *   return { text: items.slice(offset, offset + limit), keyboard: [buttons] };
  */
-export function paginate(args: { params: Params; nav: Nav<any> }, options: PaginateOptions): Pagination {
+export function paginate(args: { params: unknown; nav: Nav<any> }, options: PaginateOptions): Pagination {
   const param = options.param ?? 'page';
+  // The raw params, so pages with `.params(parse)` work too.
+  const raw = (args.nav.currentParams ?? args.params) as Params;
   const perPage = Math.max(1, Math.floor(options.perPage));
   const totalPages = Math.max(1, Math.ceil(options.total / perPage));
   // Params are untrusted: clamp anything odd.
-  const parsed = Number.parseInt(args.params[param] ?? '1', 10);
+  const parsed = Number.parseInt(String(raw?.[param] ?? '1'), 10);
   const page = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 1, 1), totalPages);
 
   const nav = (text: string, target: number) => args.nav.self(text, { [param]: target });

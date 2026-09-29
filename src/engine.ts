@@ -1,5 +1,5 @@
 import type { Bot, Context, MiddlewareFn, MiddlewareObj } from 'grammy';
-import type { Message, ReplyKeyboardMarkup, ReplyKeyboardRemove } from 'grammy/types';
+import type { InlineQueryResult, Message, PreCheckoutQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove, SuccessfulPayment } from 'grammy/types';
 import {
   BACK_ID,
   DIALOGUE_BUTTON_ID,
@@ -13,49 +13,60 @@ import {
   type ParamsInput,
 } from './callback';
 import { SpamGuard, type AntiSpamOptions, type SpamEvent } from './antispam';
+import { Locks, Queue, assertAtomic, type AtomicStorage, type QueueOptions, type Release } from './coordination';
 import { runBroadcast, type BroadcastResult, type BroadcastSettings } from './broadcast';
 import { CallbackStore, type CallbackParamsMode, type StoredCallback } from './callback-store';
-import type { Dialogue, Page } from './define';
+import type { Dialogue, Page, Task, TaskBot } from './define';
 import { DialogueRunner, isCommand } from './dialogue';
-import { EasyTGError, InvalidParamsError } from './errors';
+import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient } from './errors';
+import { Scheduler, type ScheduleOptions, type SchedulerOptions, type TaskErrorEvent } from './scheduler';
 import type { ParseMode, TextInput } from './format';
 import { createConsoleLogger, silentLogger, type Logger } from './logger';
 import type { ReplyMenu } from './menu';
 import { Nav } from './nav';
 import { decodeDeepLink, deepLinkUrl, encodeDeepLinkInline, encodeDeepLinkStored, startPayload } from './deeplink';
-import { allowedUsersOf, createProactiveContext, isProactive, type SendTarget } from './proactive';
+import { allowedUsersOf, createProactiveContext, isProactive, threadIdOf, type SendTarget } from './proactive';
 import { sign, verify } from './sign';
 import {
   deliver,
   prepareContent,
+  sentBeforeError,
   pressedMessage,
   removeWithGroup,
   type Delivery,
   type DeliveryResult,
   type EditTarget,
+  type PreparedContent,
   type SentMessage,
 } from './render';
 import { Session } from './session';
-import { MemoryStorage, withPrefix, type StorageAdapter } from './storage';
+import { MemoryStorage, isTaskStore, withPrefix, type StorageAdapter } from './storage';
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { defaultTexts, type EasyTGTexts } from './texts';
+import { Translator, normalizeLocale, type Messages, type Translate } from './i18n';
 import {
   DialogueStart,
   Redirect,
   type ButtonOptions,
   type DeliveryMode,
+  type DialogueCancelReason,
   type Middleware,
   type MiddlewareArgs,
   type PageContent,
   type Params,
+  type ParamArgs,
+  type ParamsArgs,
   type ParamsInputOf,
   type RenderArgs,
   type RenderResult,
   type Awaitable,
 } from './types';
 
-const OWNER_TTL_SECONDS = 7 * 24 * 60 * 60;
-const CALLBACK_TTL_SECONDS = 30 * 24 * 60 * 60;
-const DEEP_LINK_TTL_SECONDS = 365 * 24 * 60 * 60;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const OWNER_TTL_MS = 7 * DAY_MS;
+const CALLBACK_TTL_MS = 30 * DAY_MS;
+const DEEP_LINK_TTL_MS = 365 * DAY_MS;
 const MAX_REDIRECTS = 5;
 /** Session key of the per-message navigation history behind `nav.back()`. */
 const NAV_KEY = '_easytg:nav';
@@ -67,8 +78,22 @@ interface View {
   params: Record<string, string>;
 }
 
+/** Session keys of the language chosen with `setLocale`, and of the Telegram app's language last seen. */
+const LOCALE_KEY = '_easytg:locale';
+const LAST_LANGUAGE_KEY = '_easytg:lang';
+
+/** Session key of the message ids with a pending `deleteAfterMs`. */
+const AUTODELETE_KEY = '_easytg:autodelete';
+
+/** Session key of the page that receives the user's text (`page.onText`). */
+const INPUT_KEY = '_easytg:input';
+
+interface TextInputState extends View {
+  messageId: number;
+}
+
 /** Per menu message: the page it shows and the pages before it. */
-type NavHistory = Record<string, { current: View; stack: View[] }>;
+type NavHistory = Record<string, { current: View; stack: View[]; /** last used (ms) */ at?: number }>;
 
 export interface EasyTGOptions<C extends Context = Context> {
   /** Default adapter for everything easytg persists. Default: in-memory (development only). */
@@ -101,6 +126,7 @@ export interface EasyTGOptions<C extends Context = Context> {
   session?: SessionOptions;
   buttons?: ButtonsOptions;
   deepLinks?: DeepLinksOptions;
+  media?: MediaOptions;
   dialogues?: DialoguesOptions;
   /**
    * Also emit errors of `sendTo` and `edit` as `error` events (they are still
@@ -110,19 +136,85 @@ export interface EasyTGOptions<C extends Context = Context> {
   emitProactiveErrors?: boolean;
   /** Rate limit per user. Default on (20 updates / 10 s); `false` disables. */
   antiSpam?: AntiSpamOptions<C> | false;
+  /**
+   * Handle one update per user and chat at a time, in order, so concurrent
+   * updates (webhooks, grammY runner) can't race on the same session. A button
+   * pressed while the user's previous update is still running gets the `busy`
+   * toast; other updates wait up to `timeoutMs` (default 8 000, below grammY's
+   * 10 s webhook timeout), then run anyway. Default true.
+   */
+  sequential?: boolean | { timeoutMs?: number };
+  /**
+   * Share rate limits, locks, double-tap state and queues between processes
+   * (several instances of the bot). `true` uses `storage`; or pass another
+   * adapter. It must support `increment` and `setIfAbsent` (`RedisStorage`,
+   * `SqliteStorage`). Default false: per process.
+   */
+  cluster?: boolean | StorageAdapter;
+  /** Concurrency limits for `app.queue` / `app.enterQueue`, by name: `{ ai: { concurrency: 5 } }`. */
+  queues?: Record<string, QueueOptions>;
+  /** Scheduled tasks (`app.schedule`, `deleteLater`, `sendLater`); run them with `app.startScheduler(bot)`. */
+  scheduler?: SchedulerOptions;
+  /** Handle checkout and successful payments of `invoice` content. Without it, both go to your own handlers. */
+  payments?: PaymentsOptions<C>;
   i18n?: I18nOptions<C>;
+}
+
+export interface PaymentsOptions<C extends Context = Context> {
+  /**
+   * Check an order before the user is charged (answered within Telegram's 10
+   * seconds): return true to accept, or a message for the user to refuse.
+   * Default: accept.
+   */
+  preCheckout?: (args: { ctx: C; query: PreCheckoutQuery; payload: string }) => Awaitable<true | string>;
+  /**
+   * After a successful payment: deliver the goods and return what to show
+   * (like a render). The `payment` event fires too. Without it, the payment
+   * message goes to your own handlers.
+   */
+  onSuccess?: (args: PaymentArgs<C>) => Awaitable<RenderResult>;
+}
+
+export interface PaymentArgs<C extends Context = Context> {
+  ctx: C;
+  payment: SuccessfulPayment;
+  /** The invoice's `payload`. */
+  payload: string;
+  session: Session;
+  locale: string | undefined;
+  t: Translate;
+  nav: Nav<C>;
+  app: EasyTG<C>;
 }
 
 export interface SessionOptions {
   /** Where sessions (incl. dialogue state) live. Default: `storage`. */
   storage?: StorageAdapter;
-  /** Delete a session this many seconds after the user was last active. Default: never. */
-  ttlSeconds?: number;
+  /**
+   * The version of your session data. When it changes, `migrate` converts
+   * each stored session (and chat session) the next time it is loaded.
+   */
+  version?: number;
+  /** Convert data stored under an older `version` (0 = before versions were used). */
+  migrate?: (data: Record<string, unknown>, fromVersion: number) => Record<string, unknown>;
+  /** Delete a session this many ms after the user was last active. Default: never. */
+  ttlMs?: number;
   /**
    * Any interaction keeps the session alive, not only changes. Default true.
    * To save writes, the expiry is refreshed once half of the TTL has passed.
    */
   refreshOnActivity?: boolean;
+}
+
+export interface MediaOptions {
+  /**
+   * Remember the `file_id` Telegram gives a photo, video, … sent by URL, and
+   * send that next time instead of the URL (faster, no re-download by
+   * Telegram). Kept in `buttons.storage`, per bot. Default false.
+   */
+  cacheFileIds?: boolean;
+  /** How long a remembered file id is used. Default 30 days. */
+  cacheTtlMs?: number;
 }
 
 export interface ButtonsOptions {
@@ -140,7 +232,7 @@ export interface ButtonsOptions {
    */
   mediaToText?: 'replace' | 'keep';
   /** How long stored button params stay valid. Default 30 days. */
-  ttlSeconds?: number;
+  ttlMs?: number;
   /**
    * Ignore a repeated press of the same button within this many ms after the
    * previous one finished (accidental double taps). Default 700, 0 disables.
@@ -152,12 +244,14 @@ export interface ButtonsOptions {
 
 export interface DeepLinksOptions {
   /** How long stored deep-link params stay valid. Default 365 days. */
-  ttlSeconds?: number;
+  ttlMs?: number;
 }
 
 export interface DialoguesOptions {
   /** A /command sent during a dialogue cancels it (and the command still runs). Default true. */
   cancelOnCommand?: boolean;
+  /** End dialogues after this many ms without an answer (see `dialogue.timeout`). Default: never. */
+  timeoutMs?: number;
 }
 
 export interface I18nOptions<C extends Context = Context> {
@@ -167,6 +261,14 @@ export interface I18nOptions<C extends Context = Context> {
   locales?: Record<string, Partial<EasyTGTexts>>;
   /** The user's language. Default: `ctx.from.language_code`; `pt-br` falls back to `pt`. */
   locale?: (ctx: C, session: Session) => string | undefined;
+  /**
+   * Your app's messages per language, for `t` in renders, dialogues and
+   * middlewares (and `app.t(ctx)`): `{ en: { hello: 'Hi {name}!' }, id: { … } }`.
+   * A message can have plural forms: `{ one: '{count} item', other: '{count} items' }`.
+   */
+  messages?: Record<string, Messages>;
+  /** Language used for users whose language (or a missing key) isn't in `messages`. Default `en`. */
+  fallbackLocale?: string;
 }
 
 /** Events emitted by `app.on(...)`. */
@@ -182,15 +284,48 @@ export interface EasyTGEvents<C extends Context = Context> {
   /** New messages were sent (all of them, for text split across several messages). */
   sent: { ctx: C; chatId: number; messageIds: number[]; page?: string };
   /** A page was shown: `send` as a new message, `edit` in place. */
-  pageView: { ctx: C; page: string; params: Params; mode: 'send' | 'edit' };
+  pageView: { ctx: C; page: string; params: Params; mode: 'send' | 'edit'; chatId?: number; userId?: number; /** Render and delivery time. */ durationMs: number };
   dialogueStart: { ctx: C; dialogue: string; params: Record<string, unknown> };
-  dialogueFinish: { ctx: C; dialogue: string; answers: Record<string, unknown> };
+  dialogueFinish: { ctx: C; dialogue: string; params: Record<string, unknown>; answers: Record<string, unknown> };
+  /** A dialogue ended without finishing; see `DialogueCancelReason`. */
+  dialogueCancel: { ctx: C; dialogue: string; params: Record<string, unknown>; answers: Record<string, unknown>; reason: DialogueCancelReason };
   /**
-   * A dialogue ended without finishing: `user` pressed Cancel, `command` a
-   * /command or menu button took over, `replaced` another dialogue started.
+   * A job has to wait for a queue slot. `position` is 1 for the next in line;
+   * undefined with `cluster` (not known across processes).
    */
-  dialogueCancel: { ctx: C; dialogue: string; answers: Record<string, unknown>; reason: 'user' | 'command' | 'replaced' };
+  queueWait: { ctx?: C; queue: string; position?: number };
+  /** A scheduled task failed. */
+  taskError: TaskErrorEvent;
+  /** A batch of `broadcastLater` was sent (`batch` counts from 0). */
+  broadcastBatch: { broadcast: string; batch: number; batches: number; result: BroadcastResult };
+  /**
+   * An update went through `bot.use(app)`: `outcome` is `easytg` (handled by
+   * a page, dialogue, menu…), `next` (passed on to your handlers; the time
+   * includes them), `limited` (dropped: rate limit) or `busy` (dropped: a
+   * button pressed while the user's previous update was running) or `error`
+   * (an error was thrown to grammY).
+   */
+  update: { ctx: C; durationMs: number; outcome: UpdateOutcome };
+  /** A payment succeeded (only with the `payments` option). Keep `payment.telegram_payment_charge_id` for refunds. */
+  payment: { ctx: C; payment: SuccessfulPayment; payload: string };
 }
+
+/** When to delete (`delayMs` / `at`) and, optionally, your own task id. */
+export type DeleteLaterOptions = Pick<ScheduleOptions, 'delayMs' | 'at' | 'id'>;
+
+/** `ScheduleOptions` plus the page's params. */
+export type SendLaterOptions<P> = ScheduleOptions & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
+
+export type InlineResultOptions<P> = {
+  /** Shown in the list of results. */
+  title: string;
+  description?: string;
+  thumbnailUrl?: string;
+  /** Unique per result, at most 64 bytes. Default: derived from the page and params. */
+  id?: string;
+} & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
+
+export type UpdateOutcome = 'easytg' | 'next' | 'limited' | 'busy' | 'error';
 
 export type BroadcastOptions<P> = BroadcastSettings & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
 
@@ -199,7 +334,42 @@ export interface OpenOptions {
   mode?: DeliveryMode;
 }
 
-type Registrable<C extends Context> = Page<any, C, any> | Dialogue<any, any, C>;
+type Registrable<C extends Context> = Page<any, C, any> | Dialogue<any, any, C> | Task<any, C>;
+
+type ScheduleArgs<P> = undefined extends P ? [payload?: P, options?: ScheduleOptions] : [payload: P, options?: ScheduleOptions];
+
+/** Built-in tasks behind `deleteLater` / `sendLater` / `deleteAfterMs`. */
+const DELETE_TASK = '_easytg:delete';
+const SEND_TASK = '_easytg:send';
+const BROADCAST_TASK = '_easytg:broadcast';
+const REFRESH_TASK = '_easytg:refresh';
+
+interface RefreshPayload {
+  chatId: number;
+  messageId: number;
+  userId?: number;
+  threadId?: number;
+  allowedUsers?: number[];
+  page: string;
+  params: Record<string, string>;
+}
+
+interface BroadcastBatchPayload {
+  broadcast: string;
+  batch: number;
+  batches: number;
+  targets: Array<number | SendTarget>;
+  page: string;
+  params: Record<string, string>;
+  perSecond: number;
+  concurrency?: number;
+}
+
+export type BroadcastLaterOptions<P> = Omit<BroadcastSettings, 'onProgress' | 'signal'> &
+  Pick<ScheduleOptions, 'delayMs' | 'at' | 'botId'> & {
+    /** Recipients per scheduled task. Default 100. */
+    batchSize?: number;
+  } & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
 
 /** Per-update state: loaded session, stored buttons waiting to be written, answered flag. */
 interface UpdateScope {
@@ -217,13 +387,29 @@ interface UpdateScope {
   /** `app.edit`: the message to edit, and don't send when it can't be edited. */
   editTarget?: EditTarget;
   noFallback?: boolean;
+  /** Handled by the middleware (not a context created by `sendTo` etc.). */
+  inUpdate?: boolean;
+  /** Queue slots taken with `enterQueue`, released when the update ends. */
+  held?: Release[];
+  /** Proactive context of a user whose update is being handled: use that update's session. */
+  sharedWith?: Context;
+  /** `allowedUsers` of the pressed menu, kept for what the press renders. */
+  allowedUsers?: number[];
+  /** `app.t(ctx)`, created once. */
+  t?: Translate;
+  /** `refreshEveryMs` of the page content just delivered. */
+  refreshEveryMs?: number;
+  /** A `refreshEveryMs` re-render: a pending `deleteAfterMs` keeps its deadline. */
+  refreshing?: boolean;
+  /** Redirects and dialogue starts in this update, against loops. */
+  redirects?: number;
+  chatSession?: Promise<Session>;
 }
 
 type OpenArgs<P> = {} extends P
   ? [params?: ParamsInputOf<P>, options?: OpenOptions]
   : [params: ParamsInputOf<P>, options?: OpenOptions];
 
-type ParamArgs<P> = {} extends P ? [params?: ParamsInputOf<P>] : [params: ParamsInputOf<P>];
 
 type BotLike = Pick<Bot<any>, 'api' | 'botInfo' | 'isInited' | 'init'>;
 
@@ -235,6 +421,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** @internal */ readonly logger: Logger;
   /** @internal */ readonly homePage: string;
   /** @internal */ readonly cancelDialogueOnCommand: boolean;
+  /** @internal */ readonly dialogueTimeoutMs?: number;
 
   private readonly parseMode: ParseMode;
   private readonly callbackParams: CallbackParamsMode;
@@ -250,13 +437,23 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly locales: Record<string, Partial<EasyTGTexts>>;
   private readonly localeTexts = new Map<string, EasyTGTexts>();
   private readonly localeFn?: (ctx: C, session: Session) => string | undefined;
+  private readonly translator: Translator;
+  private readonly scheduler: Scheduler;
+  private readonly payments?: PaymentsOptions<C>;
   private readonly doubleTapMs: number;
-  /** Users with a button press in progress (per process). */
-  private readonly busy = new Set<string>();
-  /** Last finished button press per user, for double-tap detection. */
-  private readonly lastPress = new Map<string, { signature: string; at: number }>();
-  private readonly sessionTtlSeconds?: number;
+  /** Rate limits, double taps and locks: in memory, or shared with `cluster`. */
+  private readonly coordination: AtomicStorage;
+  private readonly locks: Locks;
+  private readonly queues = new Map<string, Queue>();
+  /** Updates being handled in this process, by `userKey`. */
+  private readonly liveUpdates = new Map<string, C>();
+  private readonly sequentialTimeoutMs?: number;
+  private readonly sessionTtlMs?: number;
   private readonly refreshSessions: boolean;
+  private readonly cacheFileIds: boolean;
+  private readonly fileIdTtlMs: number;
+  private readonly sessionVersion?: number;
+  private readonly migrateSession?: (data: Record<string, unknown>, fromVersion: number) => Record<string, unknown>;
   private readonly spamGuard: SpamGuard;
   private readonly antiSpam: AntiSpamOptions<C> | undefined;
   private readonly listeners = new Map<keyof EasyTGEvents<C>, Set<(event: any) => unknown>>();
@@ -272,15 +469,20 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   constructor(options: EasyTGOptions<C> = {}) {
     const storage = options.storage ?? new MemoryStorage();
     const scoped = (adapter?: StorageAdapter) => withPrefix(adapter ?? storage, options.keyPrefix ?? '');
-    const { session = {}, buttons = {}, deepLinks = {}, dialogues = {}, i18n = {} } = options;
+    const { session = {}, buttons = {}, deepLinks = {}, dialogues = {}, i18n = {}, media = {} } = options;
+    this.cacheFileIds = media.cacheFileIds ?? false;
+    this.fileIdTtlMs = media.cacheTtlMs ?? 30 * DAY_MS;
 
     this.sessionStorage = scoped(session.storage);
-    this.sessionTtlSeconds = session.ttlSeconds;
+    this.sessionTtlMs = session.ttlMs;
     this.refreshSessions = session.refreshOnActivity ?? true;
+    this.sessionVersion = session.version;
+    this.migrateSession = session.migrate;
+    if (session.migrate && session.version === undefined) throw new EasyTGError('session.migrate needs session.version');
 
     this.metaStorage = scoped(buttons.storage);
-    this.callbacks = new CallbackStore(this.metaStorage, buttons.ttlSeconds ?? CALLBACK_TTL_SECONDS);
-    this.deepLinks = new CallbackStore(this.metaStorage, deepLinks.ttlSeconds ?? DEEP_LINK_TTL_SECONDS, 'dl:');
+    this.callbacks = new CallbackStore(this.metaStorage, buttons.ttlMs ?? CALLBACK_TTL_MS);
+    this.deepLinks = new CallbackStore(this.metaStorage, deepLinks.ttlMs ?? DEEP_LINK_TTL_MS, 'dl:');
     this.callbackParams = buttons.params ?? 'auto';
     this.mediaToText = buttons.mediaToText ?? 'replace';
     this.secret = buttons.secret;
@@ -291,13 +493,42 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     this.ownerOnly = buttons.ownerOnly ?? true;
 
     this.cancelDialogueOnCommand = dialogues.cancelOnCommand ?? true;
+    this.dialogueTimeoutMs = dialogues.timeoutMs;
+
+    const shared = options.cluster === true ? storage : options.cluster || undefined;
+    if (shared) assertAtomic(shared, 'cluster');
+    const sharedScoped = shared && (scoped(shared) as AtomicStorage);
+    this.coordination = sharedScoped ?? new MemoryStorage();
+    this.locks = new Locks(sharedScoped);
+    for (const [name, queue] of Object.entries(options.queues ?? {})) this.queues.set(name, new Queue(name, queue, sharedScoped));
+    const sequential = options.sequential ?? true;
+    if (sequential) this.sequentialTimeoutMs = (sequential === true ? undefined : sequential.timeoutMs) ?? 8_000;
+
+    this.scheduler = new Scheduler(
+      options.scheduler?.store ?? (isTaskStore(storage) ? storage : undefined),
+      options.logger === false ? silentLogger : options.logger ?? createConsoleLogger(),
+      async (event) => {
+        if ((await this.emit('taskError', event)) === 0) this.logger.error(`Scheduled task "${event.task.name}" failed`, event.error);
+      },
+      options.scheduler ?? {},
+    );
+    this.defineBuiltinTasks();
+    this.payments = options.payments;
 
     const antiSpam = options.antiSpam === false ? undefined : options.antiSpam ?? {};
     this.antiSpam = antiSpam && { warn: true, ...antiSpam };
-    this.spamGuard = new SpamGuard(antiSpam?.limit ?? 20, antiSpam?.windowMs ?? 10_000, antiSpam?.cooldownMs ?? 30_000);
+    this.spamGuard = new SpamGuard(
+      this.coordination,
+      antiSpam?.limit ?? 20,
+      antiSpam?.windowMs ?? 10_000,
+      antiSpam?.cooldownMs ?? 30_000,
+    );
 
     this.texts = { ...defaultTexts, ...i18n.texts };
-    this.locales = i18n.locales ?? {};
+    this.translator = new Translator(i18n.messages ?? {}, i18n.fallbackLocale ?? 'en', (key, locale) =>
+      this.logger.warn(`Missing message "${key}" (language: ${locale ?? 'none'})`),
+    );
+    this.locales = Object.fromEntries(Object.entries(i18n.locales ?? {}).map(([locale, texts]) => [normalizeLocale(locale), texts]));
     this.localeFn = i18n.locale;
 
     this.logger = options.logger === false ? silentLogger : options.logger ?? createConsoleLogger();
@@ -313,9 +544,15 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   // ---- registration --------------------------------------------------------
 
-  /** Register pages and dialogues (ids share one namespace). */
+  /** Register pages, dialogues (they share one id namespace) and tasks. */
   register(...items: Array<Registrable<C> | Registrable<C>[]>): this {
     for (const item of items.flat()) {
+      if (item.kind === 'task') {
+        if (!item.runFn) throw new EasyTGError(`Task "${item.id}" has no handler: call .run(...) before registering`);
+        const run = item.runFn;
+        this.scheduler.define(item.id, (args) => run({ ...args, app: this }), item.options);
+        continue;
+      }
       if (this.pages.has(item.id) || this.dialogueDefs.has(item.id)) {
         throw new EasyTGError(`"${item.id}" is already registered`);
       }
@@ -359,30 +596,114 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** Use as `bot.use(app)`, before your other handlers. */
   middleware(): MiddlewareFn<C> {
     return async (ctx, next) => {
-      if (!(await this.passesSpamCheck(ctx))) return;
-      let failed = false;
+      const started = Date.now();
+      let outcome: UpdateOutcome = 'error'; // unless run() returns
       try {
-        if (ctx.callbackQuery?.data) {
-          if (await this.handleCallback(ctx)) return;
-        } else if (ctx.message) {
-          if (await this.handleMenu(ctx)) return;
-          if (await this.handleMessage(ctx)) return;
-          if (await this.handleDeepLink(ctx)) return;
-        }
-        await next();
-      } catch (error) {
-        failed = true;
-        throw error;
+        outcome = await flows.run({ key: userKey(ctx), ctx, queues: new Set() }, () => this.run(ctx, next));
       } finally {
-        // Sessions and stored buttons changed anywhere in this update are saved once, here.
-        try {
-          await this.flush(ctx);
-        } catch (error) {
-          if (!failed) throw error;
-          this.logger.error('Failed to save state', error);
+        if (this.listeners.get('update')?.size) {
+          await this.emit('update', { ctx, durationMs: Date.now() - started, outcome });
         }
       }
     };
+  }
+
+  /** The update pipeline. Returns how the update ended, for the `update` event. */
+  private async run(ctx: C, next: () => Promise<void>): Promise<UpdateOutcome> {
+    // The lock is requested before anything is awaited, so a user's updates keep
+    // their order; the rate limit is checked meanwhile, so waiting doesn't delay it.
+    const abort = new AbortController();
+    const locking = this.lockUpdate(ctx, abort.signal);
+    const unlock = async () => {
+      abort.abort(); // stop waiting for the lock
+      const release = await locking;
+      if (typeof release === 'function') await release();
+    };
+    let passes: boolean;
+    try {
+      passes = await this.passesSpamCheck(ctx);
+    } catch (error) {
+      await unlock();
+      throw error;
+    }
+    if (!passes) {
+      await unlock();
+      return 'limited';
+    }
+    const release = await locking;
+    if (release === 'busy') {
+      await this.answerCallback(ctx, { text: this.textsFor(ctx).busy });
+      return 'busy';
+    }
+    let passedOn = false;
+    try {
+      await this.handleUpdate(ctx, async () => {
+        passedOn = true;
+        await next();
+      });
+    } finally {
+      await this.releaseHeld(ctx);
+      await release?.();
+    }
+    return passedOn ? 'next' : 'easytg';
+  }
+
+  private async handleUpdate(ctx: C, next: () => Promise<void>) {
+    this.scope(ctx).inUpdate = true;
+    const live = userKey(ctx);
+    if (live !== undefined) this.liveUpdates.set(live, ctx);
+    let failed = false;
+    try {
+      if (this.payments && ctx.preCheckoutQuery) {
+        await this.handlePreCheckout(ctx, ctx.preCheckoutQuery);
+        return;
+      }
+      if (this.payments && ctx.message?.successful_payment) {
+        if (!(await this.handlePayment(ctx, ctx.message.successful_payment))) await next();
+        return;
+      }
+      if (ctx.callbackQuery?.data) {
+        if (await this.handleCallback(ctx)) return;
+      } else if (ctx.message) {
+        if (await this.handleMenu(ctx)) return;
+        if (await this.handleMessage(ctx)) return;
+        if (await this.handleDeepLink(ctx)) return;
+        if (await this.handleTextInput(ctx)) return;
+      }
+      await next();
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      // Sessions and stored buttons changed anywhere in this update are saved once, here.
+      try {
+        await this.flush(ctx);
+      } catch (error) {
+        if (!failed) throw error;
+        this.logger.error('Failed to save state', error);
+      } finally {
+        if (live !== undefined && this.liveUpdates.get(live) === ctx) this.liveUpdates.delete(live);
+      }
+    }
+  }
+
+  /**
+   * The per-user lock of an update: undefined = no lock needed (or waited too
+   * long), 'busy' = a button pressed while the user's previous update runs.
+   */
+  private async lockUpdate(ctx: C, signal: AbortSignal): Promise<Release | undefined | 'busy'> {
+    const userId = ctx.from?.id;
+    if (userId === undefined || (!ctx.message && !ctx.callbackQuery)) return undefined;
+    const key = userKey(ctx)!;
+    const data = ctx.callbackQuery?.data;
+    if (data !== undefined && (decodeStoredToken(data) || decodeInline(data))) {
+      // One button press per user at a time: a press while busy is answered, not queued.
+      return (await this.locks.tryAcquire(key)) ?? 'busy';
+    }
+    if (this.sequentialTimeoutMs === undefined) return undefined;
+    const release = await this.locks.acquire(key, this.sequentialTimeoutMs, signal);
+    if (!release && !signal.aborted) this.logger.debug(`Update of user ${userId} waited ${this.sequentialTimeoutMs} ms for the previous one; handling it anyway`);
+    return release ?? undefined;
   }
 
   /** Render a page into the chat (see `DeliveryMode`, default `auto`). */
@@ -390,7 +711,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   open(ctx: C, page: string, params?: ParamsInput, options?: OpenOptions): Promise<DeliveryResult | undefined>;
   async open(ctx: C, target: Page<any, any, any> | string, params?: ParamsInput, options: OpenOptions = {}) {
     const page = this.page(target);
-    const mode = options.mode ?? 'auto';
+    return this.show(ctx, page.id, options.mode ?? 'auto', () => this.renderPage(ctx, page, normalizeParams(params)));
+  }
+
+  /** Render (`render` belongs to page `pageId`), deliver, and record the view. */
+  private async show(ctx: C, pageId: string, mode: DeliveryMode, render: () => Promise<RenderResult>, depth = 0) {
     const scope = this.scope(ctx);
     const sourceId = ctx.callbackQuery?.message?.message_id ?? scope.editTarget?.messageId;
     const editing = sourceId !== undefined && (mode === 'edit' || mode === 'auto');
@@ -400,25 +725,75 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       const entry = editing ? (await this.navHistory(ctx))[sourceId] : undefined;
       scope.navStack = !entry
         ? []
-        : entry.current.id === page.id
+        : entry.current.id === pageId
           ? entry.stack // same page with other params (pagination, filters): not a new step
           : [...entry.stack, entry.current].slice(-MAX_BACK_STEPS);
     }
 
+    const started = Date.now();
     try {
-      const result = await this.renderPage(ctx, page, normalizeParams(params));
-      const delivered = await this.present(ctx, result, mode);
+      const delivered = await this.present(ctx, await render(), mode, depth);
       if (delivered && scope.view) {
         await this.recordView(ctx, delivered, editing ? sourceId : undefined);
+        await this.scheduleRefresh(ctx, delivered, editing ? sourceId : undefined);
         const inPlace = delivered === true || (editing && delivered.message_id === sourceId);
-        await this.emit('pageView', { ctx, page: scope.view.id, params: scope.view.params, mode: inPlace ? 'edit' : 'send' });
+        await this.emit('pageView', {
+          ctx,
+          page: scope.view.id,
+          params: scope.view.params,
+          mode: inPlace ? 'edit' : 'send',
+          chatId: ctx.chat?.id ?? scope.editTarget?.chatId,
+          userId: ctx.from?.id,
+          durationMs: Date.now() - started,
+        });
       }
       await this.flush(ctx);
       return delivered;
     } finally {
       scope.navStack = undefined;
       scope.view = undefined;
+      scope.refreshEveryMs = undefined;
     }
+  }
+
+  /** `refreshEveryMs`: render the page into its message again later (one task per message). */
+  private async scheduleRefresh(ctx: C, delivered: DeliveryResult, sourceId: number | undefined) {
+    const scope = this.scope(ctx);
+    const every = scope.refreshEveryMs;
+    const messageId = delivered === true ? sourceId : delivered.message_id;
+    const chatId = ctx.chat?.id ?? scope.editTarget?.chatId;
+    if (chatId === undefined) return;
+    const idOf = (message: number) => `${REFRESH_TASK}:${ctx.me.id}:${chatId}:${message}`;
+    try {
+      // The message now shows something else (whoever navigated it), or moved to a new message:
+      // a refresh scheduled for it must not bring the old page back.
+      if (sourceId !== undefined && (!every || sourceId !== messageId)) await this.scheduler.cancel(idOf(sourceId));
+      if (!every || !scope.view || messageId === undefined) return;
+      if (every < 5000) throw new EasyTGError('refreshEveryMs must be at least 5000');
+      const payload: RefreshPayload = {
+        chatId,
+        messageId,
+        userId: ctx.from?.id,
+        threadId: threadIdOf(ctx),
+        allowedUsers: this.allowedUsers(ctx),
+        page: scope.view.id,
+        params: scope.view.params,
+      };
+      await this.scheduler.schedule(REFRESH_TASK, payload, { delayMs: every, id: idOf(messageId), botId: ctx.me.id });
+    } catch (error) {
+      if (error instanceof EasyTGError && String(error).includes('refreshEveryMs')) throw error;
+      if (every) this.logger.error('refreshEveryMs: could not schedule the refresh', error);
+    }
+  }
+
+  /**
+   * @internal Show a render result that doesn't come from a page render (a
+   * dialogue's onFinish / onCancel, a middleware stopping a dialogue, a
+   * payment) the way pages are shown: a redirect is recorded for Back, onText
+   * and the `pageView` event.
+   */
+  showResult(ctx: C, result: RenderResult, mode: DeliveryMode, depth = 0): Promise<DeliveryResult | undefined> {
+    return this.show(ctx, result instanceof Redirect ? result.target : '', mode, async () => result, depth);
   }
 
   /** @internal Whether the page being rendered has a page to go back to. */
@@ -438,11 +813,14 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const session = await this.session(ctx);
     const history = { ...(await this.navHistory(ctx)) };
     if (sourceId !== undefined && sourceId !== messageId) delete history[sourceId]; // the menu moved to a new message
-    delete history[messageId];
-    history[messageId] = { current: scope.view, stack: scope.navStack ?? [] };
-    const ids = Object.keys(history);
+    history[messageId] = { current: scope.view, stack: scope.navStack ?? [], at: Date.now() };
+    // Keep the most recently used menus (integer keys iterate in numeric order, not insertion order).
+    const ids = Object.keys(history).sort((a, b) => (history[a]!.at ?? 0) - (history[b]!.at ?? 0));
     for (const old of ids.slice(0, Math.max(0, ids.length - MAX_NAV_MESSAGES))) delete history[old];
     session.set(NAV_KEY, history);
+    // The last page shown decides where the user's text goes (`page.onText`).
+    if (this.pages.get(scope.view.id)?.textFn) session.set(INPUT_KEY, { ...scope.view, messageId } satisfies TextInputState);
+    else session.delete(INPUT_KEY);
   }
 
   /**
@@ -454,13 +832,34 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   sendTo(bot: BotLike, target: number | SendTarget, page: string, params?: ParamsInput): Promise<DeliveryResult | undefined>;
   async sendTo(bot: BotLike, target: number | SendTarget, page: Page<any, any, any> | string, params?: ParamsInput) {
     const ctx = await this.proactiveContext(bot, typeof target === 'number' ? { chatId: target } : target);
-    return this.reportingProactive(ctx, 'sendTo', () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'send' }));
+    return this.reportingProactive(ctx, 'sendTo', () =>
+      this.asUser(ctx, () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'send' })),
+    );
   }
 
   /** sendTo without error events (broadcast reports failures in its result). */
   private async deliverTo(bot: BotLike, target: number | SendTarget, pageId: string, params?: ParamsInput) {
     const ctx = await this.proactiveContext(bot, typeof target === 'number' ? { chatId: target } : target);
-    return this.open(ctx, pageId, params, { mode: 'send' });
+    return this.asUser(ctx, () => this.open(ctx, pageId, params, { mode: 'send' }));
+  }
+
+  /**
+   * Run a proactive render in step with the user's own updates: share the
+   * session of an update of this user that is being handled right now in this
+   * process (e.g. `sendTo` from that update's handler), or else take the
+   * user's lock, so neither overwrites the other's session changes.
+   */
+  private async asUser<T>(ctx: C, run: () => Promise<T>): Promise<T> {
+    const key = userKey(ctx);
+    const flow: Flow = { key, ctx, queues: new Set() };
+    // Sharing the session of an update of this user (see proactiveContext): it holds the lock.
+    if (this.scope(ctx).sharedWith) return flows.run(flow, run);
+    const release = key !== undefined && this.sequentialTimeoutMs !== undefined ? await this.locks.acquire(key, this.sequentialTimeoutMs) : null;
+    try {
+      return await flows.run(flow, run);
+    } finally {
+      await release?.();
+    }
   }
 
   private async reportingProactive<T>(ctx: C, source: 'sendTo' | 'edit', run: () => Promise<T>): Promise<T> {
@@ -486,12 +885,20 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const scope = this.scope(ctx);
     scope.editTarget = { chatId: target.chatId, messageId: target.messageId };
     scope.noFallback = true;
-    return this.reportingProactive(ctx, 'edit', () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'edit' }));
+    return this.reportingProactive(ctx, 'edit', () =>
+      this.asUser(ctx, () => this.open(ctx, typeof page === 'string' ? page : page.id, params, { mode: 'edit' })),
+    );
   }
 
   private async proactiveContext(bot: BotLike, target: SendTarget): Promise<C> {
     if (!bot.isInited()) await bot.init();
     const ctx = createProactiveContext(bot.api, bot.botInfo, target) as C;
+    const key = userKey(ctx);
+    // Called from inside this user's own update (a handler, a listener, a middleware, …),
+    // or while one of their updates runs elsewhere in this process: share its session.
+    const flow = flows.getStore();
+    const live = key === undefined ? undefined : flow?.key === key && flow.ctx ? flow.ctx : this.liveUpdates.get(key);
+    if (live) this.scope(ctx).sharedWith = live;
     await this.prepareProactive?.(ctx);
     return ctx;
   }
@@ -514,6 +921,97 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     return runBroadcast(targets, (target) => this.deliverTo(bot, target, page.id, params), settings);
   }
 
+  /**
+   * A broadcast that survives restarts: the targets are saved as scheduled
+   * tasks of `batchSize` recipients, spaced to `perSecond`, and sent by
+   * `startScheduler` (in any process). Each finished batch emits
+   * `broadcastBatch` with its result (blocked chats, failures). Returns the
+   * broadcast id and the number of batches.
+   *
+   *   await app.broadcastLater(subscriberIds, newsPage, { params: { id: '42' }, botId: bot.botInfo.id });
+   */
+  async broadcastLater<P>(
+    targets: Iterable<number | SendTarget>,
+    page: Page<P, any, any>,
+    ...[options]: {} extends P ? [options?: BroadcastLaterOptions<P>] : [options: BroadcastLaterOptions<P>]
+  ): Promise<{ id: string; batches: number }> {
+    const { params, batchSize = 100, perSecond = 25, concurrency, delayMs, at, botId } = (options ?? {}) as BroadcastLaterOptions<Params>;
+    this.page(page);
+    const list = [...targets];
+    const id = `_easytg:broadcast:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const start = at instanceof Date ? at.getTime() : at ?? Date.now() + (delayMs ?? 0);
+    const batches = Math.ceil(list.length / batchSize);
+    for (let batch = 0; batch < batches; batch++) {
+      const payload: BroadcastBatchPayload = {
+        broadcast: id,
+        batch,
+        batches,
+        targets: list.slice(batch * batchSize, (batch + 1) * batchSize),
+        page: page.id,
+        params: normalizeParams(params),
+        perSecond,
+        concurrency,
+      };
+      // Spaced so the batches together keep to `perSecond`.
+      await this.scheduler.schedule(BROADCAST_TASK, payload, { at: start + Math.round((batch * batchSize * 1000) / perSecond), id: `${id}:${batch}`, botId });
+    }
+    return { id, batches };
+  }
+
+  /**
+   * A page as an inline-mode result (`@yourbot query` in any chat), with its
+   * buttons: pressing them later updates the sent message in place. Text
+   * pages become articles, photo pages photos. Middlewares run as usual.
+   *
+   *   bot.on('inline_query', async (ctx) => {
+   *     const results = await Promise.all(found.map((p) => app.inlineResult(ctx, product, { params: { id: p.id }, title: p.name })));
+   *     await ctx.answerInlineQuery(results, { cache_time: 0 });
+   *   });
+   */
+  async inlineResult<P>(ctx: C, page: Page<P, any, any>, options: InlineResultOptions<P>): Promise<InlineQueryResult> {
+    const scope = this.scope(ctx);
+    try {
+      let result = await this.renderPage(ctx, this.page(page), normalizeParams(options.params as ParamsInput));
+      for (let depth = 0; result instanceof Redirect; depth++) {
+        if (depth >= MAX_REDIRECTS) throw new EasyTGError(`Too many redirects (last: "${result.target}")`);
+        result = await this.renderPage(ctx, this.page(result.target), result.params);
+      }
+      if (!result || result instanceof DialogueStart) throw new EasyTGError(`Page "${page.id}" has no content to show as an inline result`);
+      const prepared = prepareContent(result, this.parseMode, this.protectContent);
+      if (!prepared) throw new EasyTGError(`Page "${page.id}" has no content to show as an inline result`);
+      if (prepared.chunks.length > 1) this.logger.warn(`Inline result "${page.id}": text too long, only the first part is shown`);
+      await this.flushCallbacks(scope); // stored buttons must exist before the result is sent
+      await this.flush(ctx);
+
+      const id = options.id ?? inlineResultId(page.id, options.params as ParamsInput);
+      const text = prepared.chunks[0]!;
+      const reply_markup = prepared.reply_markup.inline_keyboard.length ? prepared.reply_markup : undefined;
+      const { title, description, thumbnailUrl } = options;
+      const media = prepared.media;
+      if (media) {
+        if (media.type !== 'photo' || typeof media.source !== 'string') {
+          throw new EasyTGError(`Inline result "${page.id}": only text and photo (file id or URL) pages can be inline results`);
+        }
+        const caption = { caption: text || undefined, parse_mode: text ? prepared.parse_mode : undefined, reply_markup, title, description };
+        return /^https?:\/\//i.test(media.source)
+          ? { type: 'photo', id, photo_url: media.source, thumbnail_url: thumbnailUrl ?? media.source, ...caption }
+          : { type: 'photo', id, photo_file_id: media.source, ...caption };
+      }
+      if (!text) throw new EasyTGError(`Inline result "${page.id}": a text page needs text`);
+      return {
+        type: 'article',
+        id,
+        title,
+        description,
+        thumbnail_url: thumbnailUrl,
+        input_message_content: { message_text: text, parse_mode: prepared.parse_mode, link_preview_options: prepared.link_preview_options },
+        reply_markup,
+      };
+    } finally {
+      scope.view = undefined;
+    }
+  }
+
   /** Start a dialogue for the user of `ctx` (middlewares run first). */
   startDialogue<P>(ctx: C, dialogue: Dialogue<any, P, any>, ...args: ParamArgs<P>): Promise<void>;
   async startDialogue(ctx: C, dialogue: Dialogue<any, any, any>, params?: ParamsInput) {
@@ -523,7 +1021,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   /** Cancel the active dialogue (runs `onCancel`, result ignored). Returns false if none. */
   async cancelDialogue(ctx: C) {
-    const cancelled = await this.dialogues.cancel(ctx, { render: false });
+    const cancelled = await this.dialogues.cancel(ctx, { render: false, reason: 'app' });
     await this.flush(ctx);
     return cancelled;
   }
@@ -550,40 +1048,204 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     return set.size;
   }
 
-  /** Ignore all updates from a user for `ms` (works even with `antiSpam: false`). */
-  limitUser(userId: number, ms: number, botId?: number) {
-    this.spamGuard.block(`${botId ?? '*'}:${userId}`, ms);
+  // ---- scheduled tasks -----------------------------------------------------
+
+  /**
+   * Run a registered task later. Returns the task id (to `cancelTask` it).
+   * Tasks are saved in storage and run by `startScheduler` (in any process).
+   *
+   *   await app.schedule(remind, { userId, text }, { delayMs: 60 * 60_000 });
+   *   await app.schedule(digest, undefined, { at: nextMonday, everyMs: 7 * 24 * 3600_000, id: 'weekly-digest' });
+   */
+  schedule<P>(task: Task<P, any>, ...[payload, options]: ScheduleArgs<P>): Promise<string> {
+    return this.scheduler.schedule(task.id, payload, options);
   }
 
-  /** Lift a limit set by anti-spam or `limitUser`. */
-  releaseUser(userId: number, botId?: number) {
-    this.spamGuard.release((key) => (botId === undefined ? key.endsWith(`:${userId}`) : key === `${botId}:${userId}` || key === `*:${userId}`));
+  /** Cancel a scheduled task. Returns false if it doesn't exist (anymore). */
+  cancelTask(id: string): Promise<boolean> {
+    return this.scheduler.cancel(id);
   }
 
-  isLimited(userId: number, botId?: number) {
-    if (botId !== undefined) return this.spamGuard.isBlocked(`${botId}:${userId}`) || this.spamGuard.isBlocked(`*:${userId}`);
-    return this.spamGuard.isAnyBlocked((key) => key.endsWith(`:${userId}`));
+  /**
+   * Delete messages later, e.g. a captcha or a "wrong answer" note. `target`
+   * is the ctx of the chat, or `{ chatId, botId? }`.
+   *
+   *   const note = await ctx.reply('Wrong code');
+   *   await app.deleteLater(ctx, note.message_id, { delayMs: 10_000 });
+   */
+  deleteLater(target: Context | { chatId: number; botId?: number }, messageIds: number | number[], options: DeleteLaterOptions): Promise<string> {
+    const ctx = 'update' in target ? target : undefined; // (a Context has a `chatId` getter too)
+    const chatId = ctx ? ctx.chat?.id : (target as { chatId: number }).chatId;
+    if (chatId === undefined) throw new EasyTGError('deleteLater: no chat');
+    const botId = ctx ? ctx.me.id : (target as { botId?: number }).botId;
+    const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
+    return this.scheduler.schedule(DELETE_TASK, { chatId, messageIds: ids }, { ...options, botId });
+  }
+
+  /**
+   * Send a page later, like `sendTo` (the page is rendered when it is sent).
+   * With several bots, pass `botId` (`ctx.me.id`).
+   *
+   *   await app.sendLater(userId, reminderPage, { params: { lesson: '2' }, delayMs: 24 * 3600_000 });
+   */
+  sendLater<P>(target: number | SendTarget, page: Page<P, any, any>, options: SendLaterOptions<P>): Promise<string>;
+  sendLater(target: number | SendTarget, page: string, options: SendLaterOptions<Params>): Promise<string>;
+  sendLater(target: number | SendTarget, page: Page<any, any, any> | string, options: SendLaterOptions<Params>) {
+    const pageId = this.page(page).id;
+    const { params, ...when } = options;
+    return this.scheduler.schedule(SEND_TASK, { target, page: pageId, params: normalizeParams(params as ParamsInput) }, when);
+  }
+
+  /**
+   * Run scheduled tasks as they become due, with these bots (a task runs with
+   * the bot it was scheduled for, else the first one). Returns `stop`, which
+   * waits for running tasks. Safe to run in several processes at once.
+   */
+  startScheduler(...bots: TaskBot[]): () => Promise<void> {
+    return this.scheduler.start(bots);
+  }
+
+  /** Run the tasks that are due now, once (e.g. from a cron job on serverless). Returns how many ran. */
+  runDueTasks(...bots: TaskBot[]): Promise<number> {
+    return this.scheduler.runDue(bots);
+  }
+
+  private defineBuiltinTasks() {
+    this.scheduler.define(DELETE_TASK, async ({ payload, bot }) => {
+      const { chatId, messageIds } = payload as { chatId: number; messageIds: number[] };
+      try {
+        await bot.api.deleteMessages(chatId, messageIds);
+      } catch (error) {
+        if (isTransient(error)) throw error; // retried by the scheduler
+        // Already deleted, too old, or the bot left the chat: nothing left to do.
+        if (!isMessageNotFound(error) && !isChatUnreachable(error)) this.logger.warn('deleteLater: could not delete messages', error);
+      }
+    });
+    this.scheduler.define(
+      BROADCAST_TASK,
+      async ({ payload, bot, task }) => {
+        const job = payload as BroadcastBatchPayload;
+        // Claimed again: the first run outlived its lease (or its process died). Sending
+        // the batch again would reach its recipients twice.
+        if (task.attempts > 1) {
+          this.logger.warn(`broadcastLater: batch ${job.batch + 1}/${job.batches} of ${job.broadcast} was started before; not sending it again`);
+          return;
+        }
+        if (!this.pages.has(job.page)) throw new EasyTGError(`broadcastLater: page "${job.page}" is not registered`);
+        const result = await runBroadcast(job.targets, (target) => this.deliverTo(bot, target, job.page, job.params), job);
+        await this.emit('broadcastBatch', { broadcast: job.broadcast, batch: job.batch, batches: job.batches, result });
+      },
+      // A retry would send the whole batch again.
+      { maxAttempts: 1 },
+    );
+    this.scheduler.define(REFRESH_TASK, async ({ payload, bot }) => {
+      const { chatId, messageId, userId, threadId, allowedUsers, page, params } = payload as RefreshPayload;
+      if (!this.pages.has(page)) return;
+      // Showing another page in the message cancels this task, so it still shows this one.
+      const ctx = await this.proactiveContext(bot, { chatId, userId, threadId, allowedUsers });
+      const scope = this.scope(ctx);
+      scope.editTarget = { chatId, messageId };
+      scope.noFallback = true;
+      scope.refreshing = true;
+      // The render schedules the next refresh if it still asks for one; a deleted message stops it.
+      await this.asUser(ctx, () => this.open(ctx, page, params, { mode: 'edit' }));
+    });
+    this.scheduler.define(SEND_TASK, async ({ payload, bot }) => {
+      const { target, page, params } = payload as { target: number | SendTarget; page: string; params: Record<string, string> };
+      try {
+        await this.sendTo(bot, target, page, params);
+      } catch (error) {
+        if (isChatUnreachable(error)) return;
+        // Part of the page went out already: a retry would send it twice.
+        if (sentBeforeError(error)) return void this.logger.error('sendLater: the page was only partly sent', error);
+        throw error; // retried
+      }
+    });
+  }
+
+  // ---- queues --------------------------------------------------------------
+
+  /**
+   * Run `job` within the concurrency limit of a queue (see the `queues`
+   * option), waiting for a free slot first. Pass `ctx` for `perUser` limits
+   * and the `queueWait` event. Throws `QueueFullError` / `QueueTimeoutError`.
+   *
+   *   const answer = await app.queue('ai', () => askModel(prompt), { ctx });
+   */
+  async queue<T>(name: string, job: () => Awaitable<T>, options: { ctx?: C } = {}): Promise<T> {
+    const flow = flows.getStore();
+    // Called from inside a job (or an update) that holds a slot of this queue: don't wait for ourselves.
+    if (flow?.queues.has(name)) return job();
+    const release = await this.takeSlot(name, options.ctx);
+    try {
+      return await flows.run({ key: flow?.key, ctx: flow?.ctx, queues: new Set([...(flow?.queues ?? []), name]) }, job);
+    } finally {
+      await release();
+    }
+  }
+
+  /**
+   * Wait for a slot in a queue; it is held until this update is handled
+   * (after your handlers ran). Only inside update handling, e.g.:
+   *
+   *   bot.command('ask', async (ctx) => {
+   *     await app.enterQueue(ctx, 'ai');
+   *     await ctx.reply(await askModel(ctx.match));
+   *   });
+   */
+  async enterQueue(ctx: C, name: string): Promise<void> {
+    const scope = this.scope(ctx);
+    if (!scope.inUpdate) throw new EasyTGError('enterQueue works while handling an update; use app.queue(name, job) elsewhere');
+    const flow = flows.getStore();
+    if (flow?.queues.has(name)) return; // this update holds a slot already
+    (scope.held ??= []).push(await this.takeSlot(name, ctx));
+    flow?.queues.add(name);
+  }
+
+  private takeSlot(name: string, ctx?: C): Promise<Release> {
+    const queue = this.queues.get(name);
+    if (!queue) throw new EasyTGError(`Queue "${name}" is not configured: add it to the \`queues\` option`);
+    return queue.acquire(ctx?.from?.id, (position) => this.emit('queueWait', { ctx, queue: name, position }));
+  }
+
+  private async releaseHeld(ctx: C) {
+    const scope = this.scopes.get(ctx);
+    if (!scope?.held) return;
+    for (const release of scope.held.splice(0)) await release();
+  }
+
+  /**
+   * Ignore all updates from a user for `ms`, on one bot or (without `botId`)
+   * on every bot. Works even with `antiSpam: false`.
+   */
+  limitUser(userId: number, ms: number, botId?: number): Promise<void> {
+    return this.spamGuard.block(userId, botId === undefined ? '*' : String(botId), ms);
+  }
+
+  /** Lift limits set by anti-spam or `limitUser`: on one bot (and the every-bot limit), or all. */
+  releaseUser(userId: number, botId?: number): Promise<void> {
+    return this.spamGuard.release(userId, botId);
+  }
+
+  /** Whether a user is limited on a bot, or (without `botId`) on any bot. */
+  isLimited(userId: number, botId?: number): Promise<boolean> {
+    return this.spamGuard.isBlocked(userId, botId);
   }
 
   /** False when the update must be dropped: the user is limited. */
   private async passesSpamCheck(ctx: C): Promise<boolean> {
     const userId = ctx.from?.id;
     if (userId === undefined) return true;
+    // Payments always go through, even from limited users: the money is already moving.
+    if (ctx.preCheckoutQuery || ctx.message?.successful_payment) return true;
     const config = this.antiSpam;
-    // Only user interactions count, and only they are ever dropped: payments,
-    // inline queries, member updates, reactions etc. always go through.
-    const counts = config?.filter ? config.filter(ctx) : isInteraction(ctx);
-    if (!counts || config?.exempt?.(ctx)) return true;
+    // Only user interactions count towards the limit (and `exempt` users never
+    // count), but a limited user's updates are all dropped.
+    const counts = !!config && (config.filter ? config.filter(ctx) : isInteraction(ctx)) && !config.exempt?.(ctx);
 
     // Counted per bot, so one instance can serve several bots; manual limits may cover all of them.
     const botId = ctx.me.id;
-    const verdict = this.spamGuard.isBlocked(`*:${userId}`)
-      ? { status: 'blocked' as const }
-      : config
-        ? this.spamGuard.check(`${botId}:${userId}`)
-        : this.spamGuard.isBlocked(`${botId}:${userId}`)
-          ? { status: 'blocked' as const }
-          : { status: 'ok' as const };
+    const verdict = await this.spamGuard.check(botId, userId, counts);
     if (verdict.status === 'ok') return true;
 
     let silenced = false;
@@ -600,7 +1262,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         silence: () => void (silenced = true),
       });
       // A listener may have released the user.
-      if (!this.isLimited(userId, botId)) return true;
+      if (!(await this.isLimited(userId, botId))) return true;
     }
 
     const warn = verdict.status === 'limited' && config?.warn && !silenced;
@@ -621,7 +1283,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** Send `text` with the main menu (the `menu` option) on the reply keyboard. */
   async showMenu(ctx: C, text: TextInput) {
     if (!this.menu) throw new EasyTGError('No menu configured: pass `menu: replyMenu([...])` to new EasyTG()');
-    const result = await this.deliverContent(ctx, { text }, 'send', this.menu.markup(this.localeOf(ctx), this.textsFor(ctx).closeMenu));
+    const result = await this.deliverContent(ctx, { text }, 'send', this.menu.markup(this.localeOf(ctx), this.textsFor(ctx).closeMenu, this.t(ctx)));
     await this.flush(ctx);
     return result?.result;
   }
@@ -636,8 +1298,22 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** The session of the user in `ctx`. Loaded once per update. */
   session(ctx: C): Promise<Session> {
     const scope = this.scope(ctx);
+    const live = scope.sharedWith;
+    if (live && !scope.session) {
+      // The same session object as the update being handled, so both see (and save) each other's changes.
+      scope.session = this.session(live as C).then((session) => {
+        scope.locale = this.scopes.get(live)?.locale ?? null;
+        return session;
+      });
+    }
     scope.session ??= this.loadSession(ctx).then((session) => {
-      scope.locale = (this.localeFn ? this.localeFn(ctx, session) : ctx.from?.language_code) ?? null;
+      // Remember the language for messages sent without an update, if the app is translated at all.
+      const language = ctx.from?.language_code;
+      const translated = !this.translator.isEmpty || Object.keys(this.locales).length > 0;
+      if (translated && language && !isProactive(ctx) && session.get(LAST_LANGUAGE_KEY) !== language) {
+        session.set(LAST_LANGUAGE_KEY, language);
+      }
+      scope.locale = this.resolveLocale(ctx, session) ?? null;
       return session;
     });
     return scope.session;
@@ -649,11 +1325,51 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     return (resolved === undefined ? ctx.from?.language_code : resolved) ?? undefined;
   }
 
+  /**
+   * Your messages (`i18n.messages`) in the user's language, or in `locale`.
+   * In renders, dialogues and middlewares use the `t` argument instead. If your
+   * `i18n.locale` function reads the session, `await app.session(ctx)` first.
+   *
+   *   const t = app.t(ctx);
+   *   await ctx.reply(t('welcome', { name: ctx.from.first_name }));
+   */
+  t(ctx: C | string | undefined): Translate {
+    if (typeof ctx !== 'object') return this.translator.for(ctx);
+    const scope = this.scope(ctx);
+    return (scope.t ??= this.translator.live(() => this.localeOf(ctx)));
+  }
+
+  /**
+   * Set the user's language (e.g. from a language picker), or `undefined` to
+   * follow their Telegram app again. It is kept in the session, applies to the
+   * rest of this update at once (`t`, built-in texts), and to messages sent to
+   * them later (`sendTo`, `sendLater`, `broadcast`). It wins over `i18n.locale`.
+   */
+  async setLocale(ctx: C, locale: string | undefined): Promise<void> {
+    const session = await this.session(ctx);
+    if (locale) session.set(LOCALE_KEY, locale);
+    else session.delete(LOCALE_KEY);
+    this.scope(ctx).locale = this.resolveLocale(ctx, session) ?? null;
+  }
+
+  /**
+   * An explicit choice (`setLocale`), else `i18n.locale`, else the Telegram
+   * app's language, else (for `sendTo` & co, which have no language) the one
+   * the user had when they last wrote.
+   */
+  private resolveLocale(ctx: C, session: Session): string | undefined {
+    const chosen = session.get<string>(LOCALE_KEY);
+    if (chosen) return chosen;
+    if (this.localeFn) return this.localeFn(ctx, session);
+    return ctx.from?.language_code ?? session.get<string>(LAST_LANGUAGE_KEY);
+  }
+
   /** Built-in texts in the user's language. */
   textsFor(ctx: C): EasyTGTexts {
-    const locale = this.localeOf(ctx)?.toLowerCase();
-    if (!locale) return this.texts;
-    const key = this.locales[locale] ? locale : this.locales[locale.split('-')[0]!] ? locale.split('-')[0]! : undefined;
+    const requested = this.localeOf(ctx);
+    if (!requested) return this.texts;
+    const locale = normalizeLocale(requested);
+    const key = [locale, locale.split('-')[0]!].find((l) => Object.hasOwn(this.locales, l));
     if (!key) return this.texts;
     let texts = this.localeTexts.get(key);
     if (!texts) {
@@ -667,7 +1383,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    * Deep link to a page or dialogue that calls `.allowDeepLink()`, for use
    * outside renders (inside, use `nav.deepLink`). Stored params are saved immediately.
    */
-  deepLink<P>(bot: BotLike | string, target: Page<P, any, any> | Dialogue<any, P, any>, ...args: ParamArgs<P>): Promise<string>;
+  deepLink<P>(bot: BotLike | string, target: Page<P, any, any> | Dialogue<any, P, any>, ...args: ParamsArgs<P>): Promise<string>;
   async deepLink(bot: BotLike | string, target: Page<any, any, any> | Dialogue<any, any, any>, params?: ParamsInput, options?: ButtonOptions) {
     let username: string;
     if (typeof bot === 'string') username = bot;
@@ -690,16 +1406,21 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const scope = this.scopes.get(ctx);
     if (!scope) return;
     await this.flushCallbacks(scope);
+    if (scope.chatSession) {
+      const key = chatSessionKey(ctx, this.botScope(ctx));
+      if (key) await this.saveSession(await scope.chatSession, key);
+    }
     if (!scope.session) return;
-    const session = await scope.session;
     const key = sessionKey(ctx, this.botScope(ctx));
-    if (!key) return;
+    if (key) await this.saveSession(await scope.session, key);
+  }
 
+  private async saveSession(session: Session, key: string) {
     const now = Date.now();
-    const ttl = this.sessionTtlSeconds;
+    const ttl = this.sessionTtlMs;
     // Keep active users' sessions alive without writing on every update.
     const refresh =
-      !!ttl && this.refreshSessions && session.savedAt !== undefined && now - session.savedAt > (ttl * 1000) / 2;
+      !!ttl && this.refreshSessions && session.savedAt !== undefined && now - session.savedAt > ttl / 2;
     if (!session.dirty && !refresh) return;
 
     session.dirty = false;
@@ -722,21 +1443,15 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const inline = token ? null : decodeInline(data);
     if (!token && !inline) return false;
 
-    // Double taps: one press per user at a time, and an identical press right
-    // after the previous one finished is dropped.
-    const userKey = `${ctx.me.id}:${ctx.chat?.id}:${ctx.from?.id}`;
-    const signature = `${ctx.callbackQuery?.message?.message_id}|${data}`;
-    if (this.busy.has(userKey)) {
-      await this.answerCallback(ctx, { text: this.textsFor(ctx).busy });
-      return true;
-    }
-    const last = this.lastPress.get(userKey);
-    if (this.doubleTapMs > 0 && last?.signature === signature && Date.now() - last.at < this.doubleTapMs) {
+    // Double taps: an identical press right after the previous one finished is
+    // dropped. (One press at a time is enforced by the update lock.)
+    const pressKey = `press:${ctx.me.id}:${ctx.chat?.id}:${ctx.from?.id}`;
+    const signature = `${ctx.callbackQuery?.message?.message_id ?? ctx.callbackQuery?.inline_message_id}|${data}`;
+    if (this.doubleTapMs > 0 && (await this.coordination.get(pressKey)) === signature) {
       this.logger.debug('Ignored double tap');
       await this.answerCallback(ctx);
       return true;
     }
-    this.busy.add(userKey);
 
     try {
       await this.session(ctx); // resolves the user's language
@@ -780,6 +1495,9 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         await this.goBack(ctx);
       } else if (id === EXIT_ID) {
         await this.closeMessage(ctx);
+        // The closed message can't take text anymore.
+        const session = await this.session(ctx);
+        if (session.get<TextInputState>(INPUT_KEY)?.messageId === ctx.callbackQuery?.message?.message_id) session.delete(INPUT_KEY);
       } else if (page) {
         await this.open(ctx, page.id, params, { mode: sendNew ? 'send' : 'edit' });
       } else if (dialogue) {
@@ -797,8 +1515,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       }
     } finally {
       await this.answerCallback(ctx); // no-op if already answered
-      this.busy.delete(userKey);
-      this.rememberPress(userKey, signature);
+      if (this.doubleTapMs > 0) await this.coordination.set(pressKey, signature, this.doubleTapMs);
     }
     return true;
   }
@@ -811,14 +1528,6 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     delete params._s;
     const scope = deepLink ? { botId: 0 } : { botId: ctx.me.id, chatId: ctx.chat?.id };
     return verify(this.secret!, scope, deepLink ? undefined : ctx.from?.id, id, params, signature);
-  }
-
-  private rememberPress(userKey: string, signature: string) {
-    const now = Date.now();
-    this.lastPress.set(userKey, { signature, at: now });
-    if (this.lastPress.size > 10_000) {
-      for (const [key, press] of this.lastPress) if (now - press.at > this.doubleTapMs) this.lastPress.delete(key);
-    }
   }
 
   /** `nav.back()`: show the previous page of this menu message, or the home page. */
@@ -843,11 +1552,14 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     try {
       await this.session(ctx); // resolves the user's language
       const texts = this.textsFor(ctx);
-      const target = this.menu.match(text, this.localeOf(ctx), texts.closeMenu);
+      const target = this.menu.match(text, this.localeOf(ctx), texts.closeMenu, this.t(ctx));
       if (!target) return false;
       // Like a /command, a menu button leaves the current dialogue.
       if (this.cancelDialogueOnCommand) await this.dialogues.cancel(ctx, { render: false });
-      if (target === 'close') await this.deliverContent(ctx, { text: texts.menuClosed, parseMode: 'plain' }, 'send', { remove_keyboard: true });
+      if (target === 'close') {
+        (await this.session(ctx)).delete(INPUT_KEY);
+        await this.deliverContent(ctx, { text: texts.menuClosed, parseMode: 'plain' }, 'send', { remove_keyboard: true });
+      }
       else if (target.kind === 'page') await this.open(ctx, this.page(target), {}, { mode: 'send' });
       else await this.guardedDialogueStart(ctx, this.dialogue(target), {}, { mode: 'send', closeMenu: false });
       return true;
@@ -904,6 +1616,82 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       } catch {}
       return true;
     }
+  }
+
+  private async handlePreCheckout(ctx: C, query: PreCheckoutQuery) {
+    let answer: true | string;
+    try {
+      answer = this.payments!.preCheckout ? await this.payments!.preCheckout({ ctx, query, payload: query.invoice_payload }) : true;
+    } catch (error) {
+      await this.reportError(error, ctx);
+      answer = this.textsFor(ctx).error;
+    }
+    await ctx.answerPreCheckoutQuery(answer === true, answer === true ? undefined : { error_message: answer });
+  }
+
+  /** Emit `payment` and show `onSuccess`'s result. False if there is no `onSuccess`. */
+  private async handlePayment(ctx: C, payment: SuccessfulPayment): Promise<boolean> {
+    const payload = payment.invoice_payload;
+    await this.emit('payment', { ctx, payment, payload });
+    const onSuccess = this.payments!.onSuccess;
+    if (!onSuccess) return false;
+    try {
+      const session = await this.session(ctx);
+      const args: PaymentArgs<C> = { ctx, payment, payload, session, locale: this.localeOf(ctx), t: this.t(ctx), nav: this.nav(ctx), app: this };
+      await this.showResult(ctx, await onSuccess(args), 'send');
+    } catch (error) {
+      await this.reportError(error, ctx);
+      try {
+        await ctx.reply(this.textsFor(ctx).error);
+      } catch {}
+    }
+    return true;
+  }
+
+  /** Text for the last page shown, if it has `onText`. False if there is none. */
+  private async handleTextInput(ctx: C): Promise<boolean> {
+    const message = ctx.message;
+    if (message?.text === undefined) return false;
+    const session = await this.session(ctx);
+    if (isCommand(message)) {
+      session.delete(INPUT_KEY); // a command moves on: later text isn't for the page anymore
+      return false;
+    }
+    const input = session.get<TextInputState>(INPUT_KEY);
+    if (!input || typeof input !== 'object') return false;
+    const page = this.pages.get(input.id);
+    if (!page?.textFn) {
+      session.delete(INPUT_KEY);
+      return false;
+    }
+    // In groups, only replies to the page's message are meant for it.
+    if (message.chat.type !== 'private' && message.reply_to_message?.message_id !== input.messageId) return false;
+
+    const { mode = 'send', deleteInput = false } = page.textOptions;
+    try {
+      if (mode === 'edit') this.scope(ctx).editTarget = { chatId: message.chat.id, messageId: input.messageId };
+      await this.show(ctx, page.id, mode, () =>
+        this.guard(ctx, page, input.params, async ({ target: _target, ...args }) => {
+          this.scope(ctx).view = { id: page.id, params: input.params };
+          return page.textFn!({ ...args, params: await this.parseParams(page, input.params), page, text: message.text! });
+        }),
+      );
+      if (deleteInput) {
+        await ctx.deleteMessage().catch((error: unknown) => this.logger.debug('Failed to delete the input message', error));
+      }
+    } catch (error) {
+      if (error instanceof InvalidParamsError) {
+        session.delete(INPUT_KEY);
+        return false;
+      }
+      await this.reportError(error, ctx);
+      try {
+        await ctx.reply(this.textsFor(ctx).error);
+      } catch {}
+    } finally {
+      this.scope(ctx).editTarget = undefined;
+    }
+    return true;
   }
 
   // ---- internals used by Nav / DialogueRunner -------------------------------
@@ -979,7 +1767,12 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    */
   private boundUser(ctx: C): number | undefined {
     const inlineMode = !!ctx.inlineQuery || !!ctx.callbackQuery?.inline_message_id;
-    return this.ownerOnly && !inlineMode && !allowedUsersOf(ctx) ? ctx.from?.id : undefined;
+    return this.ownerOnly && !inlineMode && !this.allowedUsers(ctx) ? ctx.from?.id : undefined;
+  }
+
+  /** Users allowed to press this render's buttons: from `sendTo`, or inherited from the pressed menu. */
+  private allowedUsers(ctx: Context): number[] | undefined {
+    return allowedUsersOf(ctx) ?? this.scopes.get(ctx)?.allowedUsers;
   }
 
   /** Storage scope of bot-specific data. */
@@ -990,6 +1783,15 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** @internal Show a render result: content, redirect or dialogue start. */
   async present(ctx: C, result: RenderResult, mode: DeliveryMode, depth = 0): Promise<DeliveryResult | undefined> {
     if (!result) return undefined;
+
+    if (result instanceof Redirect || result instanceof DialogueStart) {
+      // Also counted per update: loops through a dialogue that finishes at once and redirects back.
+      const scope = this.scope(ctx);
+      scope.redirects = (scope.redirects ?? 0) + 1;
+      if (scope.redirects > MAX_REDIRECTS * 4) {
+        throw new EasyTGError(`Too many redirects in one update (last: "${result instanceof Redirect ? result.target : result.dialogueId}")`);
+      }
+    }
 
     if (result instanceof Redirect) {
       if (depth >= MAX_REDIRECTS) throw new EasyTGError(`Too many redirects (last: "${result.target}")`);
@@ -1025,17 +1827,85 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     }
     const scope = this.scope(ctx);
     await this.flushCallbacks(scope);
-    const delivery = await deliver(this, ctx, prepared, mode, scope.editTarget, { fallbackToSend: !scope.noFallback });
+    const delivery = await this.deliverCached(ctx, prepared, mode, scope);
+    if (scope.view) scope.refreshEveryMs = content.refreshEveryMs;
     if (delivery?.sent.length && ctx.chat) {
       await this.emit('sent', { ctx, chatId: ctx.chat.id, messageIds: delivery.sent, page: scope.view?.id });
+    }
+    const chatId = ctx.chat?.id ?? scope.editTarget?.chatId;
+    if (delivery && chatId !== undefined) {
+      // The message is out already: a failure here must not fail the page.
+      await this.autoDelete(ctx, chatId, delivery, content.deleteAfterMs).catch((error) => {
+        this.logger.error('deleteAfterMs: could not schedule or cancel the deletion', error);
+      });
     }
     return delivery;
   }
 
+  /** `deliver`, sending remembered file ids instead of URLs (`media.cacheFileIds`). */
+  private async deliverCached(ctx: C, prepared: PreparedContent, mode: DeliveryMode, scope: UpdateScope) {
+    const options = { fallbackToSend: !scope.noFallback };
+    const media = prepared.media;
+    const url = this.cacheFileIds && media && typeof media.source === 'string' && /^https?:\/\//i.test(media.source) ? media.source : undefined;
+    if (!url) return deliver(this, ctx, prepared, mode, scope.editTarget, options);
+
+    const key = scoped('fileid', this.botScope(ctx), media!.type, createHash('sha256').update(url).digest('base64url').slice(0, 32));
+    const cached = await this.metaStorage.get(key);
+    if (typeof cached === 'string') {
+      try {
+        return await deliver(this, ctx, { ...prepared, media: { ...media!, source: cached } }, mode, scope.editTarget, options);
+      } catch (error) {
+        if (!/file identifier|wrong file|file_id/i.test(String(error))) throw error;
+        await this.metaStorage.delete(key); // no longer valid: send the URL again
+      }
+    }
+    const delivery = await deliver(this, ctx, prepared, mode, scope.editTarget, options);
+    const fileId = delivery && delivery.result !== true ? sentFileId(delivery.result, media!.type) : undefined;
+    if (fileId) await this.metaStorage.set(key, fileId, this.fileIdTtlMs);
+    return delivery;
+  }
+
+  /**
+   * `deleteAfterMs`: schedule the deletion of what was just delivered. The
+   * task is named after the message, so a later edit of the same message
+   * replaces it (new `deleteAfterMs`) or cancels it (a page without one).
+   */
+  private async autoDelete(ctx: C, chatId: number, delivery: Delivery, deleteAfterMs: number | undefined) {
+    // Edits may return `true` instead of the message: then it's the message that was edited.
+    const target = this.scopes.get(ctx)?.editTarget?.messageId ?? ctx.callbackQuery?.message?.message_id;
+    const edited = delivery.sent.length ? undefined : delivery.result === true ? target : delivery.result.message_id;
+    const last = delivery.sent.at(-1) ?? edited;
+    if (last === undefined) return;
+    const id = `_easytg:del:${ctx.me.id}:${chatId}:${last}`;
+    // Messages with a pending deletion, per user, so edits only cost a storage call when needed.
+    const session = ctx.from ? await this.session(ctx) : undefined;
+    const pending = session?.get<number[]>(AUTODELETE_KEY) ?? [];
+    if (deleteAfterMs !== undefined) {
+      // A page refreshing itself must not push its own deletion back: the first render scheduled it.
+      if (this.scopes.get(ctx)?.refreshing) return;
+      const ids = delivery.sent.length ? delivery.sent : [edited!];
+      await this.scheduler.schedule(DELETE_TASK, { chatId, messageIds: ids }, { delayMs: deleteAfterMs, botId: ctx.me.id, id });
+      if (session && !pending.includes(last)) session.set(AUTODELETE_KEY, [...pending, last].slice(-MAX_NAV_MESSAGES));
+    } else if (edited !== undefined && pending.includes(edited)) {
+      await this.scheduler.cancel(id);
+      session!.set(AUTODELETE_KEY, pending.filter((m) => m !== edited));
+    }
+  }
+
   /** @internal Replace reply-keyboard buttons with the main menu (or remove them), with a short message. */
   async restoreKeyboard(ctx: C, text: string) {
-    const markup = this.menu ? this.menu.markup(this.localeOf(ctx), this.textsFor(ctx).closeMenu) : { remove_keyboard: true as const };
+    const markup = this.menu ? this.menu.markup(this.localeOf(ctx), this.textsFor(ctx).closeMenu, this.t(ctx)) : { remove_keyboard: true as const };
     await this.deliverContent(ctx, { text, parseMode: 'plain' }, 'send', markup);
+  }
+
+  /**
+   * Answer the button press now, e.g. with "Working on it…" before something
+   * slow, so the button's spinner stops. easytg then doesn't answer again (a
+   * `toast` from the render is dropped). No-op outside button presses.
+   */
+  async answer(ctx: C, toast?: string | { text: string; alert?: boolean }): Promise<void> {
+    const options = typeof toast === 'string' ? { text: toast } : toast && { text: toast.text, show_alert: toast.alert };
+    await this.answerCallback(ctx, options);
   }
 
   /** @internal Answer the current callback query once; later calls are no-ops. */
@@ -1071,12 +1941,12 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const writes: Promise<void>[] = [];
     if (messages.length > 1) {
       const extra = messages.slice(0, -1).map((m) => m.message_id);
-      writes.push(this.metaStorage.set(groupKey(bot, chatId, last.message_id), extra, OWNER_TTL_SECONDS));
+      writes.push(this.metaStorage.set(groupKey(bot, chatId, last.message_id), extra, OWNER_TTL_MS));
     }
     if (last.chat.type !== 'private') {
       // Who may press this message's buttons: explicit allowedUsers, or its user.
-      const owners = allowedUsersOf(ctx) ?? (this.ownerOnly && ctx.from ? ctx.from.id : undefined);
-      if (owners !== undefined) writes.push(this.metaStorage.set(ownerKey(bot, chatId, last.message_id), owners, OWNER_TTL_SECONDS));
+      const owners = this.allowedUsers(ctx) ?? (this.ownerOnly && ctx.from ? ctx.from.id : undefined);
+      if (owners !== undefined) writes.push(this.metaStorage.set(ownerKey(bot, chatId, last.message_id), owners, OWNER_TTL_MS));
     }
     await Promise.all(writes);
   }
@@ -1114,6 +1984,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       params,
       session,
       locale: this.localeOf(ctx),
+      t: this.t(ctx),
       nav: new Nav(this, ctx, target.kind === 'page' ? { id: target.id, params: params as Record<string, string> } : undefined),
       app: this,
       target,
@@ -1127,18 +1998,19 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private renderPage(ctx: C, page: Page<any, C, any>, params: Record<string, string>): Promise<RenderResult> {
     return this.guard(ctx, page, params, async ({ target: _target, ...args }) => {
       this.scope(ctx).view = { id: page.id, params };
-      // Validation/conversion by `.params(parse)`; a throw rejects the request.
-      let parsed: unknown = params;
-      if (page.parseFn) {
-        try {
-          parsed = page.parseFn(params);
-        } catch (error) {
-          throw error instanceof InvalidParamsError ? error : new InvalidParamsError(`Invalid params for "${page.id}": ${error}`);
-        }
-      }
-      const renderArgs: RenderArgs<any, C> = { ...args, params: parsed, page };
+      const renderArgs: RenderArgs<any, C> = { ...args, params: await this.parseParams(page, params), page };
       return page.renderFn!(renderArgs);
     });
+  }
+
+  /** Validation/conversion by `.params(parse)`; a throw rejects the request. */
+  private async parseParams(page: Page<any, C, any>, params: Record<string, string>): Promise<unknown> {
+    if (!page.parseFn) return params;
+    try {
+      return await page.parseFn(params);
+    } catch (error) {
+      throw error instanceof InvalidParamsError ? error : new InvalidParamsError(`Invalid params for "${page.id}": ${error}`);
+    }
   }
 
   /** Start a dialogue unless a middleware stops it; a middleware's result is shown instead. */
@@ -1151,12 +2023,13 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   ): Promise<DeliveryResult | undefined> {
     if (depth >= MAX_REDIRECTS) throw new EasyTGError(`Too many redirects (last: dialogue "${dialogue.id}")`);
     let started = false;
-    const result = await this.guard(ctx, dialogue, params as Params, async () => {
+    const result = await this.guard(ctx, dialogue, params as Params, async ({ session }) => {
       await this.dialogues.start(ctx, dialogue, params);
+      session.delete(INPUT_KEY); // the dialogue takes the user's text now
       started = true;
       return undefined;
     });
-    if (!started) return this.present(ctx, result, options.mode, depth + 1);
+    if (!started) return this.showResult(ctx, result, options.mode, depth + 1);
     // The dialogue prompt replaces the menu that started it.
     const fromMenu = ctx.callbackQuery && (options.mode === 'edit' || options.mode === 'auto');
     if (options.closeMenu && fromMenu) await this.closeMessage(ctx);
@@ -1172,7 +2045,28 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       else this.logger.warn(message);
       return new Session();
     }
-    return new Session(await this.sessionStorage.get(key));
+    return this.migrated(new Session(await this.sessionStorage.get(key)));
+  }
+
+  private migrated(session: Session): Session {
+    if (this.sessionVersion !== undefined) session.migrate(this.sessionVersion, this.migrateSession);
+    return session;
+  }
+
+  /**
+   * State shared by everyone in the chat (a group's settings, a game board),
+   * next to each user's own `session`. Loaded once per update and saved with
+   * it. Updates of different users can run at the same time, so for counters
+   * that many users change at once, prefer an atomic store.
+   */
+  chatSession(ctx: C): Promise<Session> {
+    const scope = this.scope(ctx);
+    scope.chatSession ??= (async () => {
+      const key = chatSessionKey(ctx, this.botScope(ctx));
+      if (!key) throw new EasyTGError('chatSession needs a chat');
+      return this.migrated(new Session(await this.sessionStorage.get(key)));
+    })();
+    return scope.chatSession;
   }
 
   private async flushCallbacks(scope: UpdateScope) {
@@ -1193,9 +2087,17 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const userId = ctx.from?.id;
     if (!message || userId === undefined || message.chat.type === 'private') return true;
 
-    const owner = await this.metaStorage.get(ownerKey(this.botScope(ctx), message.chat.id, message.message_id));
-    if (typeof owner === 'number') return owner === userId;
-    if (Array.isArray(owner)) return owner.includes(userId);
+    const key = ownerKey(this.botScope(ctx), message.chat.id, message.message_id);
+    const owner = await this.metaStorage.get(key);
+    const allowed = typeof owner === 'number' ? owner === userId : Array.isArray(owner) ? owner.includes(userId) : undefined;
+    if (allowed !== undefined) {
+      if (!allowed) return false;
+      // A menu shared by several users stays shared in what this press renders.
+      if (Array.isArray(owner)) this.scope(ctx).allowedUsers = owner.filter((id): id is number => typeof id === 'number');
+      // Keep the ownership of a menu in use alive (it expires OWNER_TTL after the last press).
+      await this.metaStorage.set(key, owner, OWNER_TTL_MS);
+      return true;
+    }
     if (!this.ownerOnly) return true;
 
     // Untracked (older) menu: fall back to the user it replied to.
@@ -1221,6 +2123,38 @@ function isInteraction(ctx: Context): boolean {
   return message.chat.type === 'private' || isCommand(message);
 }
 
+/** A result id (≤ 64 bytes) that is the same for the same page and params. */
+function inlineResultId(pageId: string, params: ParamsInput | undefined): string {
+  const query = JSON.stringify(Object.entries(normalizeParams(params)).sort());
+  return createHash('sha256').update(`${pageId}|${query}`).digest('base64url').slice(0, 40);
+}
+
+/** The file id Telegram assigned to the media of a sent message. */
+function sentFileId(message: Message, type: string): string | undefined {
+  if (type === 'photo') return message.photo?.at(-1)?.file_id;
+  const file = (message as unknown as Record<string, { file_id?: string } | undefined>)[type];
+  return file?.file_id;
+}
+
+/**
+ * What the current async flow runs as: the user (`userKey`) whose update or
+ * proactive render it is, and the queue slots it holds. Anything called from
+ * inside (handlers, listeners, middlewares, jobs) sees it, which tells nested
+ * calls from concurrent ones.
+ */
+interface Flow {
+  key?: string;
+  ctx?: Context;
+  queues: Set<string>;
+}
+const flows = new AsyncLocalStorage<Flow>();
+
+/** One user in one chat of one bot: the unit updates are serialized by. */
+function userKey(ctx: Context): string | undefined {
+  const userId = ctx.from?.id;
+  return userId === undefined ? undefined : `${ctx.me.id}:${ctx.chat?.id ?? 'global'}:${userId}`;
+}
+
 /** `bot` is '' when keys aren't scoped by bot (`scopeKeysByBot: false`). */
 function scoped(prefix: string, bot: string, ...parts: Array<string | number>) {
   return [prefix, ...(bot ? [bot] : []), ...parts].join(':');
@@ -1230,6 +2164,11 @@ function sessionKey(ctx: Context, bot: string): string | null {
   const userId = ctx.from?.id;
   if (userId === undefined) return null;
   return scoped('session', bot, ctx.chat?.id ?? 'global', userId);
+}
+
+function chatSessionKey(ctx: Context, bot: string): string | null {
+  const chatId = ctx.chat?.id;
+  return chatId === undefined ? null : scoped('chatsession', bot, chatId);
 }
 
 function ownerKey(bot: string, chatId: number, messageId: number) {

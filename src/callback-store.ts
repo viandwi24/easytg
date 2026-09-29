@@ -35,7 +35,7 @@ export type ResolvedCallback =
 export class CallbackStore {
   constructor(
     private storage: StorageAdapter,
-    private ttlSeconds: number,
+    private ttlMs: number,
     private keyPrefix = 'cb:',
   ) {}
 
@@ -51,7 +51,7 @@ export class CallbackStore {
 
   /** `scope` namespaces keys, e.g. per bot. */
   write(token: string, entry: StoredCallback, scope = '') {
-    return this.storage.set(this.key(token, scope), entry, this.ttlSeconds);
+    return this.storage.set(this.key(token, scope), entry, this.ttlMs);
   }
 
   async resolve(token: string, userId: number | undefined, scope = ''): Promise<ResolvedCallback> {

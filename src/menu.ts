@@ -1,9 +1,10 @@
 import type { Context } from 'grammy';
 import type { KeyboardButton, ReplyKeyboardMarkup } from 'grammy/types';
 import type { Dialogue, Page } from './define';
+import type { Translate } from './i18n';
 
-/** A label, or a label per language. */
-export type MenuLabel = string | ((locale: string | undefined) => string);
+/** A label, or a function of the user's language: `(locale, t) => t('menu.orders')`. */
+export type MenuLabel = string | ((locale: string | undefined, t: Translate) => string);
 
 export type MenuButton<C extends Context = Context> =
   | {
@@ -50,10 +51,10 @@ export class ReplyMenu<C extends Context = Context> {
   }
 
   /** @internal */
-  markup(locale: string | undefined, closeLabel: string): ReplyKeyboardMarkup {
+  markup(locale: string | undefined, closeLabel: string, t: Translate): ReplyKeyboardMarkup {
     return {
       keyboard: this.rows.map((row) =>
-        row.map((button): KeyboardButton => ({ text: button.text === undefined ? closeLabel : label(button.text, locale) })),
+        row.map((button): KeyboardButton => ({ text: button.text === undefined ? closeLabel : label(button.text, locale, t) })),
       ),
       resize_keyboard: true,
       is_persistent: this.options.persistent ?? true,
@@ -62,10 +63,10 @@ export class ReplyMenu<C extends Context = Context> {
   }
 
   /** @internal The target of the button whose label is `text`, in the user's language. */
-  match(text: string, locale: string | undefined, closeLabel: string): MenuTarget<C> | undefined {
+  match(text: string, locale: string | undefined, closeLabel: string, t: Translate): MenuTarget<C> | undefined {
     for (const row of this.rows) {
       for (const button of row) {
-        const shown = button.text === undefined ? closeLabel : label(button.text, locale);
+        const shown = button.text === undefined ? closeLabel : label(button.text, locale, t);
         if (shown === text) return 'action' in button ? 'close' : button.target;
       }
     }
@@ -73,8 +74,8 @@ export class ReplyMenu<C extends Context = Context> {
   }
 }
 
-function label(text: MenuLabel, locale: string | undefined) {
-  return typeof text === 'function' ? text(locale) : text;
+function label(text: MenuLabel, locale: string | undefined, t: Translate) {
+  return typeof text === 'function' ? text(locale, t) : text;
 }
 
 /** Create a reply-keyboard main menu. See `ReplyMenu`. */

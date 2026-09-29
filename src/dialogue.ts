@@ -2,11 +2,13 @@ import type { Context } from 'grammy';
 import type { InlineKeyboardButton, KeyboardButton, Message, ReplyKeyboardMarkup } from 'grammy/types';
 import type { Dialogue } from './define';
 import { EasyTGError } from './errors';
+import { validateSchema, type StandardSchemaV1 } from './schema';
 import type { EasyTG } from './engine';
 import type { Session } from './session';
 import type {
   Collected,
   DeliveryMode,
+  DialogueCancelReason,
   DialogueFile,
   DialogueStep,
   PageContent,
@@ -29,6 +31,8 @@ interface DialogueState {
   collected?: Collected;
   /** The last prompt put buttons on the reply keyboard; they must be replaced when moving on. */
   replyKeyboard?: boolean;
+  /** Last activity (ms), for timeouts. */
+  at?: number;
 }
 
 type AnyDialogue<C extends Context> = Dialogue<any, any, C>;
@@ -89,7 +93,7 @@ export class DialogueRunner<C extends Context> {
     await this.abandon(ctx, session, ctx.callbackQuery?.message?.message_id);
 
     const state: DialogueState = { id: def.id, run: randomRun(), step: 0, params, answers: {}, messages: [] };
-    session.set(DIALOGUE_STATE_KEY, state);
+    this.save(session, state);
     this.app.logger.debug(`Dialogue "${def.id}" started`);
     await this.app.emit('dialogueStart', { ctx, dialogue: def.id, params });
     await this.show(ctx, session, def, state);
@@ -98,6 +102,7 @@ export class DialogueRunner<C extends Context> {
   /** Feed a message to the active dialogue. Returns false if there is none. */
   async handleMessage(ctx: C): Promise<boolean> {
     const session = await this.app.session(ctx);
+    await this.expireIdle(ctx, session);
     const active = this.active(session);
     if (!active) return false;
     const { def, state } = active;
@@ -159,7 +164,7 @@ export class DialogueRunner<C extends Context> {
     switch (step.type) {
       case 'text':
         if (text === undefined) return this.reject(ctx, session, def, state, texts.expectText);
-        return this.submit(ctx, session, def, state, step, text);
+        return this.submit(ctx, session, def, state, step, text, step.schema);
       case 'file':
         if (!file || (step.accept && !step.accept.includes(file.kind))) {
           return this.reject(ctx, session, def, state, texts.expectFile);
@@ -179,6 +184,7 @@ export class DialogueRunner<C extends Context> {
   /** Handle a dialogue control button. Returns false when the button is stale or forged. */
   async handleButton(ctx: C, params: Record<string, string>): Promise<boolean> {
     const session = await this.app.session(ctx);
+    await this.expireIdle(ctx, session);
     const active = this.active(session);
     if (!active || params.r !== active.state.run) return false;
     const { def, state } = active;
@@ -230,8 +236,9 @@ export class DialogueRunner<C extends Context> {
    * kept message (the prompt whose Cancel was pressed), or that message is
    * deleted when there is no result.
    */
-  async cancel(ctx: C, options: { render: boolean; keepMessageId?: number; reason?: 'user' | 'command' }): Promise<boolean> {
+  async cancel(ctx: C, options: { render: boolean; keepMessageId?: number; reason?: DialogueCancelReason }): Promise<boolean> {
     const session = await this.app.session(ctx);
+    await this.expireIdle(ctx, session); // a dialogue that already timed out ends as 'timeout'
     const active = this.active(session);
     if (!active) return false;
     const { def, state } = active;
@@ -239,11 +246,11 @@ export class DialogueRunner<C extends Context> {
     session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, state, options.keepMessageId);
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).cancelled);
-    await this.app.emit('dialogueCancel', { ctx, dialogue: def.id, answers: state.answers, reason: options.reason ?? (options.render ? 'user' : 'command') });
+    await this.app.emit('dialogueCancel', { ctx, dialogue: def.id, params: state.params, answers: state.answers, reason: options.reason ?? (options.render ? 'user' : 'command') });
     const result = def.cancelFn ? await def.cancelFn(this.endArgs(ctx, session, state)) : undefined;
 
     if (options.render) {
-      if (result) await this.app.present(ctx, result, 'edit');
+      if (result) await this.app.showResult(ctx, result, 'edit');
       else await this.app.closeMessage(ctx);
     }
     return true;
@@ -256,11 +263,30 @@ export class DialogueRunner<C extends Context> {
     state.step -= 1;
     if (previous) delete state.answers[previous.id];
     delete state.collected;
-    session.set(DIALOGUE_STATE_KEY, state);
+    this.save(session, state);
     await this.show(ctx, session, def, state);
   }
 
   // ---- internals -----------------------------------------------------------
+
+  private save(session: Session, state: DialogueState) {
+    state.at = Date.now();
+    session.set(DIALOGUE_STATE_KEY, state);
+  }
+
+  /**
+   * A dialogue idle for longer than its timeout ends (`reason: 'timeout'`,
+   * onCancel's result ignored) before the update is looked at, so late input
+   * goes to the app's own handlers and old buttons are reported as expired.
+   */
+  private async expireIdle(ctx: C, session: Session) {
+    const active = this.active(session);
+    if (!active) return;
+    const timeout = active.def.timeoutMs ?? this.app.dialogueTimeoutMs;
+    if (!timeout || Date.now() - (active.state.at ?? Date.now()) <= timeout) return;
+    this.app.logger.debug(`Dialogue "${active.def.id}" timed out`);
+    await this.end(ctx, session, active, 'timeout');
+  }
 
   private active(session: Session): { def: AnyDialogue<C>; state: DialogueState } | null {
     const state = session.get<DialogueState>(DIALOGUE_STATE_KEY);
@@ -275,12 +301,17 @@ export class DialogueRunner<C extends Context> {
   }
 
   private async abandon(ctx: C, session: Session, keepMessageId?: number) {
+    await this.expireIdle(ctx, session);
     const active = this.active(session);
-    if (!active) return;
+    if (active) await this.end(ctx, session, active, 'replaced', keepMessageId);
+  }
+
+  /** End a dialogue without showing onCancel's result (replaced, timed out). */
+  private async end(ctx: C, session: Session, active: { def: AnyDialogue<C>; state: DialogueState }, reason: DialogueCancelReason, keepMessageId?: number) {
     session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, active.state, keepMessageId);
     if (active.state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).cancelled);
-    await this.app.emit('dialogueCancel', { ctx, dialogue: active.def.id, answers: active.state.answers, reason: 'replaced' });
+    await this.app.emit('dialogueCancel', { ctx, dialogue: active.def.id, answers: active.state.answers, params: active.state.params, reason });
     try {
       await active.def.cancelFn?.(this.endArgs(ctx, session, active.state));
     } catch (error) {
@@ -290,7 +321,7 @@ export class DialogueRunner<C extends Context> {
 
   private async steps(ctx: C, def: AnyDialogue<C>, state: DialogueState): Promise<AnyStep<C>[]> {
     const steps = def.stepsDef!;
-    return typeof steps === 'function' ? await steps({ ctx, params: state.params, answers: state.answers }) : steps;
+    return typeof steps === 'function' ? await steps({ ctx, params: state.params, answers: state.answers, t: this.app.t(ctx) }) : steps;
   }
 
   private async currentStep(ctx: C, def: AnyDialogue<C>, state: DialogueState) {
@@ -298,7 +329,8 @@ export class DialogueRunner<C extends Context> {
   }
 
   private helpers(ctx: C, session: Session, state: DialogueState): StepHelpers<any, C> {
-    return { ctx, session, locale: this.app.localeOf(ctx), params: state.params, answers: state.answers, nav: this.app.nav(ctx) };
+    const t = this.app.t(ctx);
+    return { ctx, session, locale: this.app.localeOf(ctx), t, params: state.params, answers: state.answers, nav: this.app.nav(ctx), app: this.app };
   }
 
   private endArgs(ctx: C, session: Session, state: DialogueState) {
@@ -336,6 +368,9 @@ export class DialogueRunner<C extends Context> {
     if (step.actions?.length) {
       keyboard.push(step.actions.map((a) => this.button(ctx, state, step, a.text, Kind.Action, a.id)));
     }
+    // A collect step shown again (after an error) keeps its Done button for what was sent so far.
+    const collected = step.type === 'collect' && state.collected ? state.collected.texts.length + state.collected.files.length : 0;
+    if (collected > 0) keyboard.push([this.button(ctx, state, step, this.app.textsFor(ctx).done, Kind.Done)]);
     keyboard.push(this.controls(ctx, def, state, step));
     await this.sendTracked(ctx, session, state, { text, ...media, keyboard });
   }
@@ -379,7 +414,7 @@ export class DialogueRunner<C extends Context> {
   ) {
     const delivery = await this.app.deliverContent(ctx, content, mode, sendMarkup);
     if (delivery) state.messages.push(...delivery.sent);
-    session.set(DIALOGUE_STATE_KEY, state);
+    this.save(session, state);
   }
 
   /** Show an error, then the prompt again. Built-in texts go out as plain text; the app's own follow its parse mode. */
@@ -390,20 +425,37 @@ export class DialogueRunner<C extends Context> {
     return true;
   }
 
-  private async submit(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>, value: unknown) {
+  private async submit(
+    ctx: C,
+    session: Session,
+    def: AnyDialogue<C>,
+    state: DialogueState,
+    step: AnyStep<C>,
+    value: unknown,
+    schema?: StandardSchemaV1,
+  ) {
     await this.clear(ctx, state);
 
     const validate = step.validate as ((value: unknown, helpers: StepHelpers<any, C>) => unknown) | undefined;
     const result = validate ? await validate(value, this.helpers(ctx, session, state)) : undefined;
     if (result !== undefined && result !== true) {
+      // The collected items as a whole were rejected: start the step over.
+      if (step.type === 'collect') delete state.collected;
       if (typeof result === 'string' && result) return this.reject(ctx, session, def, state, result, false);
       return this.reject(ctx, session, def, state, this.app.textsFor(ctx).invalidInput);
     }
 
-    state.answers[step.id] = value;
+    let answer = value;
+    if (schema) {
+      const parsed = await validateSchema(schema, value);
+      if (!parsed.ok) return this.reject(ctx, session, def, state, parsed.message);
+      answer = parsed.value;
+    }
+
+    state.answers[step.id] = answer;
     state.step += 1;
     delete state.collected;
-    session.set(DIALOGUE_STATE_KEY, state);
+    this.save(session, state);
     await this.show(ctx, session, def, state);
     return true;
   }
@@ -424,19 +476,20 @@ export class DialogueRunner<C extends Context> {
 
     const items = (state.collected ??= { texts: [], files: [] });
     const max = step.max ?? DEFAULT_MAX_ITEMS;
-    const doneRow = [this.button(ctx, state, step, this.app.textsFor(ctx).done, Kind.Done)];
+    const texts = this.app.textsFor(ctx);
+    const doneRow = [this.button(ctx, state, step, texts.done, Kind.Done)];
     const keyboard = [doneRow, this.controls(ctx, def, state, step)];
 
+    await this.clear(ctx, state); // one notice at a time
     if (items.texts.length + items.files.length >= max) {
-      await this.sendTracked(ctx, session, state, { text: this.app.textsFor(ctx).collectLimit(max), parseMode: 'plain', keyboard });
+      await this.sendTracked(ctx, session, state, { text: texts.collectLimit({ max, done: texts.done }), parseMode: 'plain', keyboard });
       return true;
     }
     if (text !== undefined) items.texts.push(text);
     else items.files.push(file!);
 
-    await this.clear(ctx, state);
-    const count = { total: items.texts.length + items.files.length, texts: items.texts.length, files: items.files.length };
-    await this.sendTracked(ctx, session, state, { text: this.app.textsFor(ctx).collectReceived(count), parseMode: 'plain', keyboard }, 'reply');
+    const count = { total: items.texts.length + items.files.length, texts: items.texts.length, files: items.files.length, done: texts.done };
+    await this.sendTracked(ctx, session, state, { text: texts.collectReceived(count), parseMode: 'plain', keyboard }, 'reply');
     return true;
   }
 
@@ -445,9 +498,9 @@ export class DialogueRunner<C extends Context> {
     await this.clear(ctx, state);
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
-    await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, answers: state.answers });
+    await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, params: state.params, answers: state.answers });
     const result = await def.finishFn!(this.endArgs(ctx, session, state));
-    await this.app.present(ctx, result, 'send');
+    await this.app.showResult(ctx, result, 'send');
   }
 
   /** Delete tracked messages, optionally keeping one (e.g. the one being edited). */
@@ -456,7 +509,7 @@ export class DialogueRunner<C extends Context> {
     state.messages = [];
     if (!ids.length || !ctx.chat) return;
     try {
-      await ctx.api.deleteMessages(ctx.chat.id, ids);
+      for (let i = 0; i < ids.length; i += 100) await ctx.api.deleteMessages(ctx.chat.id, ids.slice(i, i + 100));
     } catch (error) {
       this.app.logger.debug('Failed to delete dialogue messages', error);
     }

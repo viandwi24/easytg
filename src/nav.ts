@@ -4,7 +4,7 @@ import { BACK_ID, EXIT_ID, normalizeParams, type ParamsInput } from './callback'
 import type { EasyTG } from './engine';
 import { EasyTGError } from './errors';
 import type { Dialogue, Page } from './define';
-import { DialogueStart, Redirect, type ButtonOptions, type Params, type ParamsArgs } from './types';
+import { DialogueStart, Redirect, type ButtonOptions, type ParamArgs, type Params, type ParamsArgs } from './types';
 
 type Target<P> = Page<P, any, any> | Dialogue<any, P, any>;
 
@@ -38,7 +38,7 @@ export class Nav<C extends Context = Context> {
 
   /** Button that re-opens the current page with some params changed. */
   self(text: string, params: ParamsInput = {}, options?: ButtonOptions): InlineKeyboardButton {
-    if (!this.current) throw new Error('nav.self() is only available while rendering a page');
+    if (!this.current) throw new EasyTGError('nav.self() is only available while rendering a page');
     return this.button(text, this.current.id, { ...this.current.params, ...params }, options);
   }
 
@@ -81,6 +81,14 @@ export class Nav<C extends Context = Context> {
     return { text, url };
   }
 
+  /**
+   * The Pay button of an invoice (`invoice` content). It must be the first
+   * button; without a keyboard, Telegram shows its own Pay button.
+   */
+  pay(text: string): InlineKeyboardButton {
+    return { text, pay: true };
+  }
+
   /** Mini App button; Telegram requires an https:// URL. */
   webApp(text: string, url: string): InlineKeyboardButton {
     if (!/^https:\/\//i.test(url)) throw new EasyTGError(`nav.webApp("${text}"): Mini Apps need an https:// URL, got "${url}"`);
@@ -88,15 +96,21 @@ export class Nav<C extends Context = Context> {
   }
 
   /** Return this from a render or middleware to show another page instead. */
-  redirect<P = Params>(target: Page<P, any, any>, ...args: ParamsArgs<P>): Redirect;
+  redirect<P = Params>(target: Page<P, any, any>, ...args: ParamArgs<P>): Redirect;
   redirect(target: string, params?: ParamsInput): Redirect;
   redirect(target: Page<any, any, any> | string, params?: ParamsInput): Redirect {
     return new Redirect(typeof target === 'string' ? target : target.id, normalizeParams(params));
   }
 
   /** Return this from a render to start a dialogue (the current menu is closed). */
-  startDialogue<P = Params>(dialogue: Dialogue<any, P, any>, ...args: ParamsArgs<P>): DialogueStart;
-  startDialogue(dialogue: Dialogue<any, any, any>, params: Record<string, unknown> = {}): DialogueStart {
-    return new DialogueStart(dialogue.id, params);
+  startDialogue<P = Params>(dialogue: Dialogue<any, P, any>, ...args: ParamArgs<P>): DialogueStart;
+  startDialogue(dialogue: Dialogue<any, any, any>, params?: ParamsInput): DialogueStart {
+    // Strings, like when the dialogue is started from a button.
+    return new DialogueStart(dialogue.id, normalizeParams(params));
+  }
+
+  /** @internal Raw (string) params of the page being rendered, before `.params(parse)`. */
+  get currentParams(): Record<string, string> | undefined {
+    return this.current?.params;
   }
 }

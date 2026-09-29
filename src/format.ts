@@ -66,10 +66,35 @@ export function escapeHTML(text: string): string {
 export function md(strings: TemplateStringsArray, ...values: unknown[]): Formatted {
   let source = strings[0]!;
   values.forEach((value, i) => {
-    source += value instanceof Formatted && value.markdown !== undefined ? value.markdown : escapeMarkdown(stringify(value));
+    if (value instanceof Formatted && value.markdown !== undefined) source += value.markdown;
+    // Inside code only `\\` and `\`` are escapes, so values keep every other character as typed.
+    else source += insideCode(source) ? escapeCode(stringify(value)) : escapeMarkdown(stringify(value));
     source += strings[i + 1];
   });
   return new Formatted(markdownToHtml(source), source);
+}
+
+const FENCE = /^```\s*([\w#+.-]*)\s*$/;
+
+/** Whether the end of `source` is inside a code span or a fenced block. */
+function insideCode(source: string): boolean {
+  const lines = source.split('\n');
+  let fence = false;
+  for (const line of lines.slice(0, -1)) {
+    if (fence ? line.trim() === '```' : FENCE.test(line)) fence = !fence;
+  }
+  if (fence) return true;
+  let open = false;
+  const last = lines.at(-1)!;
+  for (let j = 0; j < last.length; j++) {
+    if (last[j] === '\\') j++;
+    else if (last[j] === '`') open = !open;
+  }
+  return open;
+}
+
+function escapeCode(text: string): string {
+  return text.replace(/[\\`]/g, '\\$&');
 }
 
 /** Telegram-HTML template; interpolated values are escaped (nested fragments are kept). */
@@ -142,12 +167,12 @@ export function markdownToHtml(source: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
 
-    const fence = /^```(\w*)\s*$/.exec(line);
+    const fence = FENCE.exec(line);
     if (fence) {
       const end = lines.findIndex((l, j) => j > i && l.trim() === '```');
       if (end !== -1) {
-        const code = escapeHTML(unescapeMarkdown(lines.slice(i + 1, end).join('\n')));
-        out.push(fence[1] ? `<pre><code class="language-${fence[1]}">${code}</code></pre>` : `<pre>${code}</pre>`);
+        const code = escapeHTML(unescapeCode(lines.slice(i + 1, end).join('\n')));
+        out.push(fence[1] ? `<pre><code class="language-${escapeHTML(fence[1])}">${code}</code></pre>` : `<pre>${code}</pre>`);
         i = end;
         continue;
       }
@@ -207,8 +232,7 @@ function inline(s: string): string {
     if (c === '`') {
       const end = codeSpanEnd(s, i + 1);
       if (end > i + 1) {
-        // Escapes inside code are dropped too, so interpolated md`` values show as typed.
-        out += `<code>${escapeHTML(unescapeMarkdown(s.slice(i + 1, end)))}</code>`;
+        out += `<code>${escapeHTML(unescapeCode(s.slice(i + 1, end)))}</code>`;
         i = end + 1;
         continue;
       }
@@ -249,8 +273,9 @@ function codeSpanEnd(s: string, from: number): number {
   return -1;
 }
 
-function unescapeMarkdown(text: string): string {
-  return text.replace(/\\([\\`*_{}\[\]()<>#+\-.!|~=])/g, '$1');
+/** In code only a backslash before `\` or a backtick is an escape, so e.g. `\d` in a regex stays as written. */
+function unescapeCode(text: string): string {
+  return text.replace(/\\([\\`])/g, '$1');
 }
 
 function findClosing(s: string, mark: string, from: number, wordBound: boolean): number {

@@ -21,6 +21,7 @@ export const id: EasyTGTexts = {
   buttonExpired: 'Tombol ini sudah tidak berlaku.',
   notYourMenu: 'Menu ini milik pengguna lain.',
   busy: '⏳ Mohon tunggu…',
+  adminOnly: 'Hanya admin grup yang bisa melakukan ini.',
   spam: (seconds) => `🐢 Terlalu banyak permintaan. Tunggu ${seconds} detik.`,
   closeMenu: '✖️ Tutup menu',
   menuClosed: 'Menu ditutup.',
@@ -32,6 +33,6 @@ export const id: EasyTGTexts = {
   received: '👍 Diterima.',
   cancelled: 'Dibatalkan.',
   collectMin: (min) => (min <= 1 ? 'Anda belum mengirim apa pun.' : `Kirim minimal ${min} item.`),
-  collectReceived: ({ total }) => `Diterima ${total} item. Kirim lagi, atau tekan ✅ Selesai.`,
-  collectLimit: (max) => `Maksimal ${max} item. Tekan ✅ Selesai untuk melanjutkan.`,
+  collectReceived: ({ total, done }) => `Diterima ${total} item. Kirim lagi, atau tekan ${done}.`,
+  collectLimit: ({ max, done }) => `Maksimal ${max} item. Tekan ${done} untuk melanjutkan.`,
 };

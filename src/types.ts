@@ -1,9 +1,11 @@
-import type { Context, InlineKeyboard, InputFile } from 'grammy';
-import type { InlineKeyboardButton } from 'grammy/types';
+import type { Api, Context, InlineKeyboard, InputFile } from 'grammy';
+import type { InlineKeyboardButton, LabeledPrice } from 'grammy/types';
 import type { ParamValue, ParamsInput } from './callback';
 import type { Dialogue, Page } from './define';
 import type { EasyTG } from './engine';
 import type { ParseMode, TextInput } from './format';
+import type { Translate } from './i18n';
+import type { StandardSchemaV1 } from './schema';
 import type { Nav } from './nav';
 import type { Session } from './session';
 
@@ -35,6 +37,9 @@ export interface ButtonOptions {
 }
 
 /** Params are optional when the target declares none (or only optional ones). */
+/** Params only (for redirects and dialogue starts, which have no button options). */
+export type ParamArgs<P> = {} extends P ? [params?: ParamsInputOf<P>] : [params: ParamsInputOf<P>];
+
 export type ParamsArgs<P> = {} extends P
   ? [params?: ParamsInputOf<P>, options?: ButtonOptions]
   : [params: ParamsInputOf<P>, options?: ButtonOptions];
@@ -66,6 +71,29 @@ export interface CopySource {
   messageId: number;
 }
 
+/**
+ * An invoice (`sendInvoice`). For digital goods use Telegram Stars:
+ * `currency: 'XTR'` and no `providerToken`. Invoices are always sent as new
+ * messages; a keyboard must start with `nav.pay(...)`.
+ */
+export interface InvoiceContent {
+  title: string;
+  description: string;
+  /** Your reference (1–128 bytes), given back at checkout and payment. Not shown to the user. */
+  payload: string;
+  /** `XTR` (Telegram Stars) or a currency your payment provider supports. */
+  currency: string;
+  /** Amounts in the smallest unit (cents; whole Stars). */
+  prices: LabeledPrice[];
+  /** From @BotFather, for payments in currencies other than Stars. */
+  providerToken?: string;
+  /** More `sendInvoice` options: `photo_url`, `need_name`, `max_tip_amount`, `subscription_period`, … */
+  options?: Omit<
+    NonNullable<Parameters<Api['sendInvoice']>[6]>,
+    'provider_token' | 'reply_markup' | 'reply_parameters' | 'protect_content' | 'message_thread_id'
+  >;
+}
+
 export interface AlbumItem {
   type: 'photo' | 'video' | 'document' | 'audio';
   media: MediaSource;
@@ -89,12 +117,22 @@ export interface PageContent extends MediaFields {
    * always sent as new messages.
    */
   copy?: CopySource;
+  /** Send an invoice (payments). Can't be combined with `text` or media. */
+  invoice?: InvoiceContent;
   /** Falsy (e.g. `isAdmin && [...]`) means no keyboard. */
   keyboard?: KeyboardInput | false | null;
   /** How plain strings in `text` are parsed. Defaults to the app's `parseMode`. */
   parseMode?: ParseMode;
   /** Prevent forwarding and saving of the sent messages. Default: the app's `protectContent`. */
   protectContent?: boolean;
+  /** Delete the message(s) after this many ms (a scheduled task: needs `app.startScheduler`). */
+  deleteAfterMs?: number;
+  /**
+   * Render this page again into its message every this many ms (at least
+   * 5000), for as long as the message still shows it: a live status, a
+   * countdown. Uses the scheduler (`app.startScheduler`). Pages only.
+   */
+  refreshEveryMs?: number;
   /** Toast shown on the pressed button (button presses only). */
   toast?: string | { text: string; alert?: boolean };
   /** `false` disables link previews. */
@@ -125,9 +163,26 @@ export interface RenderArgs<P = Params, C extends Context = Context> {
   session: Session;
   /** The user's language (see the `locale` option), e.g. `"id"`. */
   locale: string | undefined;
+  /** Your messages (`i18n.messages`) in the user's language. */
+  t: Translate;
   nav: Nav<C>;
   page: Page<any, C, any>;
   app: EasyTG<C>;
+}
+
+export interface TextInputArgs<P = Params, C extends Context = Context> extends RenderArgs<P, C> {
+  /** The text the user sent (untrusted input). */
+  text: string;
+}
+
+export interface TextInputOptions {
+  /**
+   * `send` (default): show the result as a new message. `edit`: update the
+   * page's message in place (sent anew if it can't be edited).
+   */
+  mode?: 'send' | 'edit';
+  /** Delete the user's message after handling it (keeps the chat tidy with `mode: 'edit'`). Default false. */
+  deleteInput?: boolean;
 }
 
 export interface MiddlewareArgs<C extends Context = Context> {
@@ -136,6 +191,7 @@ export interface MiddlewareArgs<C extends Context = Context> {
   params: Params;
   session: Session;
   locale: string | undefined;
+  t: Translate;
   nav: Nav<C>;
   app: EasyTG<C>;
   /** The page about to render or the dialogue about to start. */
@@ -200,10 +256,12 @@ export interface StepHelpers<P = Params, C extends Context = Context> {
   ctx: C;
   session: Session;
   locale: string | undefined;
+  t: Translate;
   params: P;
   /** Answers given so far, keyed by step id. */
   answers: Record<string, unknown>;
   nav: Nav<C>;
+  app: EasyTG<C>;
 }
 
 /** `true`/nothing = valid, `false` = invalid (generic message), a string = invalid with that message. */
@@ -226,9 +284,16 @@ interface StepBase<P, C extends Context> extends MediaFields {
 
 export type DialogueStep<P = Params, C extends Context = Context> =
   | (StepBase<P, C> & {
-      /** Answer: the text (string). */
+      /** Answer: the text (string), or the output of `schema`. */
       type: 'text';
+      /** Runs on the text, before `schema`. */
       validate?: (value: string, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
+      /**
+       * A Standard Schema (zod, valibot, …) that checks and converts the text,
+       * e.g. `z.coerce.number().int().min(1)`. Its first issue is shown as the
+       * error, and its output becomes the answer.
+       */
+      schema?: StandardSchemaV1;
     })
   | (StepBase<P, C> & {
       /** Answer: a `DialogueFile`. */
@@ -275,11 +340,20 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       validate?: (items: Collected, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     });
 
+/**
+ * Why a dialogue ended without finishing: `user` pressed Cancel, `command` a
+ * /command or menu button took over, `replaced` another dialogue started,
+ * `app` your code called `app.cancelDialogue`, `timeout` it was idle too long.
+ */
+export type DialogueCancelReason = 'user' | 'command' | 'replaced' | 'app' | 'timeout';
+
 export interface DialogueEndArgs<A, P, C extends Context> {
   ctx: C;
   session: Session;
   locale: string | undefined;
+  t: Translate;
   params: P;
   answers: A;
   nav: Nav<C>;
+  app: EasyTG<C>;
 }

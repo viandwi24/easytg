@@ -6,7 +6,7 @@
  */
 import { Bot, GrammyError, type Context } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
-import type { StorageAdapter } from './storage';
+import type { StorageAdapter, StoredTask, TaskStore } from './storage';
 
 export interface ApiCall {
   method: string;
@@ -167,7 +167,9 @@ export function telegramError(description: string, options: { code?: number; ret
  * Check that your own StorageAdapter (Redis, SQL, ...) behaves the way easytg
  * expects. Throws with a description of the first mismatch.
  */
-export async function verifyStorageAdapter(storage: StorageAdapter, keyPrefix = `easytg-verify:${Date.now()}:`) {
+export async function verifyStorageAdapter(storage: StorageAdapter, options: { keyPrefix?: string; ttlMs?: number } = {}) {
+  const { keyPrefix = `easytg-verify:${Date.now()}:`, ttlMs: ttl = 1000 } = options;
+  const expire = () => new Promise((resolve) => setTimeout(resolve, ttl + 100));
   const fail = (what: string) => {
     throw new Error(`StorageAdapter check failed: ${what}`);
   };
@@ -190,10 +192,102 @@ export async function verifyStorageAdapter(storage: StorageAdapter, keyPrefix = 
   if ((await storage.get(k('obj'))) != null) fail('delete() must remove the key');
   await storage.delete(k('never-existed')); // must not throw
 
-  await storage.set(k('ttl'), 'soon', 1);
+  await storage.set(k('ttl'), 'soon', ttl);
   if ((await storage.get(k('ttl'))) !== 'soon') fail('a key with a TTL must be readable before it expires');
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  if ((await storage.get(k('ttl'))) != null) fail('a key must expire after ttlSeconds');
+  await expire();
+  if ((await storage.get(k('ttl'))) != null) fail('a key must expire after ttlMs');
 
   await storage.delete(k('num'));
+
+  // Fractional TTLs (rate-limit windows are short).
+  await storage.set(k('half'), 1, ttl / 2);
+  if ((await storage.get(k('half'))) !== 1) fail('a key with a fractional TTL must be readable before it expires');
+  await new Promise((resolve) => setTimeout(resolve, ttl / 2 + 100));
+  if ((await storage.get(k('half'))) != null) fail('a TTL below a second must be honoured (not rounded up to whole seconds)');
+
+  if (storage.increment) {
+    const created = Date.now();
+    if ((await storage.increment(k('count'), 1, ttl)) !== 1) fail('increment() of a missing key must start at 0');
+    await new Promise((resolve) => setTimeout(resolve, ttl * 0.6));
+    if ((await storage.increment(k('count'), 2, ttl)) !== 3) fail('increment() must add to the current value');
+    const counts = await Promise.all(Array.from({ length: 20 }, () => storage.increment!(k('race'), 1)));
+    if (new Set(counts).size !== 20 || Math.max(...counts) !== 20) fail('concurrent increment() calls must not lose updates');
+    if ((await storage.get(k('count'))) !== 3) fail('get() of a counter must return the number');
+    // The TTL counts from the key's creation: later increments must not extend it (a fixed window).
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, created + ttl + 100 - Date.now())));
+    if ((await storage.increment(k('count'), 1)) !== 1) fail('increment() must not extend the TTL set when the key was created');
+    await storage.delete(k('count'));
+    await storage.delete(k('race'));
+  }
+
+  if (storage.setIfAbsent) {
+    if (!(await storage.setIfAbsent(k('lock'), 'a', ttl))) fail('setIfAbsent() of a missing key must set it and return true');
+    if (await storage.setIfAbsent(k('lock'), 'b', ttl)) fail('setIfAbsent() of an existing key must return false');
+    if ((await storage.get(k('lock'))) !== 'a') fail('setIfAbsent() must not overwrite');
+    const wins = await Promise.all(Array.from({ length: 10 }, (_, i) => storage.setIfAbsent!(k('race-lock'), i, ttl)));
+    if (wins.filter(Boolean).length !== 1) fail('exactly one of concurrent setIfAbsent() calls must win');
+    await expire();
+    if (!(await storage.setIfAbsent(k('lock'), 'c', ttl))) fail('setIfAbsent() of an expired key must set it');
+    if (!(await storage.setIfAbsent(k('race-lock'), 'x', ttl))) fail('setIfAbsent() must honour its TTL');
+    await storage.delete(k('lock'));
+    await storage.delete(k('race-lock'));
+  }
+}
+
+/**
+ * Check a `TaskStore` (scheduled tasks). Use an empty store: it claims every
+ * due task. Throws with a description of the first mismatch.
+ */
+export async function verifyTaskStore(store: TaskStore) {
+  const fail = (what: string) => {
+    throw new Error(`TaskStore check failed: ${what}`);
+  };
+  const now = Date.now();
+  const task = (id: string, runAt: number, extra: Partial<StoredTask> = {}): StoredTask => ({
+    id,
+    name: 'check',
+    payload: { id, list: [1, 2], nested: { ok: true } },
+    runAt,
+    dueAt: runAt,
+    attempts: 0,
+    ...extra,
+  });
+
+  await store.saveTask(task('later', now + 60_000));
+  await store.saveTask(task('b', now - 1000, { everyMs: 5000, bot: 42 }));
+  await store.saveTask(task('a', now - 2000));
+  const claimed = await store.claimTasks(now, 10, 30_000);
+  if (claimed.map((t) => t.id).join() !== 'a,b') fail('claimTasks() must return due tasks only, earliest first');
+  const b = claimed[1]!;
+  if (JSON.stringify(b.payload) !== JSON.stringify(task('b', 0).payload)) fail('payloads must round-trip');
+  if (b.attempts !== 1 || b.runAt !== now + 30_000 || b.dueAt !== now - 1000 || b.everyMs !== 5000 || b.bot !== 42) {
+    fail('claimed tasks must come back with attempts + 1, runAt = now + leaseMs, and dueAt, everyMs and bot unchanged');
+  }
+  if ((await store.claimTasks(now, 10, 30_000)).length !== 0) fail('claimed tasks must not be claimed again before the lease ends');
+  await store.finishTask(b);
+  const again = await store.claimTasks(now + 30_000, 10, 30_000);
+  if (again.length !== 1 || again[0]!.id !== 'a' || again[0]!.attempts !== 2) {
+    fail('finishTask() must delete the task; unfinished tasks must be claimed again after the lease');
+  }
+  await store.finishTask(claimed[0]!); // a was claimed again since: must be ignored
+  const left = await store.claimTasks(now + 120_000, 10, 1000);
+  if (left.map((t) => t.id).sort().join() !== 'a,later') fail('finishTask() of a task claimed again since must be ignored');
+
+  const a = left.find((t) => t.id === 'a')!;
+  await store.finishTask(a, { ...a, runAt: now + 200_000, attempts: a.attempts });
+  const rescheduled = await store.claimTasks(now + 200_000, 10, 1000);
+  if (!rescheduled.some((t) => t.id === 'a')) fail('finishTask(task, next) must save the next run');
+
+  await store.saveTask(task('gone', now));
+  if (!(await store.deleteTask('gone'))) fail('deleteTask() must return true for an existing task');
+  if (await store.deleteTask('gone')) fail('deleteTask() must return false for a missing task');
+  for (const id of ['a', 'b', 'later']) await store.deleteTask(id);
+
+  // Several processes claiming at once: every task exactly once, `limit` respected.
+  for (let i = 0; i < 10; i++) await store.saveTask(task(`race-${i}`, now - i));
+  const claims = await Promise.all([store.claimTasks(now, 6, 60_000), store.claimTasks(now, 6, 60_000), store.claimTasks(now, 6, 60_000)]);
+  if (claims.some((c) => c.length > 6)) fail('claimTasks() must return at most `limit` tasks');
+  const raced = claims.flat().map((t) => t.id);
+  if (raced.length !== 10 || new Set(raced).size !== 10) fail('concurrent claimTasks() calls must claim every due task exactly once');
+  for (const id of raced) await store.deleteTask(id);
 }

@@ -1,4 +1,5 @@
 import type { Context } from 'grammy';
+import type { AtomicStorage } from './coordination';
 
 export interface AntiSpamOptions<C extends Context = Context> {
   /** Updates (messages, button presses, …) a user may send per window. Default 20. */
@@ -12,10 +13,9 @@ export interface AntiSpamOptions<C extends Context = Context> {
   /** Users that are never limited, e.g. admins. */
   exempt?: (ctx: C) => boolean;
   /**
-   * Which updates count towards the limit (and are dropped while a user is
-   * limited). Default: button presses, plus messages with content in private
-   * chats and /commands in groups. Payments, inline queries, member updates
-   * and other service updates never count and are never dropped.
+   * Which updates count towards the limit. Default: button presses, plus
+   * messages with content in private chats and /commands in groups. While a
+   * user is limited, all their updates are dropped, except payments.
    */
   filter?: (ctx: C) => boolean;
 }
@@ -42,71 +42,83 @@ export type SpamVerdict =
 
 const STRIKE_RESET_MS = 24 * 60 * 60 * 1000;
 
+/** Limits of one user: `'*'` (every bot) or a bot id → until (ms). */
+type Blocks = Record<string, number>;
+
 /**
- * Sliding-window rate limit, kept in memory (per process). Keys are
- * `<bot id>:<user id>`, or `*:<user id>` for limits that apply to every bot.
+ * Rate limit per bot and user: a fixed window counted in storage, so it is
+ * shared by every process when the storage is. Keys: `spam:hits:<bot>:<user>`,
+ * `spam:block:<user>`, `spam:strikes:<bot>:<user>`.
  */
 export class SpamGuard {
-  private readonly hits = new Map<string, number[]>();
-  private readonly blockedUntil = new Map<string, number>();
-  private readonly strikes = new Map<string, { count: number; last: number }>();
-  private checks = 0;
-
   constructor(
+    private readonly storage: AtomicStorage,
     readonly limit: number,
     readonly windowMs: number,
     readonly cooldownMs: number,
   ) {}
 
-  check(key: string, now = Date.now()): SpamVerdict {
-    if (++this.checks % 1000 === 0) this.sweep(now);
+  /** Count an update; `count: false` only checks the limits. */
+  async check(bot: number, user: number, count = true, now = Date.now()): Promise<SpamVerdict> {
+    const blocks = await this.blocks(user);
+    const until = Math.max(blocks['*'] ?? 0, blocks[bot] ?? 0);
+    if (until > now) return { status: 'blocked', until };
+    if (!count) return { status: 'ok' };
 
-    const until = this.blockedUntil.get(key);
-    if (until !== undefined) {
-      if (until > now) return { status: 'blocked', until };
-      this.blockedUntil.delete(key);
-    }
+    const hitsKey = `spam:hits:${bot}:${user}`;
+    const hits = await this.storage.increment(hitsKey, 1, this.windowMs);
+    if (hits <= this.limit) return { status: 'ok' };
+    // Concurrent updates past the limit: only the first one applies it (one event, one strike).
+    if (hits > this.limit + 1) return { status: 'blocked', until: now + this.cooldownMs };
 
-    const recent = (this.hits.get(key) ?? []).filter((t) => t > now - this.windowMs);
-    recent.push(now);
-    if (recent.length <= this.limit) {
-      this.hits.set(key, recent);
-      return { status: 'ok' };
-    }
-
-    this.hits.delete(key);
+    await this.storage.delete(hitsKey);
     const blockedUntil = now + this.cooldownMs;
-    this.blockedUntil.set(key, blockedUntil);
-    const previous = this.strikes.get(key);
-    const strike = previous && now - previous.last < STRIKE_RESET_MS ? previous.count + 1 : 1;
-    this.strikes.set(key, { count: strike, last: now });
-    return { status: 'limited', until: blockedUntil, count: recent.length, strike };
+    await this.block(user, String(bot), this.cooldownMs, now);
+    const strikesKey = `spam:strikes:${bot}:${user}`;
+    const strike = (Number(await this.storage.get(strikesKey)) || 0) + 1;
+    await this.storage.set(strikesKey, strike, STRIKE_RESET_MS);
+    return { status: 'limited', until: blockedUntil, count: hits, strike };
   }
 
-  block(key: string, ms: number, now = Date.now()) {
-    this.blockedUntil.set(key, now + ms);
+  /** Limit a user on one bot, or on every bot (`'*'`). */
+  async block(user: number, bot: string, ms: number, now = Date.now()) {
+    const blocks = await this.blocks(user, now);
+    blocks[bot] = Math.max(blocks[bot] ?? 0, now + ms);
+    await this.save(user, blocks, now);
   }
 
-  /** Lift the limits of every key matching `match`. */
-  release(match: (key: string) => boolean) {
-    for (const map of [this.blockedUntil, this.hits]) {
-      for (const key of map.keys()) if (match(key)) map.delete(key);
+  /** Lift a user's limits: on one bot (and the every-bot limit), or all of them. */
+  async release(user: number, bot?: number) {
+    if (bot === undefined) {
+      await this.storage.delete(`spam:block:${user}`);
+      return;
     }
+    const blocks = await this.blocks(user);
+    delete blocks['*'];
+    delete blocks[bot];
+    await Promise.all([this.save(user, blocks), this.storage.delete(`spam:hits:${bot}:${user}`)]);
   }
 
-  isBlocked(key: string, now = Date.now()) {
-    return (this.blockedUntil.get(key) ?? 0) > now;
+  async isBlocked(user: number, bot?: number, now = Date.now()) {
+    const blocks = await this.blocks(user, now);
+    if (bot === undefined) return Object.keys(blocks).length > 0;
+    return (blocks['*'] ?? 0) > now || (blocks[bot] ?? 0) > now;
   }
 
-  /** Whether any key matching `match` is blocked. */
-  isAnyBlocked(match: (key: string) => boolean, now = Date.now()) {
-    for (const [key, until] of this.blockedUntil) if (until > now && match(key)) return true;
-    return false;
+  /** Active limits only. */
+  private async blocks(user: number, now = Date.now()): Promise<Blocks> {
+    const stored = await this.storage.get(`spam:block:${user}`);
+    const blocks: Blocks = {};
+    if (stored && typeof stored === 'object') {
+      for (const [bot, until] of Object.entries(stored)) if (typeof until === 'number' && until > now) blocks[bot] = until;
+    }
+    return blocks;
   }
 
-  private sweep(now: number) {
-    for (const [user, times] of this.hits) if ((times.at(-1) ?? 0) <= now - this.windowMs) this.hits.delete(user);
-    for (const [user, until] of this.blockedUntil) if (until <= now) this.blockedUntil.delete(user);
-    for (const [user, s] of this.strikes) if (now - s.last >= STRIKE_RESET_MS) this.strikes.delete(user);
+  private async save(user: number, blocks: Blocks, now = Date.now()) {
+    const key = `spam:block:${user}`;
+    const last = Math.max(0, ...Object.values(blocks));
+    if (last <= now) await this.storage.delete(key);
+    else await this.storage.set(key, blocks, last - now);
   }
 }

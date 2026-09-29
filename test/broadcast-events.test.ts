@@ -52,6 +52,7 @@ describe('broadcast', () => {
     const controller = new AbortController();
     const result = await t.app.broadcast(t.bot, [1, 2, 3, 4], ping, {
       perSecond: 1000,
+      concurrency: 1, // with more workers, sends already under way still finish
       onProgress: (p) => void (p.sent === 2 && controller.abort()),
       signal: controller.signal,
     });

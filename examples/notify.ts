@@ -4,12 +4,14 @@
  *   BOT_TOKEN=123:abc bun run examples/notify.ts
  *
  * /start shows a counter that survives restarts (stored in easytg.sqlite).
- * "Remind me" sends a page to you 5 seconds later via `app.sendTo`, the same
- * way a cron job or payment webhook would.
+ * "Remind me" sends a page to you 10 seconds later with `app.sendLater`: a
+ * scheduled task saved in the database, so it is sent even if the bot
+ * restarts in between. `app.sendTo` does the same right away, e.g. from a
+ * cron job or a payment webhook.
  */
+import { Database } from 'bun:sqlite';
 import { Bot } from 'grammy';
-import { EasyTG, isProactive, page } from '../src';
-import { SqliteStorage } from './storage/sqlite';
+import { EasyTG, SqliteStorage, isProactive, page } from '../src';
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -18,7 +20,7 @@ if (!token) {
 }
 
 const bot = new Bot(token);
-const storage = new SqliteStorage(process.env.DB_PATH ?? 'easytg.sqlite');
+const storage = new SqliteStorage(new Database(process.env.DB_PATH ?? 'easytg.sqlite'));
 const app = new EasyTG({
   storage,
   // Every button param is kept server-side: callback data can't be forged.
@@ -35,24 +37,22 @@ const home = page<{ add?: string }>('home').render(({ params, session, nav }) =>
     text: ['**Counter**', `Value: ${count}`, '', '_Restart the bot: the value is still there._'],
     keyboard: [
       [nav.self('+1', { add: 1 }), nav.self('+10', { add: 10 })],
-      [nav.button('⏰ Remind me in 5s', remind)],
+      [nav.button('⏰ Remind me in 10s', remind)],
       [nav.close()],
     ],
   };
 });
 
-const remind = page('remind').render(({ ctx, nav }) => {
+const remind = page('remind').render(async ({ ctx, nav }) => {
   const target = { chatId: ctx.chat!.id, userId: ctx.from!.id };
-  setTimeout(() => {
-    app.sendTo(bot, target, reminder, { at: new Date().toLocaleTimeString() }).catch(console.error);
-  }, 5000);
-  return { text: 'OK, I will ping you in 5 seconds.', keyboard: [[nav.home()]] };
+  await app.sendLater(target, reminder, { params: { at: new Date().toLocaleTimeString() }, delayMs: 10_000, botId: ctx.me.id });
+  return { text: 'OK, I will ping you in 10 seconds. Try restarting the bot meanwhile.', keyboard: [[nav.home()]] };
 });
 
 const reminder = page<{ at: string }>('reminder').render(({ params, session, ctx, nav }) => ({
   text: [
     '⏰ **Reminder**',
-    `Sent at ${params.at} (${isProactive(ctx) ? 'no incoming update' : 'from a button'}).`,
+    `Asked at ${params.at}, sent at ${new Date().toLocaleTimeString()} (${isProactive(ctx) ? 'no incoming update' : 'from a button'}).`,
     `Your counter is ${session.get<number>('count') ?? 0}.`,
   ],
   keyboard: [[nav.home('Open counter')]],
@@ -65,8 +65,9 @@ bot.command('start', (ctx) => app.open(ctx, home));
 bot.catch((err) => console.error('Bot error:', err.error));
 
 setInterval(() => storage.purgeExpired(), 60 * 60 * 1000).unref();
+const stopScheduler = app.startScheduler(bot); // sends due reminders
 process.once('SIGINT', () => bot.stop());
 process.once('SIGTERM', () => bot.stop());
 
 await bot.start({ onStart: (me) => console.log(`@${me.username} is running. Send /start in Telegram.`) });
-storage.close();
+await stopScheduler();

@@ -58,7 +58,7 @@ const buttonCaptcha = page<{ fresh?: string }>('captcha').render(({ params, sess
   let challenge = session.get<Challenge>('captcha');
   if (!challenge || params.fresh) {
     challenge = newChallenge();
-    session.set('captcha', challenge, { ttlSeconds: 300 }); // an abandoned captcha expires by itself
+    session.set('captcha', challenge, { ttlMs: 5 * 60_000 }); // an abandoned captcha expires by itself
   }
   return {
     text: ['**Button captcha**', '', `What is ${challenge.question}?`, `Attempts left: ${MAX_ATTEMPTS - challenge.attempts}`],
@@ -86,7 +86,7 @@ const check = page<{ v: string }>('captcha_check').render(({ params, session, na
       keyboard: [[nav.button('Try again', buttonCaptcha, { fresh: 1 })], [nav.home()]],
     };
   }
-  session.set('captcha', challenge, { ttlSeconds: 300 });
+  session.set('captcha', challenge, { ttlMs: 5 * 60_000 });
   return {
     text: `❌ Wrong answer. Attempts left: ${MAX_ATTEMPTS - challenge.attempts}`,
     keyboard: [[nav.button('Retry', buttonCaptcha)], [nav.home()]],
@@ -109,7 +109,7 @@ const typedCaptcha = dialogue<{ answer: string }>('typed')
       type: 'text',
       text: ({ session }) => {
         const challenge = newChallenge();
-        session.set('typed', challenge, { ttlSeconds: 300 });
+        session.set('typed', challenge, { ttlMs: 5 * 60_000 });
         return ['**Typed captcha**', '', `Type the result of ${challenge.question}:`];
       },
       validate: (value, { session }) => {

@@ -1,6 +1,9 @@
-import type { Context } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import { assertValidId } from './callback';
-import { EasyTGError } from './errors';
+import { EasyTGError, InvalidParamsError } from './errors';
+import { isStandardSchema, validateSchema, type StandardSchemaV1 } from './schema';
+import type { EasyTG } from './engine';
+import type { Translate } from './i18n';
 import type {
   Awaitable,
   DialogueEndArgs,
@@ -10,6 +13,8 @@ import type {
   ParamsShape,
   RenderArgs,
   RenderResult,
+  TextInputArgs,
+  TextInputOptions,
 } from './types';
 
 /**
@@ -34,9 +39,11 @@ export class Page<P = Params, C extends Context = Context, R = P> {
   declare readonly __params?: P;
 
   /** @internal */ renderFn?: (args: RenderArgs<R, C>) => Awaitable<RenderResult>;
-  /** @internal */ parseFn?: (raw: P) => R;
+  /** @internal */ parseFn?: (raw: P) => Awaitable<R>;
   /** @internal */ readonly middlewares: Middleware<C>[] = [];
   /** @internal */ deepLinkEnabled = false;
+  /** @internal */ textFn?: (args: TextInputArgs<R, C>) => Awaitable<RenderResult>;
+  /** @internal */ textOptions: TextInputOptions = {};
 
   /** @internal Use `page(id)`. */
   constructor(readonly id: string) {
@@ -59,23 +66,54 @@ export class Page<P = Params, C extends Context = Context, R = P> {
   }
 
   /**
-   * Validate and convert the incoming params before render. Throw (e.g.
-   * `InvalidParamsError`) to reject them: button presses then show "page not
-   * found". Buttons and links keep using the raw (string) params.
+   * Validate and convert the incoming params before render, with a function
+   * (throw, e.g. `InvalidParamsError`, to reject) or a Standard Schema (zod,
+   * valibot, arktype, …). Rejected params show "page not found" on button
+   * presses. Buttons and links keep using the raw (string) params.
    *
    *   page<{ id: string }>('episode')
    *     .params((raw) => ({ id: toInt(raw.id) }))
    *     .render(({ params }) => …)   // params.id: number
+   *
+   *   page<{ id: string }>('episode')
+   *     .params(z.object({ id: z.coerce.number().int() }))
    */
-  params<R2>(parse: (raw: P) => R2): Page<P, C, R2> {
+  params<R2>(schema: StandardSchemaV1<any, R2>): Page<P, C, R2>;
+  params<R2>(parse: (raw: P) => Awaitable<R2>): Page<P, C, R2>;
+  params<R2>(parse: ((raw: P) => Awaitable<R2>) | StandardSchemaV1<any, R2>): Page<P, C, R2> {
     const self = this as unknown as Page<P, C, R2>;
-    self.parseFn = parse;
+    if (isStandardSchema(parse)) {
+      self.parseFn = async (raw) => {
+        const result = await validateSchema(parse, raw);
+        if (!result.ok) throw new InvalidParamsError(`Invalid params for "${this.id}": ${result.message}`);
+        return result.value;
+      };
+    } else {
+      self.parseFn = parse;
+    }
     return self;
   }
 
   render(fn: (args: RenderArgs<R, C>) => Awaitable<RenderResult>): this {
     if (this.renderFn) throw new EasyTGError(`Page "${this.id}" already has a render`);
     this.renderFn = fn;
+    return this;
+  }
+
+  /**
+   * Handle text the user sends while this page is the last one shown to them,
+   * e.g. a search box. Commands, menu buttons and dialogues go first. Works in
+   * private chats, and in groups for replies to the page's message. The result
+   * is shown like a render (by default as a new message):
+   *
+   *   page<{ q?: string }>('search')
+   *     .render(({ params }) => ({ text: params.q ? results(params.q) : 'Type a product name' }))
+   *     .onText(({ text, nav }) => nav.redirect(search, { q: text }))
+   */
+  onText(fn: (args: TextInputArgs<R, C>) => Awaitable<RenderResult>, options: TextInputOptions = {}): this {
+    if (this.textFn) throw new EasyTGError(`Page "${this.id}" already has onText`);
+    this.textFn = fn;
+    this.textOptions = options;
     return this;
   }
 }
@@ -95,10 +133,11 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
 
   /** @internal */ stepsDef?:
     | DialogueStep<P, C>[]
-    | ((args: { ctx: C; params: P; answers: Partial<A> }) => Awaitable<DialogueStep<P, C>[]>);
+    | ((args: { ctx: C; params: P; answers: Partial<A>; t: Translate }) => Awaitable<DialogueStep<P, C>[]>);
   /** @internal */ finishFn?: (args: DialogueEndArgs<A, P, C>) => Awaitable<RenderResult>;
   /** @internal */ cancelFn?: (args: DialogueEndArgs<Partial<A>, P, C>) => Awaitable<RenderResult>;
   /** @internal */ backEnabled = true;
+  /** @internal */ timeoutMs?: number;
   /** @internal */ deepLinkEnabled = false;
   /** @internal */ readonly middlewares: Middleware<C>[] = [];
 
@@ -117,14 +156,16 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
   steps(
     steps:
       | DialogueStep<P, C>[]
-      | ((args: { ctx: C; params: P; answers: Partial<A> }) => Awaitable<DialogueStep<P, C>[]>),
+      | ((args: { ctx: C; params: P; answers: Partial<A>; t: Translate }) => Awaitable<DialogueStep<P, C>[]>),
   ): this {
+    if (this.stepsDef) throw new EasyTGError(`Dialogue "${this.id}" already has steps`);
     this.stepsDef = steps;
     return this;
   }
 
   /** Called after the last step; the result is sent as a new message. The dialogue state is then removed. */
   onFinish(fn: (args: DialogueEndArgs<A, P, C>) => Awaitable<RenderResult>): this {
+    if (this.finishFn) throw new EasyTGError(`Dialogue "${this.id}" already has onFinish`);
     this.finishFn = fn;
     return this;
   }
@@ -135,6 +176,7 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
    * starting another dialogue, the result is ignored.
    */
   onCancel(fn: (args: DialogueEndArgs<Partial<A>, P, C>) => Awaitable<RenderResult>): this {
+    if (this.cancelFn) throw new EasyTGError(`Dialogue "${this.id}" already has onCancel`);
     this.cancelFn = fn;
     return this;
   }
@@ -142,6 +184,17 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
   /** Allow starting this dialogue from a deep link. Its params are untrusted input. */
   allowDeepLink(enabled = true): this {
     this.deepLinkEnabled = enabled;
+    return this;
+  }
+
+  /**
+   * End the dialogue when the user doesn't answer for `ms` (0 = never), like a
+   * Cancel whose result isn't shown: `onCancel` runs and `dialogueCancel` has
+   * `reason: 'timeout'`. Text sent after that goes to your own handlers.
+   * Default: the `dialogues.timeoutMs` option.
+   */
+  timeout(ms: number): this {
+    this.timeoutMs = ms;
     return this;
   }
 
@@ -165,13 +218,69 @@ export function dialogue<A = Record<string, any>, P extends ParamsShape<P> = Par
 }
 
 /**
- * `page` / `dialogue` bound to your custom context type:
+ * `page` / `dialogue` / `task` bound to your custom context type:
  *
- *   export const { page, dialogue } = withContext<MyContext>();
+ *   export const { page, dialogue, task } = withContext<MyContext>();
  */
 export function withContext<C extends Context>() {
   return {
     page: <P extends ParamsShape<P> = Params>(id: string) => new Page<P, C>(id),
     dialogue: <A = Record<string, any>, P extends ParamsShape<P> = Params>(id: string) => new Dialogue<A, P, C>(id),
+    task: <P = undefined>(id: string) => new Task<P, C>(id),
   };
+}
+
+/** What a task handler receives. */
+export interface TaskArgs<P = unknown, C extends Context = Context> {
+  payload: P;
+  /** The bot the task was scheduled for (see `app.startScheduler`). */
+  bot: TaskBot;
+  app: EasyTG<C>;
+  /** Id (to cancel or replace it), run count (1 on the first run) and when it was due. */
+  task: { id: string; attempts: number; dueAt: number };
+}
+
+/** The bot a task runs with: anything `app.sendTo` accepts. */
+export type TaskBot = Pick<Bot<any>, 'api' | 'botInfo' | 'isInited' | 'init'>;
+
+export interface TaskOptions {
+  /** Runs before giving up on a failing task. Default: the scheduler's `maxAttempts` (5). */
+  maxAttempts?: number;
+  /** Wait before retry number `attempt` (1, 2, …), in ms. Default: the scheduler's `retryDelayMs`. */
+  retryDelayMs?: (attempt: number) => number;
+}
+
+/**
+ * A job that runs later, saved in storage so it survives restarts. `P` types
+ * the payload (JSON-serializable).
+ *
+ *   const remind = task<{ userId: number; text: string }>('remind').run(async ({ payload, bot, app }) => {
+ *     await bot.api.sendMessage(payload.userId, payload.text);
+ *   });
+ *   app.register(remind);
+ *   await app.schedule(remind, { userId, text: 'Stand up!' }, { delayMs: 60 * 60_000 });
+ */
+export class Task<P = unknown, C extends Context = Context> {
+  readonly kind = 'task' as const;
+  declare readonly __payload?: P;
+
+  /** @internal */ runFn?: (args: TaskArgs<P, C>) => Awaitable<void>;
+  /** @internal */ options: TaskOptions = {};
+
+  /** @internal Use `task(id)`. */
+  constructor(readonly id: string) {
+    assertValidId('task', id);
+  }
+
+  run(fn: (args: TaskArgs<P, C>) => Awaitable<void>, options: TaskOptions = {}): this {
+    if (this.runFn) throw new EasyTGError(`Task "${this.id}" already has a handler`);
+    this.runFn = fn;
+    this.options = options;
+    return this;
+  }
+}
+
+/** Declare a scheduled task. See `Task`. */
+export function task<P = undefined, C extends Context = Context>(id: string): Task<P, C> {
+  return new Task<P, C>(id);
 }

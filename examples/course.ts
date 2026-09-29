@@ -11,11 +11,13 @@
  *
  * Shows: `copy` + `protectContent`, per-button `{ mode: 'send' }` (the video
  * stays), `.params(parse)`, signed buttons, access middlewares, a
- * `prepareProactive` hook, `sendTo` with `allowedUsers`, `app.edit`, and the
- * `sent` event for auto-deleting videos.
+ * `prepareProactive` hook, `sendTo` with `allowedUsers`, `app.edit`, and
+ * `deleteAfterMs` for videos that delete themselves (a scheduled task in
+ * course.sqlite, so it survives restarts).
  */
+import { Database } from 'bun:sqlite';
 import { Bot, type Context } from 'grammy';
-import { EasyTG, InvalidParamsError, md, withContext, type Middleware } from '../src';
+import { EasyTG, InvalidParamsError, SqliteStorage, md, withContext, type Middleware } from '../src';
 
 const env = process.env;
 if (!env.BOT_TOKEN) {
@@ -100,6 +102,7 @@ const lesson = page<{ n: string }>('lesson')
     return {
       copy: { fromChatId: STORAGE_CHAT_ID, messageId: current.messageId },
       protectContent: true,
+      deleteAfterMs: VIDEO_TTL_MS, // scheduled: run by app.startScheduler below
       text: md`**${current.title}**\n\n⏳ Available for ${VIDEO_TTL_MS / 60000} minutes.`,
       keyboard: [
         next && [nav.button(`⏭ ${next.title}`, lesson, { n: next.n }, { mode: 'send' })],
@@ -154,6 +157,8 @@ const decisionNotice = page<{ approved: string }>('decision').render(({ params, 
 
 const bot = new Bot<Ctx>(env.BOT_TOKEN);
 const app = new EasyTG<Ctx>({
+  // Sessions and scheduled deletions survive restarts.
+  storage: new SqliteStorage(new Database(env.DB_PATH ?? 'course.sqlite')),
   // Params are signed: buttons can't be forged, and nothing is stored per render.
   buttons: { params: 'signed', secret: env.SECRET ?? 'change-me-to-a-long-random-secret' },
   // sendTo / edit / broadcast contexts have `ctx.from` only when a user is given.
@@ -161,12 +166,6 @@ const app = new EasyTG<Ctx>({
     if (ctx.from) ctx.user = loadUser(ctx.from.id);
   },
 }).register(home, locked, lessonList, lesson, requestAccess, reviewCard, decisionNotice);
-
-// Auto-delete lesson videos after a while (a job queue would survive restarts).
-app.on('sent', ({ ctx, chatId, messageIds, page }) => {
-  if (page !== 'lesson') return;
-  setTimeout(() => ctx.api.deleteMessages(chatId, messageIds).catch(() => {}), VIDEO_TTL_MS);
-});
 
 bot.use((ctx, next) => {
   if (ctx.from) ctx.user = loadUser(ctx.from.id, ctx.from.first_name);
@@ -176,7 +175,9 @@ bot.use(app);
 bot.command('start', (ctx) => app.open(ctx, home));
 bot.catch((err) => console.error('Bot error:', err.error));
 
+const stopScheduler = app.startScheduler(bot); // runs the video deletions when they are due
 process.once('SIGINT', () => bot.stop());
 process.once('SIGTERM', () => bot.stop());
 
 await bot.start({ onStart: (me) => console.log(`@${me.username} is running. Send /start in Telegram.`) });
+await stopScheduler();

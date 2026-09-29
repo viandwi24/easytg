@@ -13,7 +13,7 @@ function setup(options: EasyTGOptions = {}) {
 describe('session expiry', () => {
   test('per-key TTL', async () => {
     const session = new Session();
-    session.set('otp', '1234', { ttlSeconds: 0.05 });
+    session.set('otp', '1234', { ttlMs: 50 });
     session.set('name', 'Ann');
     expect(session.get<string>('otp')).toBe('1234');
     await Bun.sleep(60);
@@ -28,7 +28,7 @@ describe('session expiry', () => {
   test('per-key TTL survives storage round trips', async () => {
     const { app, bot, message } = setup();
     let seen: unknown[] = [];
-    bot.command('set', async (ctx) => (await app.session(ctx)).set('otp', '1234', { ttlSeconds: 0.08 }));
+    bot.command('set', async (ctx) => (await app.session(ctx)).set('otp', '1234', { ttlMs: 80 }));
     bot.command('get', async (ctx) => void seen.push((await app.session(ctx)).get('otp')));
     await message('/set');
     await message('/get');
@@ -39,7 +39,7 @@ describe('session expiry', () => {
 
   test('session TTL is refreshed by activity, not only by writes', async () => {
     const storage = new MemoryStorage();
-    const { app, bot, message } = setup({ storage, session: { ttlSeconds: 0.2 } });
+    const { app, bot, message } = setup({ storage, session: { ttlMs: 200 } });
     const seen: unknown[] = [];
     bot.command('set', async (ctx) => (await app.session(ctx)).set('k', 'v'));
     bot.command('get', async (ctx) => void seen.push((await app.session(ctx)).get('k')));
@@ -57,7 +57,7 @@ describe('session expiry', () => {
   });
 
   test('without refreshOnActivity only writes extend the TTL', async () => {
-    const { app, bot, message } = setup({ session: { ttlSeconds: 0.2, refreshOnActivity: false } });
+    const { app, bot, message } = setup({ session: { ttlMs: 200, refreshOnActivity: false } });
     const seen: unknown[] = [];
     bot.command('set', async (ctx) => (await app.session(ctx)).set('k', 'v'));
     bot.command('get', async (ctx) => void seen.push((await app.session(ctx)).get('k')));
@@ -73,7 +73,7 @@ describe('session expiry', () => {
     let writes = 0;
     const inner = new MemoryStorage();
     const storage = { get: (k: string) => inner.get(k), set: (k: string, v: unknown, t?: number) => ((writes++), inner.set(k, v, t)), delete: (k: string) => inner.delete(k) };
-    const { app, bot, message } = setup({ storage, session: { ttlSeconds: 60 } });
+    const { app, bot, message } = setup({ storage, session: { ttlMs: 60_000 } });
     bot.command('set', async (ctx) => (await app.session(ctx)).set('k', 'v'));
     bot.command('get', async (ctx) => void (await app.session(ctx)).get('k'));
     await message('/set');
@@ -101,7 +101,7 @@ describe('anti-spam', () => {
     await press('p|p'); // still limited: spinner stopped silently, page not opened
     expect(find('answerCallbackQuery').at(-1)!.payload.text).toBeUndefined();
     expect(find('editMessageText')).toHaveLength(0);
-    expect(app.isLimited(7)).toBe(true);
+    expect(await app.isLimited(7)).toBe(true);
 
     await Bun.sleep(110);
     await message('back');
@@ -111,9 +111,9 @@ describe('anti-spam', () => {
   test('strikes accumulate; listeners can escalate or release', async () => {
     const { app, bot, message } = setup({ antiSpam: { limit: 1, windowMs: 1000, cooldownMs: 20, warn: false } });
     const strikes: number[] = [];
-    app.on('spam', ({ userId, strike }) => {
+    app.on('spam', async ({ userId, strike }) => {
       strikes.push(strike);
-      if (strike >= 2) app.limitUser(userId, 60_000); // "ban"
+      if (strike >= 2) await app.limitUser(userId, 60_000); // "ban"
     });
     let handled = 0;
     bot.on('message', () => void handled++);
@@ -127,9 +127,9 @@ describe('anti-spam', () => {
     await message('e');
     expect(strikes).toEqual([1, 2]);
     expect(handled).toBe(2);
-    expect(app.isLimited(7)).toBe(true);
+    expect(await app.isLimited(7)).toBe(true);
 
-    app.releaseUser(7);
+    await app.releaseUser(7);
     await message('f');
     expect(handled).toBe(3);
   });
@@ -169,7 +169,7 @@ describe('anti-spam', () => {
     off.bot.on('message', () => void b++);
     for (let i = 0; i < 30; i++) await off.message('x');
     expect(b).toBe(30);
-    off.app.limitUser(7, 1000); // manual limits still work
+    await off.app.limitUser(7, 1000); // manual limits still work
     await off.message('x');
     expect(b).toBe(30);
 

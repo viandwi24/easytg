@@ -4,8 +4,8 @@
  *
  * In your project, import from 'easytg' and 'easytg/testing' instead.
  */
-import { describe, expect, test } from 'bun:test';
-import { EasyTG, dialogue, page, replyMenu, type DialogueContact } from '../src';
+import { describe, expect, setSystemTime, test } from 'bun:test';
+import { EasyTG, dialogue, page, replyMenu, task, type DialogueContact } from '../src';
 import { createTestBot, telegramError } from '../src/testing';
 
 // ---- the bot under test -------------------------------------------------------
@@ -116,5 +116,41 @@ describe('failures', () => {
         : { message_id: 1, date: 1, chat: { id: p.chat_id, type: 'private' }, text: p.text };
     const result = await t.app.broadcast(t.bot, [1, 2, 3], t.orders, { perSecond: 1000 });
     expect(result).toMatchObject({ sent: 2, blocked: 1, blockedChats: [2] });
+  });
+});
+
+describe('text input and scheduled tasks', () => {
+  test('type into a page with onText', async () => {
+    const t = createTestBot();
+    const app = new EasyTG({ logger: false });
+    const search = page<{ q?: string }>('search')
+      .render(({ params }) => ({ text: params.q ? `Results for ${params.q}` : 'Type a name', parseMode: 'plain' }))
+      .onText(({ text, nav }) => nav.redirect(search, { q: text }));
+    app.register(search);
+    t.bot.use(app);
+    t.bot.command('search', (ctx) => app.open(ctx, search));
+
+    await t.message('/search');
+    await t.message('green tea');
+    expect(t.find('sendMessage').at(-1)!.payload.text).toBe('Results for green tea');
+  });
+
+  test('run due tasks yourself, moving the clock forward', async () => {
+    const t = createTestBot();
+    const app = new EasyTG({ logger: false });
+    const remind = task<{ chatId: number }>('remind').run(async ({ payload, bot }) => {
+      await bot.api.sendMessage(payload.chatId, 'Time to stretch!');
+    });
+    app.register(remind);
+    await app.schedule(remind, { chatId: 7 }, { delayMs: 60 * 60_000 });
+
+    expect(await app.runDueTasks(t.bot)).toBe(0); // not due yet
+    setSystemTime(new Date(Date.now() + 61 * 60_000)); // an hour later…
+    try {
+      expect(await app.runDueTasks(t.bot)).toBe(1);
+    } finally {
+      setSystemTime(); // back to the real clock
+    }
+    expect(t.find('sendMessage').at(-1)!.payload).toMatchObject({ chat_id: 7, text: 'Time to stretch!' });
   });
 });

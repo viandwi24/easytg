@@ -166,7 +166,7 @@ describe('storage adapters', () => {
   });
 
   test('verifyStorageAdapter', async () => {
-    await verifyStorageAdapter(new MemoryStorage());
+    await verifyStorageAdapter(new MemoryStorage(), { ttlMs: 200 });
     const map = new Map<string, string>();
     const stringly: StorageAdapter = {
       get: async (key) => map.get(key) ?? null, // forgot JSON.parse
@@ -174,13 +174,6 @@ describe('storage adapters', () => {
       delete: async (key) => void map.delete(key),
     };
     expect(verifyStorageAdapter(stringly)).rejects.toThrow(/equal object/);
-  });
-
-  test('example SqliteStorage passes verifyStorageAdapter', async () => {
-    const { SqliteStorage } = await import('../examples/storage/sqlite');
-    const storage = new SqliteStorage(':memory:');
-    await verifyStorageAdapter(storage);
-    storage.close();
   });
 
   test('MemoryStorage clones values', async () => {

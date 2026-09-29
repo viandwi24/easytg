@@ -5,10 +5,10 @@ import {
   EasyTG,
   InvalidParamsError,
   MemoryStorage,
-  isBlockedByUser,
+  isChatUnreachable,
   isMessageNotFound,
   page,
-  retryAfter,
+  retryAfterMs,
   type EasyTGOptions,
   type StorageAdapter,
 } from '../src';
@@ -343,12 +343,12 @@ describe('9. signed buttons', () => {
 
 describe('11. error helpers', () => {
   test('classify common Telegram errors', () => {
-    expect(isBlockedByUser(telegramError('Forbidden: bot was blocked by the user', { code: 403 }))).toBe(true);
-    expect(isBlockedByUser(telegramError('Bad Request: chat not found'))).toBe(true);
-    expect(isBlockedByUser(telegramError('Bad Request: message is not modified'))).toBe(false);
+    expect(isChatUnreachable(telegramError('Forbidden: bot was blocked by the user', { code: 403 }))).toBe(true);
+    expect(isChatUnreachable(telegramError('Bad Request: chat not found'))).toBe(true);
+    expect(isChatUnreachable(telegramError('Bad Request: message is not modified'))).toBe(false);
     expect(isMessageNotFound(telegramError('Bad Request: message to delete not found'))).toBe(true);
-    expect(retryAfter(telegramError('Too Many Requests', { code: 429, retryAfter: 5 }))).toBe(5);
-    expect(retryAfter(new Error('x'))).toBeUndefined();
+    expect(retryAfterMs(telegramError('Too Many Requests', { code: 429, retryAfter: 5 }))).toBe(5000);
+    expect(retryAfterMs(new Error('x'))).toBeUndefined();
   });
 });
 
@@ -442,12 +442,12 @@ describe('0.2.1', () => {
     await one.message('b'); // limited on bot 1
     await two.message('c'); // bot 2 is unaffected
     expect(handled).toBe(2);
-    expect(app.isLimited(7, 1)).toBe(true);
-    expect(app.isLimited(7, 2)).toBe(false);
-    expect(app.isLimited(7)).toBe(true); // on any bot
+    expect(await app.isLimited(7, 1)).toBe(true);
+    expect(await app.isLimited(7, 2)).toBe(false);
+    expect(await app.isLimited(7)).toBe(true); // on any bot
 
-    app.releaseUser(7);
-    app.limitUser(8, 60_000); // no bot id: every bot
+    await app.releaseUser(7);
+    await app.limitUser(8, 60_000); // no bot id: every bot
     await one.message('x', { userId: 8 });
     await two.message('y', { userId: 8 });
     expect(handled).toBe(2);

@@ -23,9 +23,9 @@ describe('anti-spam only counts and drops user interactions', () => {
     t.bot.on('pre_checkout_query', () => void checkouts++);
     for (let i = 0; i < 25; i++) await t.update({ inline_query: { id: `${i}`, from: user, query: 'a', offset: '' } });
     expect(inline).toBe(25);
-    expect(t.app.isLimited(7)).toBe(false);
+    expect(await t.app.isLimited(7)).toBe(false);
 
-    t.app.limitUser(7, 60_000);
+    await t.app.limitUser(7, 60_000);
     await t.update({ pre_checkout_query: { id: 'q', from: user, currency: 'USD', total_amount: 100, invoice_payload: 'x' } } as any);
     expect(checkouts).toBe(1);
   });
@@ -33,16 +33,16 @@ describe('anti-spam only counts and drops user interactions', () => {
   test('group chatter does not count; group commands do', async () => {
     const t = setup({ antiSpam: { limit: 2 } });
     for (let i = 0; i < 10; i++) await t.message('chatting', { chatType: 'group' });
-    expect(t.app.isLimited(7)).toBe(false);
+    expect(await t.app.isLimited(7)).toBe(false);
     for (let i = 0; i < 3; i++) await t.message('/cmd', { chatType: 'group' });
-    expect(t.app.isLimited(7)).toBe(true);
+    expect(await t.app.isLimited(7)).toBe(true);
   });
 
   test('a custom filter decides what counts', async () => {
     const t = setup({ antiSpam: { limit: 1, filter: (ctx) => !!ctx.inlineQuery } });
     await t.update({ inline_query: { id: '1', from: user, query: 'a', offset: '' } });
     await t.update({ inline_query: { id: '2', from: user, query: 'a', offset: '' } });
-    expect(t.app.isLimited(7)).toBe(true);
+    expect(await t.app.isLimited(7)).toBe(true);
   });
 });
 
@@ -128,7 +128,10 @@ test('md values inside code show exactly as typed; html escapes quotes', () => {
   expect(md`id: \`${'a.b_c'}\``.html).toBe('id: <code>a.b_c</code>');
   expect(md`\`${'x`y'}\` after`.html).toBe('<code>x`y</code> after');
   expect(md`${'x'}`.html).toBe('x');
-  expect(markdownToHtml('```\na\\_b\n```')).toBe('<pre>a_b</pre>');
+  // Code is shown as written: only `\\` and `\`` are escapes there.
+  expect(markdownToHtml('```\na\\_b\n```')).toBe('<pre>a\\_b</pre>');
+  expect(markdownToHtml('`/^\\d+$/`')).toBe('<code>/^\\d+$/</code>');
+  expect(markdownToHtml('```c++\n**x**\n```')).toBe('<pre><code class="language-c++">**x**</code></pre>');
   expect(html`<a href='${"x' onclick='y"}'>t</a>`.html).toBe("<a href='x&#39; onclick=&#39;y'>t</a>");
 });
 

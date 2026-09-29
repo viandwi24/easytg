@@ -1,4 +1,4 @@
-/** Every user-facing string easytg sends by itself. Override via `new EasyTG({ texts })`. */
+/** Every user-facing string easytg sends by itself. Override via `new EasyTG({ i18n: { texts, locales } })`. */
 export interface EasyTGTexts {
   home: string;
   back: string;
@@ -14,6 +14,8 @@ export interface EasyTGTexts {
   buttonExpired: string;
   notYourMenu: string;
   busy: string;
+  /** `requireChatAdmin`: a non-admin pressed an admin-only button. */
+  adminOnly: string;
   spam: (seconds: number) => string;
   closeMenu: string;
   menuClosed: string;
@@ -27,8 +29,9 @@ export interface EasyTGTexts {
   /** Sent when a dialogue with reply-keyboard buttons is cancelled, to put the menu back. */
   cancelled: string;
   collectMin: (min: number) => string;
-  collectReceived: (count: { total: number; texts: number; files: number }) => string;
-  collectLimit: (max: number) => string;
+  /** `done` is the label of the Done button (`texts.done`). */
+  collectReceived: (count: { total: number; texts: number; files: number; done: string }) => string;
+  collectLimit: (limit: { max: number; done: string }) => string;
 }
 
 export const defaultTexts: EasyTGTexts = {
@@ -46,6 +49,7 @@ export const defaultTexts: EasyTGTexts = {
   buttonExpired: 'This button is no longer active.',
   notYourMenu: 'This menu belongs to someone else.',
   busy: '⏳ Please wait…',
+  adminOnly: 'Only chat admins can do this.',
   spam: (seconds) => `🐢 Too many requests. Please wait ${seconds}s.`,
   closeMenu: '✖️ Close menu',
   menuClosed: 'Menu closed.',
@@ -57,6 +61,6 @@ export const defaultTexts: EasyTGTexts = {
   received: '👍 Got it.',
   cancelled: 'Cancelled.',
   collectMin: (min) => (min <= 1 ? "You haven't sent anything yet." : `Please send at least ${min} items.`),
-  collectReceived: ({ total }) => `Received ${total} item(s). Send more, or press ✅ Done.`,
-  collectLimit: (max) => `You can send at most ${max} items. Press ✅ Done to continue.`,
+  collectReceived: ({ total, done }) => `Received ${total} item(s). Send more, or press ${done}.`,
+  collectLimit: ({ max, done }) => `You can send at most ${max} items. Press ${done} to continue.`,
 };

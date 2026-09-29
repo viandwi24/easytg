@@ -1,4 +1,4 @@
-import { GrammyError } from 'grammy';
+import { GrammyError, HttpError } from 'grammy';
 
 /** Error thrown for developer mistakes (invalid ids, oversized callback data, ...). */
 export class EasyTGError extends Error {
@@ -42,7 +42,7 @@ export function isMessageUnavailable(error: unknown): boolean {
 }
 
 /** The chat can't be messaged anymore: the user blocked the bot, deleted their account, or the bot left the chat. */
-export function isBlockedByUser(error: unknown): boolean {
+export function isChatUnreachable(error: unknown): boolean {
   return error instanceof GrammyError && (error.error_code === 403 || error.description.includes('chat not found'));
 }
 
@@ -52,9 +52,18 @@ export function isMessageNotFound(error: unknown): boolean {
   return text.includes('message to edit not found') || text.includes('message to delete not found') || text.includes('MESSAGE_ID_INVALID');
 }
 
-/** Seconds Telegram asks to wait (HTTP 429 "Too Many Requests"), or undefined for other errors. */
-export function retryAfter(error: unknown): number | undefined {
-  return error instanceof GrammyError && error.error_code === 429 ? (error.parameters.retry_after ?? 1) : undefined;
+/** How long Telegram asks to wait, in ms (HTTP 429 "Too Many Requests"), or undefined for other errors. */
+export function retryAfterMs(error: unknown): number | undefined {
+  return error instanceof GrammyError && error.error_code === 429 ? (error.parameters.retry_after ?? 1) * 1000 : undefined;
+}
+
+/**
+ * Worth trying again later: rate limits (429), network failures and
+ * Telegram's own server errors (5xx).
+ */
+export function isTransient(error: unknown): boolean {
+  if (error instanceof HttpError) return true;
+  return error instanceof GrammyError && (error.error_code === 429 || error.error_code >= 500);
 }
 
 /** The callback query was already answered or expired. */

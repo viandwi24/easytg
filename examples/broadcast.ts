@@ -4,8 +4,9 @@
  *
  *   BOT_TOKEN=123:abc ADMIN_ID=<your telegram user id> bun run examples/broadcast.ts
  *
- * Shows: app.broadcast (pacing, blocked users, progress), app.sendTo,
- * middlewares guarding a dialogue, events (pageView, dialogue*, spam).
+ * Shows: app.broadcast (pacing, blocked users, progress) running in the
+ * background, middlewares guarding a dialogue, events (pageView, dialogue*, spam).
+ * /later schedules a post with `app.broadcastLater` (survives restarts with a real storage).
  */
 import { Bot } from 'grammy';
 import { EasyTG, dialogue, md, page, type Middleware } from '../src';
@@ -19,6 +20,7 @@ const ADMIN_ID = Number(process.env.ADMIN_ID ?? 0);
 
 // A real bot keeps subscribers in a database; a Set keeps the example short.
 const subscribers = new Set<number>();
+const posts = new Map<string, string>(); // post id → text
 const stats = { views: 0, broadcasts: 0 };
 
 // ---- pages ------------------------------------------------------------------
@@ -48,8 +50,10 @@ const unsubscribe = page('unsubscribe').render(({ ctx, nav }) => {
 // What subscribers receive. It is rendered per recipient with *their* session,
 // so it can be personal. (Broadcast renders have no incoming message: `ctx.from`
 // only carries the user id, so keep what you need in the session.)
-const news = page<{ text: string }>('news').render(({ params, session, nav }) => ({
-  text: [md`📰 **News for ${session.get<string>('name') ?? 'you'}**`, '', params.text],
+// The post goes in as an id, not its text: params end up in every recipient's
+// navigation history and in stored buttons.
+const news = page<{ post: string }>('news').render(({ params, session, nav }) => ({
+  text: [md`📰 **News for ${session.get<string>('name') ?? 'you'}**`, '', posts.get(params.post) ?? '(removed)'],
   keyboard: [[nav.button('🔕 Unsubscribe', unsubscribe)]],
 }));
 
@@ -75,27 +79,29 @@ const compose = dialogue<{ text: string; confirm: string }>('compose')
     },
   ])
   .onFinish(async ({ answers, ctx }) => {
+    const post = String(posts.size + 1);
+    posts.set(post, answers.text);
     const status = await ctx.reply(`Sending to ${subscribers.size}…`);
-    const result = await app.broadcast(bot, subscribers, news, {
-      params: { text: answers.text },
-      perSecond: 20,
-      // Live progress in one message (every 10 recipients, to stay within limits).
-      onProgress: async ({ total, sent, blocked, failed }) => {
-        if ((sent + blocked + failed) % 10 === 0) {
-          await ctx.api.editMessageText(status.chat.id, status.message_id, `Sending… ${sent + blocked + failed}/${total}`).catch(() => {});
-        }
-      },
-    });
-    for (const chat of result.blockedChats) subscribers.delete(chat); // they blocked the bot
-    stats.broadcasts++;
-    return {
-      text: [
-        '**Broadcast done**',
-        `✅ Sent: ${result.sent}`,
-        `🚫 Blocked the bot: ${result.blocked} (removed)`,
-        `⚠️ Failed: ${result.failed}`,
-      ],
-    };
+    // Not awaited: a broadcast takes minutes, and the bot keeps answering everyone meanwhile.
+    void app
+      .broadcast(bot, subscribers, news, {
+        params: { post },
+        perSecond: 20,
+        // Live progress in one message (every 10 recipients, to stay within limits).
+        onProgress: async ({ total, sent, blocked, failed }) => {
+          if ((sent + blocked + failed) % 10 === 0) {
+            await ctx.api.editMessageText(status.chat.id, status.message_id, `Sending… ${sent + blocked + failed}/${total}`).catch(() => {});
+          }
+        },
+      })
+      .then(async (result) => {
+        for (const chat of result.blockedChats) subscribers.delete(chat); // they blocked the bot
+        stats.broadcasts++;
+        const report = [`Broadcast done`, `✅ Sent: ${result.sent}`, `🚫 Blocked the bot: ${result.blocked} (removed)`, `⚠️ Failed: ${result.failed}`];
+        await ctx.api.editMessageText(status.chat.id, status.message_id, report.join('\n'));
+      })
+      .catch((error) => console.error('Broadcast failed', error));
+    return undefined; // the status message tells the rest
   });
 
 const statsPage = page('stats').use(adminOnly).render(() => ({
@@ -119,7 +125,7 @@ app.on('dialogueFinish', ({ dialogue }) => console.log(`dialogue finished: ${dia
 app.on('spam', async ({ ctx, userId, strike, silence }) => {
   console.warn(`user ${userId} is flooding (strike ${strike})`);
   if (strike >= 3) {
-    app.limitUser(userId, 60 * 60 * 1000); // mute for an hour
+    await app.limitUser(userId, 60 * 60 * 1000); // mute for an hour
     silence(); // skip the default warning…
     await ctx.reply('You have been muted for an hour.').catch(() => {}); // …and send our own
   }
@@ -128,11 +134,28 @@ app.on('spam', async ({ ctx, userId, strike, silence }) => {
 bot.use(app);
 bot.command('start', (ctx) => app.open(ctx, home));
 bot.command('stats', (ctx) => app.open(ctx, statsPage));
+
+// /later <text>: the same post in one minute, as scheduled tasks (batches of
+// recipients). With SqliteStorage or RedisStorage it survives restarts; here
+// tasks live in memory.
+bot.command('later', async (ctx) => {
+  if (ctx.from?.id !== ADMIN_ID || !ctx.match) return;
+  const post = String(posts.size + 1);
+  posts.set(post, ctx.match);
+  const { batches } = await app.broadcastLater(subscribers, news, { params: { post }, delayMs: 60_000, botId: ctx.me.id });
+  await ctx.reply(`Scheduled: ${batches} batch(es), starting in a minute.`);
+});
+app.on('broadcastBatch', ({ batch, batches, result }) => {
+  console.log(`batch ${batch + 1}/${batches}: sent ${result.sent}, blocked ${result.blocked}`);
+  for (const chat of result.blockedChats) subscribers.delete(chat);
+});
 bot.catch((err) => console.error('Bot error:', err.error));
 
+const stopScheduler = app.startScheduler(bot);
 process.once('SIGINT', () => bot.stop());
 process.once('SIGTERM', () => bot.stop());
 
 await bot.start({
   onStart: (me) => console.log(`@${me.username} is running.${ADMIN_ID ? '' : ' Set ADMIN_ID to try broadcasting.'}`),
 });
+await stopScheduler();

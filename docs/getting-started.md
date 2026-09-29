@@ -134,11 +134,14 @@ const myOrders = page('orders').render(({ session, nav }) => ({
 ```
 
 By default, sessions live in memory and are lost on restart. For production,
-pass a storage adapter backed by your database, e.g. the
-[SQLite adapter](../examples/storage/sqlite.ts):
+use a [storage adapter](storage.md), e.g. SQLite (or Redis for several
+processes):
 
 ```ts
-const app = new EasyTG({ storage: new SqliteStorage('bot.sqlite') });
+import { Database } from 'bun:sqlite';
+import { SqliteStorage } from 'easytg';
+
+const app = new EasyTG({ storage: new SqliteStorage(new Database('bot.sqlite')) });
 ```
 
 ## 6. A main menu
@@ -182,18 +185,19 @@ test('shows the menu', async () => {
 
 ## What's next
 
-The [guide](guide.md) covers everything else:
+The [documentation](README.md) covers everything else, one page per feature:
 
-- [Main menu](guide.md#main-menu-reply-keyboard): more on the reply keyboard, and `contact` / `location` dialogue steps
-- [Back buttons](guide.md#back) and [media](guide.md#media): videos, documents, albums, copies from a channel, `protectContent`
-- [Keeping the pressed message](guide.md#keeping-the-pressed-message) and [validating params](guide.md#validating-params) (`.params(parse)`)
-- [Updating a message later](guide.md#updating-a-message-later) (`app.edit`) and [events](guide.md#events) such as `sent` and `pageView`
-- [Middlewares](guide.md#middlewares): login checks and admin-only pages
-- [Text formatting](guide.md#text-formatting): Markdown, HTML, escaping
-- [Button params](guide.md#button-params-inline-or-stored): tamper-proof buttons
-- [Deep links](guide.md#deep-links): `t.me/yourbot?start=…`
-- [Sending without an update](guide.md#sending-without-an-update): notifications from cron jobs and webhooks, and [broadcasts](guide.md#broadcast)
-- [Anti-spam](guide.md#anti-spam), [Languages](guide.md#languages), [Storage](guide.md#storage)
+- [Main menu](menu.md): more on the reply keyboard, and `contact` / `location` dialogue steps
+- [Pages](pages.md): Back buttons, keeping the pressed message, validating params, `app.edit`, middlewares
+- [Media](media.md): videos, documents, albums, copies from a channel, `protectContent`
+- [Text input](text-input.md): search boxes with `page.onText`
+- [Languages](i18n.md): translate your messages with `t()`
+- [Text formatting](formatting.md): Markdown, HTML, escaping
+- [Button params](button-params.md): tamper-proof buttons, and [deep links](deep-links.md)
+- [Sending without an update](proactive.md): notifications, `sendLater`, broadcasts
+- [Scheduled tasks](scheduler.md), [queues](queues.md) and [payments](payments.md)
+- [Anti-spam](anti-spam.md), [scaling](scaling.md) and [storage](storage.md) for production
 
-For complete bots, see the [examples](guide.md#examples): a shop, a media gallery,
-members-only video lessons, a newsletter, captchas and tests.
+For complete bots, see the [examples](README.md#examples): a shop, a search in two
+languages, reminders, a Stars shop, members-only video lessons, a newsletter,
+captchas and tests.

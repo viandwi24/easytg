@@ -40,11 +40,15 @@ export function assertValidId(kind: string, id: string) {
   }
 }
 
-/** Drop null/undefined and stringify, i.e. exactly what the page will receive. */
+/**
+ * Drop null/undefined/false and stringify, i.e. exactly what the page will
+ * receive: `{ archived: false }` arrives as no `archived` param (a `"false"`
+ * string would be truthy), `true` as `"true"`.
+ */
 export function normalizeParams(params: ParamsInput = {}): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
+    if (value === undefined || value === null || value === false) continue;
     out[key] = String(value);
   }
   return out;
