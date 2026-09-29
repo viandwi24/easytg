@@ -2,7 +2,7 @@
  * Mini Apps (Web Apps): checking what a Mini App sends to your server, and
  * links that open one. See https://core.telegram.org/bots/webapps
  */
-import { createHmac, createPublicKey, timingSafeEqual, verify as verifySignature } from 'node:crypto';
+import { fromBase64Url, fromHex, hmacSha256, timingSafeEqual, utf8 } from './platform/crypto';
 import type { Chat, User } from 'grammy/types';
 import { EasyTGError } from './errors';
 
@@ -110,31 +110,34 @@ export function verifyInitData(initData: string | URLSearchParams, botToken: str
   const hash = raw.hash;
   if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) throw new WebAppAuthError('malformed');
   // secret_key = HMAC_SHA256(key: "WebAppData", message: bot_token)
-  const secret = createHmac('sha256', 'WebAppData').update(botToken).digest();
-  const expected = createHmac('sha256', secret).update(checkString(raw, ['hash'])).digest();
-  if (!timingSafeEqual(expected, Buffer.from(hash, 'hex'))) throw new WebAppAuthError('invalid');
+  const secret = hmacSha256('WebAppData', botToken);
+  const expected = hmacSha256(secret, checkString(raw, ['hash']));
+  if (!timingSafeEqual(expected, fromHex(hash))) throw new WebAppAuthError('invalid');
   return parse(raw, options.maxAgeMs ?? 24 * 60 * 60 * 1000);
 }
 
 /**
  * Check `initData` without the bot token, with Telegram's public key (for a
  * server that shouldn't hold the token). Needs the bot's id, the number
- * before `:` in its token.
+ * before `:` in its token. Async: it uses Web Crypto's Ed25519 (Node ≥ 20,
+ * Bun, Deno, current browsers).
+ *
+ *   const { user } = await verifyInitDataSignature(initData, 123456789);
  */
-export function verifyInitDataSignature(
+export async function verifyInitDataSignature(
   initData: string | URLSearchParams,
   botId: number,
   options: VerifyInitDataOptions & { environment?: 'production' | 'test'; /** @internal */ publicKey?: string } = {},
-): WebAppInitData {
+): Promise<WebAppInitData> {
   const raw = fields(initData);
   const signature = raw.signature;
   if (!signature) throw new WebAppAuthError('malformed');
   const keyHex = options.publicKey ?? TELEGRAM_PUBLIC_KEYS[options.environment ?? 'production'];
-  const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(keyHex, 'hex').toString('base64url') }, format: 'jwk' });
   const message = `${botId}:WebAppData\n${checkString(raw, ['hash', 'signature'])}`;
   let valid = false;
   try {
-    valid = verifySignature(null, Buffer.from(message), key, Buffer.from(signature, 'base64url'));
+    const key = await crypto.subtle.importKey('raw', fromHex(keyHex), { name: 'Ed25519' }, false, ['verify']);
+    valid = await crypto.subtle.verify({ name: 'Ed25519' }, key, fromBase64Url(signature), utf8(message));
   } catch {
     throw new WebAppAuthError('malformed');
   }

@@ -28,6 +28,38 @@ A render returns one of:
 - **`nav.startDialogue(dialogue, params)`**: start a dialogue; the menu is closed
 - **nothing**: do nothing
 
+## Try it
+
+A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, md, page } from 'easytg';
+
+const fruits = { apple: '🍎 Apple', banana: '🍌 Banana', cherry: '🍒 Cherry' };
+
+const home = page('home').render(({ ctx, nav }) => ({
+  text: md`Hi **${ctx.from?.first_name}**! Pick a fruit:`,
+  keyboard: [Object.entries(fruits).map(([id, label]) => nav.button(label, fruit, { id }))],
+}));
+
+const fruit = page<{ id: string }>('fruit').render(({ params, nav }) => {
+  const label = fruits[params.id as keyof typeof fruits];
+  if (!label) return nav.redirect(home); // params come from buttons: check them
+  return {
+    text: md`You picked **${label}**.`,
+    keyboard: [[nav.back()], [nav.close()]],
+    toast: 'Good choice!',
+  };
+});
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(home, fruit);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, home));
+bot.start();
+```
+
 ## `nav`
 
 | | |
@@ -187,6 +219,33 @@ new EasyTG({ loading: { action: 'typing' } });                   // a default fo
 - `dialogue(...).loading(...)` does the same for a slow `onFinish`, and
   `app.withLoading(ctx, job, options)` for your own handlers (its placeholder
   is deleted when the job is done).
+
+Try both:
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, page } from 'easytg';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const home = page('home').render(({ nav }) => ({
+  text: 'Ask the slow oracle:',
+  keyboard: [[nav.button('🔮 Placeholder', answer, { how: 'text' })], [nav.button('💬 Typing…', answer, { how: 'typing' })]],
+}));
+
+const answer = page<{ how: string }>('answer')
+  .loading({ text: '⏳ Thinking…', action: 'typing', afterMs: 300 })
+  .render(async ({ nav }) => {
+    await sleep(2500); // an AI model, a report…
+    return { text: '✨ The answer is 42.', keyboard: [[nav.back()]] };
+  });
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(home, answer);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, home));
+bot.start();
+```
 
 [`examples/loading.ts`](../examples/loading.ts) shows every variant.
 

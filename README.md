@@ -10,7 +10,7 @@ Menus, forms and navigation on top of [grammY](https://grammy.dev). Define a scr
 [![CI](https://github.com/viandwi24/easytg/actions/workflows/ci.yml/badge.svg)](https://github.com/viandwi24/easytg/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/easytg.svg)](LICENSE)
 
-[Getting started](docs/getting-started.md) · [Documentation](docs/README.md) · [Examples](docs/README.md#examples)
+[Getting started](docs/getting-started.md) · [Documentation](docs/README.md) · [Examples](docs/README.md#examples) · [**Try it in your browser**](https://viandwi24.github.io/easytg/playground)
 
 </div>
 
@@ -23,16 +23,13 @@ callback handler that *edits* it, answering the callback query, packing state
 into 64-byte `callback_data`, and escaping every user-provided string. easytg
 takes care of that plumbing.
 
-<table>
-<tr><th>grammY only</th><th>with easytg</th></tr>
-<tr><td>
+**With grammY alone**, one screen takes three handlers:
 
 ```ts
 bot.command('start', (ctx) =>
   ctx.reply(`Hi <b>${escape(ctx.from.first_name)}</b>`, {
     parse_mode: 'HTML',
-    reply_markup: new InlineKeyboard()
-      .text('Order #42', 'order:42'),
+    reply_markup: new InlineKeyboard().text('Order #42', 'order:42'),
   }));
 
 bot.callbackQuery(/^order:(.+)$/, async (ctx) => {
@@ -49,7 +46,7 @@ bot.callbackQuery('home', async (ctx) => {
 });
 ```
 
-</td><td>
+**With easytg**, you describe the screens and easytg sends, edits and answers:
 
 ```ts
 const home = page('home').render(({ ctx, nav }) => ({
@@ -66,9 +63,6 @@ const app = new EasyTG().register(home, order);
 bot.use(app);
 bot.command('start', (ctx) => app.open(ctx, home));
 ```
-
-</td></tr>
-</table>
 
 ## Features
 
@@ -89,7 +83,8 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - 📊 **Events** for analytics and monitoring: `update` (with timings), `pageView`, `sent`, dialogue events, `spam`, `error`, `payment`, `queueWait`, `taskError`, `broadcastBatch`, `webAppData`.
 - 🤖 **Multi-bot ready.** One app instance can serve several bots sharing one storage; sessions, buttons and rate limits stay per bot.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
-- 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first, works on Node ≥ 18.
+- 💬 **Telegram simulator.** `easytg/simulator` is an in-memory Telegram with users, groups, buttons, inline mode and payments, plus a chat window for the browser. The [docs site](https://viandwi24.github.io/easytg) uses it for live playgrounds.
+- 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first; works on Node ≥ 20, Deno and in browsers.
 
 ## Install
 
@@ -145,11 +140,19 @@ Next, **[Getting started](docs/getting-started.md)** walks through building a sm
 // A dialogue in a nutshell
 const signup = dialogue('signup')
   .steps([
-    { id: 'name', type: 'text', text: 'Your name?', validate: (v) => v.length >= 2 || 'Too short' },
-    { id: 'plan', type: 'choice', text: 'Plan?', options: [{ text: 'Free', value: 'free' }, { text: 'Pro', value: 'pro' }] },
+    {
+      id: 'name', type: 'text', text: 'Your name?',
+      validate: (v) => v.length >= 2 || 'Too short',
+    },
+    {
+      id: 'plan', type: 'choice', text: 'Plan?',
+      options: [{ text: 'Free', value: 'free' }, { text: 'Pro', value: 'pro' }],
+    },
   ])
   // answers: { name: string; plan: 'free' | 'pro' }, read off the steps
-  .onFinish(({ answers }) => ({ text: md`Welcome, ${answers.name}! Plan: ${answers.plan}` }));
+  .onFinish(({ answers }) => ({
+    text: md`Welcome, ${answers.name}! Plan: ${answers.plan}`,
+  }));
 ```
 
 ## Examples
@@ -183,12 +186,13 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 
 ## Documentation
 
+- **[Docs site](https://viandwi24.github.io/easytg)**: these docs with live playgrounds, and every example running [in your browser](https://viandwi24.github.io/easytg/playground).
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Documentation](docs/README.md)**: one page per feature.
   - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
   - Data: [Sessions](docs/sessions.md) · [Storage](docs/storage.md) · [Button params](docs/button-params.md) · [Deep links](docs/deep-links.md)
   - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
-  - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md)
+  - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md) · [Simulator](docs/simulator.md)
 - **[API reference](docs/app.md)**: every export and `app` method.
 - **[Migrating](docs/migration.md)**: breaking changes and how to update.
 - **[Changelog](CHANGELOG.md)**
@@ -196,7 +200,7 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 ## Requirements
 
 - [grammY](https://grammy.dev) ≥ 1.30
-- [Bun](https://bun.sh) or Node.js ≥ 18
+- [Bun](https://bun.sh), Node.js ≥ 20, Deno, or a browser
 - TypeScript is optional but recommended: it type-checks navigation.
 
 ## Contributing
@@ -208,6 +212,7 @@ bun install
 bun test            # unit and integration tests (fake Telegram API)
 bun run typecheck
 bun run build
+bun run docs:dev    # the docs site with its playgrounds, at localhost:5173
 ```
 
 Releases are automated. See [RELEASING.md](RELEASING.md).

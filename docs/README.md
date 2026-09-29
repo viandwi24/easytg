@@ -4,6 +4,10 @@ New to easytg? Start with [Getting started](getting-started.md): a small shop
 bot built step by step. Upgrading? See [Migrating](migration.md). Looking for
 a method? See the [API reference](app.md).
 
+On the [docs site](https://viandwi24.github.io/easytg/), code blocks marked
+"Try it" run in a Telegram simulator in your browser, and so does every example
+in the [playground](https://viandwi24.github.io/easytg/playground).
+
 ## Building the UI
 
 | | |
@@ -50,6 +54,7 @@ a method? See the [API reference](app.md).
 | [API reference](app.md) | every export and `app` method |
 | [Migrating](migration.md) | breaking changes between versions |
 | [Testing](testing.md) | `easytg/testing`: a fake Telegram API for your tests |
+| [Simulator](simulator.md) | `easytg/simulator`: an in-memory Telegram with users, groups and a browser chat window; easytg in the browser |
 
 ## Examples
 

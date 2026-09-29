@@ -24,6 +24,8 @@ in [Options](options.md). All durations are in milliseconds.
 | `isChatUnreachable`, `isMessageNotFound`, `isTransient`, `retryAfterMs` | [Error helpers](errors.md) |
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
 | `easytg/testing` | `createTestBot`, `telegramError`, `verifyStorageAdapter`, `verifyTaskStore` — [Testing](testing.md) |
+| `easytg/simulator` | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2` — [Simulator](simulator.md) |
+| `easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |
 
 ## `app` methods
 

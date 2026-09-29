@@ -11,7 +11,7 @@ const noop = () => {};
  * Default logger: warnings and errors go to the console, debug/info only when
  * `EASYTG_DEBUG=1` is set.
  */
-export function createConsoleLogger(debug = process.env.EASYTG_DEBUG === '1'): Logger {
+export function createConsoleLogger(debug = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.EASYTG_DEBUG === '1'): Logger {
   return {
     debug: debug ? (m, ...a) => console.debug(`[easytg] ${m}`, ...a) : noop,
     info: debug ? (m, ...a) => console.info(`[easytg] ${m}`, ...a) : noop,

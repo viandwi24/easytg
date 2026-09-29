@@ -36,3 +36,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # example databases
 *.sqlite
 *.sqlite-*
+
+# docs site
+website/.vitepress/cache
+website/.vitepress/dist

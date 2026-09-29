@@ -1,5 +1,27 @@
 # Migrating
 
+## 0.3 → 0.4
+
+Two small breaking changes, both from easytg dropping Node-only APIs so it
+also runs in browsers.
+
+- **`verifyInitDataSignature` returns a promise.** It checks Telegram's
+  Ed25519 signature with Web Crypto, which is async: add `await`.
+
+  ```ts
+  const init = verifyInitDataSignature(initData, botId);        // 0.3
+  const init = await verifyInitDataSignature(initData, botId);  // 0.4
+  ```
+
+  TypeScript points you to every call whose result is used directly.
+  `verifyInitData` (with the bot token) stays synchronous.
+- **Node.js 20 or newer.** easytg uses the global `crypto` (Web Crypto) for
+  random ids and Ed25519. Bun and Deno are unaffected.
+
+Nothing stored changes: signed buttons, stored button params, deep links and
+file id cache keys are computed exactly as before, so buttons in old messages
+keep working.
+
 ## 0.2 → 0.3
 
 0.3 adds a lot (storage adapters, scheduled tasks, queues, i18n, payments,

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { hmacSha256, timingSafeEqual, toBase64Url, utf8 } from './platform/crypto';
 
 /**
  * Signatures for `buttons.params: 'signed'`: params stay in the callback data,
@@ -22,7 +22,7 @@ function mac(secret: string, scope: SignScope, id: string, params: Record<string
     .sort()
     .map((key) => [key, params[key]]);
   const material = JSON.stringify([scope.botId, scope.chatId ?? null, scope.userId ?? null, id, sorted]);
-  return createHmac('sha256', secret).update(material).digest('base64url').slice(0, MAC_LENGTH);
+  return toBase64Url(hmacSha256(secret, material)).slice(0, MAC_LENGTH);
 }
 
 export function sign(secret: string, scope: SignScope, id: string, params: Record<string, string>): string {
@@ -42,7 +42,5 @@ export function verify(
   const bound = signature[0] === 'u';
   if (!bound && signature[0] !== 'a') return false;
   const expected = mac(secret, { ...scope, userId: bound ? pressedBy : undefined }, id, params);
-  const a = Buffer.from(signature.slice(1));
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  return timingSafeEqual(utf8(signature.slice(1)), utf8(expected));
 }

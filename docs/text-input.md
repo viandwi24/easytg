@@ -13,6 +13,34 @@ const search = page<{ q?: string }>('search')
   .onText(({ text, nav }) => nav.redirect(search, { q: text }));
 ```
 
+## Try it
+
+A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, md, page } from 'easytg';
+
+const products = ['Green tea', 'Black tea', 'Coffee', 'Cheesecake', 'Carrot cake'];
+
+const search = page<{ q?: string }>('search')
+  .render(({ params, nav }) => {
+    if (!params.q) return { text: 'Type a product name, e.g. "tea".' };
+    const found = products.filter((p) => p.toLowerCase().includes(params.q!.toLowerCase()));
+    return {
+      text: [md`Results for **${params.q}**:`, ...(found.length ? found.map((p) => md`- ${p}`) : ['Nothing found.'])],
+      keyboard: [[nav.self('🔄 New search', { q: undefined })]],
+    };
+  })
+  .onText(({ text, nav }) => nav.redirect(search, { q: text }));
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(search);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, search));
+bot.start();
+```
+
 The handler gets everything a render gets (`ctx`, `params` of the page as it
 was shown, `session`, `t`, `nav`, …) plus `text`, and returns what a render
 returns: content, `nav.redirect(...)`, `nav.startDialogue(...)` or nothing.

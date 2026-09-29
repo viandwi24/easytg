@@ -36,4 +36,38 @@ bot.on('inline_query', async (ctx) => {
   returning `nav.startDialogue` throws), and text that doesn't fit one message
   is cut (with a warning in the log).
 
+## Try it
+
+Type `@demo_bot tea` in the message field, pick a result, then press its button.
+
+```ts playground start=""
+import { Bot } from 'grammy';
+import { EasyTG, md, page } from 'easytg';
+
+const teas = [
+  { id: 'green', name: 'Green tea', price: 3 },
+  { id: 'black', name: 'Black tea', price: 3 },
+  { id: 'mint', name: 'Mint tea', price: 4 },
+];
+
+const product = page<{ id: string }>('product').render(({ params, nav }) => {
+  const tea = teas.find((t) => t.id === params.id);
+  return { text: md`**${tea?.name ?? 'Gone'}** · $${tea?.price ?? 0}`, keyboard: [[nav.self('👍 Like')]], toast: 'Thanks!' };
+});
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(product);
+bot.use(app);
+bot.on('inline_query', async (ctx) => {
+  const query = ctx.inlineQuery.query.toLowerCase();
+  const found = teas.filter((t) => t.name.toLowerCase().includes(query));
+  const results = await Promise.all(
+    found.map((t) => app.inlineResult(ctx, product, { params: { id: t.id }, title: t.name, description: `$${t.price}` })),
+  );
+  await ctx.answerInlineQuery(results, { cache_time: 0 });
+});
+bot.start();
+```
+
+
 [`examples/inline.ts`](../examples/inline.ts) is a small catalog shared inline.

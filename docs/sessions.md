@@ -60,6 +60,41 @@ page('plan').render(async ({ ctx, app, session }) => {
 - A language chosen with `setLocale` is kept in the user session, so it
   applies in every chat.
 
+### Try it
+
+Press the buttons, then switch to the group at the top of the chat (and to
+another user) and press them there.
+
+```ts playground group
+import { Bot } from 'grammy';
+import { EasyTG, page } from 'easytg';
+
+const counters = page('counters').render(async ({ ctx, app, session, nav }) => {
+  const user = await app.userSession(ctx);
+  const chat = await app.chatSession(ctx);
+  return {
+    text: [
+      `session (you, in this chat): ${session.get<number>('n') ?? 0}`,
+      `userSession (you, everywhere): ${user.get<number>('n') ?? 0}`,
+      `chatSession (everyone here): ${chat.get<number>('n') ?? 0}`,
+    ],
+    keyboard: [[nav.button('➕ Count', count)]],
+  };
+});
+
+const count = page('count').render(async ({ ctx, app, session, nav }) => {
+  const [user, chat] = await Promise.all([app.userSession(ctx), app.chatSession(ctx)]);
+  for (const s of [session, user, chat]) s.set('n', (s.get<number>('n') ?? 0) + 1);
+  return nav.redirect(counters);
+});
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(counters, count);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, counters));
+bot.start();
+```
+
 Outside updates (a Mini App's server, a webhook), `app.withUser(bot, userId, fn)`
 gives you a user's `session` and `userSession`, saved like an update; see
 [Mini Apps](mini-apps.md#acting-for-the-user).

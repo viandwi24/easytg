@@ -19,6 +19,28 @@ const app = new EasyTG({ menu: mainMenu });
 bot.command('start', (ctx) => app.showMenu(ctx, 'Welcome!')); // sends a message with the menu
 ```
 
+## Try it
+
+A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, page, replyMenu } from 'easytg';
+
+const catalog = page('catalog').render(() => ({ text: '🛍 Tea, coffee and cake.' }));
+const orders = page('orders').render(() => ({ text: '🧾 No orders yet.' }));
+
+const mainMenu = replyMenu([[replyMenu.button('🛍 Catalog', catalog), replyMenu.button('🧾 Orders', orders)], [replyMenu.close()]], {
+  placeholder: 'Choose from the menu',
+});
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG({ menu: mainMenu }).register(catalog, orders);
+bot.use(app);
+bot.command('start', (ctx) => app.showMenu(ctx, 'Welcome! Use the menu below.'));
+bot.start();
+```
+
 - A menu button sends its label as a message. easytg recognises it (in the
   user's language) and opens the page **as a new message**, or starts the
   dialogue. Middlewares run as usual.

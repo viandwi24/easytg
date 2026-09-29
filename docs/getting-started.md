@@ -2,7 +2,9 @@
 
 In this guide you build a small shop bot: a menu, product pages, an order
 form and an order history. It takes about ten minutes. The finished code is in
-[`examples/getting-started.ts`](../examples/getting-started.ts).
+[`examples/getting-started.ts`](../examples/getting-started.ts); you can
+[try it in your browser](https://viandwi24.github.io/easytg/playground) first,
+no token needed.
 
 ## 1. Install
 

@@ -1,4 +1,4 @@
-import { Buffer } from 'node:buffer';
+import { fromBase64Url, fromUtf8, toBase64Url, utf8 } from './platform/crypto';
 import { decodeInline, encodeInline } from './callback';
 
 /**
@@ -25,7 +25,7 @@ export type DecodedDeepLink =
 export function encodeDeepLinkInline(id: string, params: Record<string, string>): string | null {
   if (Object.keys(params).length === 0 && PLAIN_ID.test(id) && id.length <= MAX_PAYLOAD) return id;
   const packed = encodeInline(id, params).slice(2); // drop the "p|" prefix
-  const payload = `_i${Buffer.from(packed, 'utf8').toString('base64url')}`;
+  const payload = `_i${toBase64Url(utf8(packed))}`;
   return payload.length <= MAX_PAYLOAD ? payload : null;
 }
 
@@ -37,7 +37,7 @@ export function decodeDeepLink(payload: string): DecodedDeepLink | null {
   if (!PAYLOAD.test(payload)) return null;
   if (payload.startsWith('_s')) return { kind: 'stored', token: payload.slice(2) };
   if (payload.startsWith('_i')) {
-    const decoded = decodeInline(`p|${Buffer.from(payload.slice(2), 'base64url').toString('utf8')}`);
+    const decoded = decodeInline(`p|${fromUtf8(fromBase64Url(payload.slice(2)))}`);
     return decoded ? { kind: 'inline', ...decoded } : null;
   }
   if (payload.startsWith('_')) return null;

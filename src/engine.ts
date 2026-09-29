@@ -42,8 +42,8 @@ import {
 } from './render';
 import { Session } from './session';
 import { MemoryStorage, isTaskStore, withPrefix, type StorageAdapter } from './storage';
-import { createHash } from 'node:crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { sha256, toBase64Url } from './platform/crypto';
+import { AsyncContext } from './platform/context';
 import { defaultTexts, type EasyTGTexts } from './texts';
 import { Translator, normalizeLocale, type Messages, type Translate } from './i18n';
 import {
@@ -1054,7 +1054,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const key = userKey(ctx);
     // Called from inside this user's own update (a handler, a listener, a middleware, …),
     // or while one of their updates runs elsewhere in this process: share its session.
-    const flow = flows.getStore();
+    const flow = flows.get();
     const live = key === undefined ? undefined : flow?.key === key && flow.ctx ? flow.ctx : this.liveUpdates.get(key);
     if (live) this.scope(ctx).sharedWith = live;
     await this.prepareProactive?.(ctx);
@@ -1400,7 +1400,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    *   const answer = await app.queue('ai', () => askModel(prompt), { ctx });
    */
   async queue<T>(name: string, job: () => Awaitable<T>, options: { ctx?: C } = {}): Promise<T> {
-    const flow = flows.getStore();
+    const flow = flows.get();
     // Called from inside a job (or an update) that holds a slot of this queue: don't wait for ourselves.
     if (flow?.queues.has(name)) return job();
     const release = await this.takeSlot(name, options.ctx);
@@ -1423,7 +1423,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   async enterQueue(ctx: C, name: string): Promise<void> {
     const scope = this.scope(ctx);
     if (!scope.inUpdate) throw new EasyTGError('enterQueue works while handling an update; use app.queue(name, job) elsewhere');
-    const flow = flows.getStore();
+    const flow = flows.get();
     if (flow?.queues.has(name)) return; // this update holds a slot already
     (scope.held ??= []).push(await this.takeSlot(name, ctx));
     flow?.queues.add(name);
@@ -2123,7 +2123,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const url = this.cacheFileIds && media && typeof media.source === 'string' && /^https?:\/\//i.test(media.source) ? media.source : undefined;
     if (!url) return deliver(this, ctx, prepared, mode, scope.editTarget, options);
 
-    const key = scoped('fileid', this.botScope(ctx), media!.type, createHash('sha256').update(url).digest('base64url').slice(0, 32));
+    const key = scoped('fileid', this.botScope(ctx), media!.type, toBase64Url(sha256(url)).slice(0, 32));
     const cached = await this.metaStorage.get(key);
     if (typeof cached === 'string') {
       try {
@@ -2407,7 +2407,7 @@ function isInteraction(ctx: Context): boolean {
 /** A result id (≤ 64 bytes) that is the same for the same page and params. */
 function inlineResultId(pageId: string, params: ParamsInput | undefined): string {
   const query = JSON.stringify(Object.entries(normalizeParams(params)).sort());
-  return createHash('sha256').update(`${pageId}|${query}`).digest('base64url').slice(0, 40);
+  return toBase64Url(sha256(`${pageId}|${query}`)).slice(0, 40);
 }
 
 /** The file id Telegram assigned to the media of a sent message. */
@@ -2428,7 +2428,7 @@ interface Flow {
   ctx?: Context;
   queues: Set<string>;
 }
-const flows = new AsyncLocalStorage<Flow>();
+const flows = new AsyncContext<Flow>();
 
 /** One user in one chat of one bot: the unit updates are serialized by. */
 function userKey(ctx: Context): string | undefined {

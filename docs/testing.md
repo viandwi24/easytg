@@ -26,6 +26,11 @@ t.responders.sendMessage = () => telegramError('Forbidden: bot was blocked by th
 createTestBot({ botInfo: { id: 2, username: 'second_bot' } }); // several bots, e.g. sharing one storage
 ```
 
+`createTestBot` records API calls and lets you check them. For tests that
+read like a conversation (what does the chat show after pressing this?), use
+the [simulator](simulator.md): it keeps the messages, edits them in place and
+answers like Telegram, errors included.
+
 The fake API answers `send*`, `copyMessage(s)` and `forwardMessage(s)` like
 Telegram: albums return one message per item, and copies return
 `{ message_id }`.

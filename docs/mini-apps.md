@@ -39,7 +39,7 @@ try {
 
 - `maxAgeMs` (default 24 hours) rejects old `initData`; `Infinity` accepts any age.
 - A server that shouldn't hold the bot token can use
-  `verifyInitDataSignature(initData, botId)`, which checks Telegram's Ed25519
+  `await verifyInitDataSignature(initData, botId)`, which checks Telegram's Ed25519
   signature with Telegram's public key instead (`{ environment: 'test' }` for
   the test server).
 

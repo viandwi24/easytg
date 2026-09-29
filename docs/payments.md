@@ -63,5 +63,32 @@ that answered too late), skip charge ids you have already processed.
 await bot.api.refundStarPayment(userId, chargeId);
 ```
 
+### Try it
+
+Paying in the simulator is free: press the Pay button.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, page } from 'easytg';
+
+const home = page('home').render(({ nav }) => ({ text: 'Get Pro?', keyboard: [[nav.button('⭐ Buy Pro', buyPro, {}, { mode: 'send' })]] }));
+
+const buyPro = page('buy-pro').render(({ nav }) => ({
+  invoice: { title: 'Pro plan', description: '30 days of Pro features', payload: 'pro:30', currency: 'XTR', prices: [{ label: 'Pro plan', amount: 100 }] },
+  keyboard: [[nav.pay('⭐ Pay 100')]],
+}));
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG({
+  payments: {
+    preCheckout: ({ payload }) => payload === 'pro:30' || 'Unknown product',
+    onSuccess: ({ payment, nav }) => ({ text: `✅ Pro is active. Receipt: ${payment.telegram_payment_charge_id}`, keyboard: [[nav.home()]] }),
+  },
+}).register(home, buyPro);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, home));
+bot.start();
+```
+
 [`examples/payments.ts`](../examples/payments.ts) is a small Stars shop with a
 stock check and an admin refund command.

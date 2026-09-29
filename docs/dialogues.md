@@ -76,6 +76,37 @@ dialogue('checkout').steps([   // answers: { size, phone: DialogueContact, where
   `.loading(...)` shows a placeholder or "typing…" while a slow `onFinish`
   runs (see [slow pages](pages.md#slow-pages)).
 
+## Try it
+
+A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, dialogue, md, page } from 'easytg';
+
+const home = page('home').render(({ nav }) => ({ text: 'Welcome!', keyboard: [[nav.button('📝 Sign up', signup)]] }));
+
+const signup = dialogue('signup')
+  .steps([
+    { id: 'name', type: 'text', text: 'Your name?', validate: (name) => name.length >= 2 || 'Too short' },
+    { id: 'plan', type: 'choice', text: 'Which plan?', columns: 2,
+      options: [{ text: 'Free', value: 'free' }, { text: 'Pro', value: 'pro' }] },
+    { id: 'phone', type: 'contact', text: 'Share your phone number for Pro support.',
+      when: ({ answers }) => answers.plan === 'pro' },
+  ])
+  .onFinish(({ answers, nav }) => ({
+    text: md`Welcome **${answers.name}**! Plan: ${answers.plan}${answers.phone ? `, phone ${answers.phone.phoneNumber}` : ''}.`,
+    keyboard: [[nav.home()]],
+  }))
+  .onCancel(({ nav }) => nav.redirect(home));
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(home, signup);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, home));
+bot.start();
+```
+
 ## Typed answers
 
 The answers `onFinish` gets are typed from the steps, with nothing written by

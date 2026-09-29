@@ -5,6 +5,20 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Breaking
+
+See [docs/migration.md](docs/migration.md).
+
+- `verifyInitDataSignature` is async (it uses Web Crypto's Ed25519 now): `await verifyInitDataSignature(initData, botId)`.
+- Node.js 20 or newer (`engines`). easytg uses the Web Crypto global (`crypto.randomUUID`, Ed25519) instead of `node:crypto`; Node 18 is past its end of life.
+
+### Added
+
+- **Runs in browsers.** No Node-only APIs are left: hashing and signing use pure JavaScript and Web Crypto, and `AsyncLocalStorage` is used only where it exists. Bundlers pick the browser build (`dist/browser/`) through the `browser` export condition. Callback data, signatures and deep links are byte-for-byte the same as before.
+- **`easytg/simulator`:** `TelegramSimulator`, an in-memory Telegram for grammY bots: chats, groups and users; messages, edits and deletes; media and albums; inline and reply keyboards; toasts and alerts; inline mode; invoices and payments; chat actions; members and admins. It parses HTML and MarkdownV2 into entities and fails with Telegram's errors (`can't parse entities`, `message is not modified`, `bot was blocked by the user`, …). Works with `bot.handleUpdate` and with `bot.start()`. See [docs/simulator.md](docs/simulator.md).
+- **`easytg/simulator/element`:** `<easytg-chat>` / `mountChat()`, a Telegram-like chat window for a simulator (light and dark).
+- **Docs site** (VitePress, `website/`) on GitHub Pages, with a playground on the home page, one for every browser-friendly example, and runnable blocks in the feature docs (```` ```ts playground ```` fences, which GitHub shows as plain code). `bun run docs:dev` / `docs:build`.
+
 ## 0.3.0 (2026-09-29)
 
 A large release. **Breaking changes are listed first; see [docs/migration.md](docs/migration.md) for how to update.**

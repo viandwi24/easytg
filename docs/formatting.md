@@ -33,3 +33,28 @@ show as text).
 
 `escapeMarkdown`, `escapeHTML` and `escapeMarkdownV2` are also available for
 manual escaping.
+
+## Try it
+
+A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.
+
+```ts playground
+import { Bot } from 'grammy';
+import { EasyTG, html, md, page } from 'easytg';
+
+const home = page('home').render(({ ctx }) => ({
+  text: [
+    '**bold** *italic* __underline__ ~~strike~~ ||spoiler|| `code`',
+    '> a quote',
+    '```ts\nconst answer = 42;\n```',
+    md`Hello **${ctx.from?.first_name ?? 'you'}** (escaped: ${'*not bold*'})`,
+    html`<i>An html fragment</i> with a <a href="https://grammy.dev">link</a>`,
+  ],
+}));
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().register(home);
+bot.use(app);
+bot.command('start', (ctx) => app.open(ctx, home));
+bot.start();
+```

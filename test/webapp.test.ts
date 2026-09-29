@@ -54,15 +54,15 @@ describe('verifyInitData', () => {
     expect(verifyInitData(old, TOKEN, { maxAgeMs: Infinity }).user?.id).toBe(7);
   });
 
-  test('signature (Ed25519, no bot token needed)', () => {
+  test('signature (Ed25519, no bot token needed)', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x!, 'base64url').toString('hex');
     const fields = { user, auth_date: now() };
     const message = `1:WebAppData\n${Object.keys(fields).sort().map((k) => `${k}=${fields[k as keyof typeof fields]}`).join('\n')}`;
     const signature = sign(null, Buffer.from(message), privateKey).toString('base64url');
     const signed = new URLSearchParams({ ...fields, signature, hash: 'x' }).toString();
-    expect(verifyInitDataSignature(signed, 1, { publicKey: raw }).user?.id).toBe(7);
-    expect(() => verifyInitDataSignature(signed, 2, { publicKey: raw })).toThrow(WebAppAuthError);
+    expect((await verifyInitDataSignature(signed, 1, { publicKey: raw })).user?.id).toBe(7);
+    await expect(verifyInitDataSignature(signed, 2, { publicKey: raw })).rejects.toThrow(WebAppAuthError);
   });
 });
 

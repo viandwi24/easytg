@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256, toBase64Url } from './platform/crypto';
 import type { StorageAdapter } from './storage';
 
 /**
@@ -46,7 +46,7 @@ export class CallbackStore {
   tokenFor(entry: StoredCallback, chatId?: number): string {
     const params = Object.keys(entry.q).sort().map((k) => [k, entry.q[k]]);
     const material = JSON.stringify([entry.p, params, entry.u ?? null, chatId ?? null]);
-    return createHash('sha256').update(material).digest('base64url').slice(0, 16); // 96 bits
+    return toBase64Url(sha256(material)).slice(0, 16); // 96 bits
   }
 
   /** `scope` namespaces keys, e.g. per bot. */

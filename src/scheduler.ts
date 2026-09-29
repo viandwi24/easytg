@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID } from './platform/crypto';
 import type { Task, TaskBot } from './define';
 import { EasyTGError } from './errors';
 import type { Logger } from './logger';

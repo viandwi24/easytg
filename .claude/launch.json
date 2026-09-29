@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "docs",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--bun", "vitepress", "dev", "website", "--port", "5188"],
+      "port": 5188
+    }
+  ]
+}

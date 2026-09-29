@@ -20,12 +20,26 @@
     ".": {
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
+      "browser": "./dist/browser/index.js",
       "default": "./dist/index.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "bun": "./src/testing.ts",
+      "browser": "./dist/browser/testing.js",
       "default": "./dist/testing.js"
+    },
+    "./simulator": {
+      "types": "./dist/simulator/index.d.ts",
+      "bun": "./src/simulator/index.ts",
+      "browser": "./dist/browser/simulator/index.js",
+      "default": "./dist/simulator/index.js"
+    },
+    "./simulator/element": {
+      "types": "./dist/simulator/element.d.ts",
+      "bun": "./src/simulator/element.ts",
+      "browser": "./dist/browser/simulator/element.js",
+      "default": "./dist/simulator/element.js"
     }
   },
   "files": [
@@ -42,12 +56,16 @@
     "grammy",
     "ui",
     "inline-keyboard",
-    "dialogue"
+    "dialogue",
+    "simulator"
   ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "rm -rf dist && bun build ./src/index.ts ./src/testing.ts --outdir dist --target node --packages external && tsc -p tsconfig.build.json",
+    "build": "bun run scripts/build.ts",
+    "docs:dev": "bun --bun vitepress dev website",
+    "docs:build": "bun --bun vitepress build website",
+    "docs:preview": "bun --bun vitepress preview website",
     "example:captcha": "bun run examples/captcha.ts",
     "prepublishOnly": "bun run typecheck && bun test && bun run build",
     "example:notify": "bun run examples/notify.ts",
@@ -57,11 +75,16 @@
     "grammy": "^1.30.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "devDependencies": {
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/theme-one-dark": "^6.1.3",
     "@types/bun": "latest",
+    "codemirror": "^6.0.2",
     "grammy": "^1.46.0",
-    "typescript": "^7"
+    "sucrase": "^3.35.1",
+    "typescript": "^7",
+    "vitepress": "^1.6.4"
   }
 }
