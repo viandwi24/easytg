@@ -1,6 +1,7 @@
 import type { Context } from 'grammy';
 import type { KeyboardButton, ReplyKeyboardMarkup } from 'grammy/types';
 import type { Dialogue, Page } from './define';
+import { EasyTGError } from './errors';
 import type { Translate } from './i18n';
 
 /** A label, or a function of the user's language: `(locale, t) => t('menu.orders')`. */
@@ -17,6 +18,11 @@ export type MenuButton<C extends Context = Context> =
       text?: MenuLabel;
       /** Removes the menu from the keyboard. */
       action: 'close';
+    }
+  | {
+      text: MenuLabel;
+      /** Opens this Mini App (https URL); what it sends with `sendData` arrives as the `webAppData` event. */
+      webApp: string;
     };
 
 /** What pressing a menu button does. */
@@ -54,7 +60,10 @@ export class ReplyMenu<C extends Context = Context> {
   markup(locale: string | undefined, closeLabel: string, t: Translate): ReplyKeyboardMarkup {
     return {
       keyboard: this.rows.map((row) =>
-        row.map((button): KeyboardButton => ({ text: button.text === undefined ? closeLabel : label(button.text, locale, t) })),
+        row.map((button): KeyboardButton => {
+          const text = button.text === undefined ? closeLabel : label(button.text, locale, t);
+          return 'webApp' in button ? { text, web_app: { url: button.webApp } } : { text };
+        }),
       ),
       resize_keyboard: true,
       is_persistent: this.options.persistent ?? true,
@@ -66,6 +75,7 @@ export class ReplyMenu<C extends Context = Context> {
   match(text: string, locale: string | undefined, closeLabel: string, t: Translate): MenuTarget<C> | undefined {
     for (const row of this.rows) {
       for (const button of row) {
+        if ('webApp' in button) continue; // opens a Mini App, sends no text
         const shown = button.text === undefined ? closeLabel : label(button.text, locale, t);
         if (shown === text) return 'action' in button ? 'close' : button.target;
       }
@@ -94,3 +104,12 @@ replyMenu.button = <P, C extends Context = Context>(
  * keyboards with a message, so pressing it sends `texts.menuClosed`.
  */
 replyMenu.close = <C extends Context = Context>(text?: MenuLabel): MenuButton<C> => ({ text, action: 'close' });
+
+/**
+ * A button that opens a Mini App (private chats only). Data the Mini App sends
+ * with `Telegram.WebApp.sendData(...)` arrives as the `webAppData` event.
+ */
+replyMenu.webApp = <C extends Context = Context>(text: MenuLabel, url: string): MenuButton<C> => {
+  if (!/^https:\/\//i.test(url)) throw new EasyTGError(`replyMenu.webApp: Mini Apps need an https:// URL, got "${url}"`);
+  return { text, webApp: url };
+};

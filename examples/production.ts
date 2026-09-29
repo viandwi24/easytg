@@ -64,6 +64,7 @@ app.on('spam', ({ userId, strike, silence }) => {
 });
 
 bot.api.config.use(autoRetry()); // wait out "Too Many Requests" on every API call
+bot.api.config.use(app.throttle()); // …and avoid them: 30/s overall, 20/min per group, counted by all processes
 bot.use(app);
 bot.command('start', (ctx) => app.open(ctx, home));
 bot.catch((err) => console.error('Bot error:', err.error));

@@ -4,7 +4,7 @@
  *   BOT_TOKEN=123:abc bun run examples/getting-started.ts
  */
 import { Bot } from 'grammy';
-import { EasyTG, dialogue, md, page, replyMenu } from '../src';
+import { EasyTG, dialogue, md, page, replyMenu, type Auto } from '../src';
 
 const products = [
   { id: 'tea', name: 'Green tea', price: 3 },
@@ -34,7 +34,8 @@ const productDetail = page<{ id: string }>('product').render(({ params, nav }) =
 });
 
 // 3. A dialogue: a multi-step form. Answers arrive typed in onFinish.
-const orderForm = dialogue<{ quantity: string; note: string }, { product: string }>('order')
+// Auto: the answers are read off the steps ({ quantity: string; note: string }); the params are declared.
+const orderForm = dialogue<Auto, { product: string }>('order')
   .steps([
     {
       id: 'quantity',

@@ -10,10 +10,15 @@ A page (or dialogue step) can show one media item, with `text` as its caption:
 { audio: songFileId }
 ```
 
+- Use at most one of `photo`, `video`, `animation`, `document`, `audio`,
+  `album`, `copy` and `invoice` per page; combining them throws.
 - Switching between pages edits the media in place (`editMessageMedia`); the
   same file only updates the caption.
 - Captions longer than 1024 characters continue in a text message.
-- Media → text-only pages replace the message.
+- Media → text-only pages replace the message (unless `buttons.mediaToText: 'keep'`
+  or a button with `{ mode: 'send' }`, see [Pages](pages.md#keeping-the-pressed-message)).
+- `deleteAfterMs` makes a media message delete itself later, e.g. a video
+  that should only be available for a while.
 
 **Copying** an existing message is often better than uploading: nothing is
 re-uploaded, there is no "forwarded from" header, and the original can live in a
@@ -48,8 +53,8 @@ still set `protectContent: false`).
 ```
 
 Telegram doesn't allow buttons on albums. With a `keyboard`, the text and
-buttons follow in their own message; without one, `text` becomes the album
-caption. Pressing a button under an album edits that message and deletes the
+buttons follow in their own message (so `text` is required then); without
+one, `text` becomes the album caption. Pressing a button under an album edits that message and deletes the
 album.
 
 ## File id cache

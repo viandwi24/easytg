@@ -46,7 +46,9 @@ export class Session {
   savedAt?: number;
 
   private data: Record<string, unknown>;
-  private readonly expires: Record<string, number>;
+  private expires: Record<string, number>;
+  /** Keys set or deleted since loading, for merging into a newer stored copy. */
+  private readonly changed = new Set<string>();
   /** @internal The app's schema version the data is in. */
   version?: number;
 
@@ -66,7 +68,12 @@ export class Session {
       this.version = version; // nothing to migrate: new users start at the current version
       return;
     }
-    if (migrate) this.data = { ...migrate({ ...this.data }, this.version ?? 0) };
+    if (migrate) {
+      const before = Object.keys(this.data);
+      this.data = { ...migrate({ ...this.data }, this.version ?? 0) };
+      // Every key the migration may have touched, so a merged save writes the migrated data.
+      for (const key of [...before, ...Object.keys(this.data)]) this.changed.add(key);
+    }
     this.version = version;
     this.dirty = true;
   }
@@ -87,6 +94,7 @@ export class Session {
     this.data[key] = value;
     if (options?.ttlMs) this.expires[key] = Date.now() + options.ttlMs;
     else delete this.expires[key];
+    this.changed.add(key);
     this.dirty = true;
   }
 
@@ -99,6 +107,7 @@ export class Session {
       if (!Object.hasOwn(this.data, key)) continue;
       delete this.data[key];
       delete this.expires[key];
+      this.changed.add(key);
       this.dirty = true;
     }
   }
@@ -115,6 +124,31 @@ export class Session {
   /** @internal */
   get isEmpty() {
     return this.keys().length === 0;
+  }
+
+  /**
+   * @internal For sessions several updates may change at once (per user
+   * across chats, per chat): apply only this update's changes on top of what
+   * is stored now, so changes to other keys made meanwhile aren't lost.
+   */
+  mergeWith(stored: unknown) {
+    // What is stored now (nothing, if it was deleted meanwhile), plus only this update's changes.
+    const latest = parse(stored);
+    const data = latest?.data ?? {};
+    const expires = latest?.meta.expires ?? {};
+    for (const key of this.changed) {
+      if (Object.hasOwn(this.data, key)) {
+        data[key] = this.data[key];
+        if (this.expires[key] !== undefined) expires[key] = this.expires[key]!;
+        else delete expires[key];
+      } else {
+        delete data[key];
+        delete expires[key];
+      }
+    }
+    this.data = data;
+    this.expires = expires;
+    this.changed.clear();
   }
 
   /** @internal */

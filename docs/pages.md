@@ -13,14 +13,17 @@ const order = page<{ id: string; tab?: string }>('order')
     ],
     toast: 'Loaded',                            // toast on the pressed button
     linkPreview: false,
-    deleteAfterMs: undefined,                   // delete the message later (a scheduled task)
+    deleteAfterMs: undefined,                   // delete the message later
+    refreshEveryMs: undefined,                  // render it again every N ms while shown
   }));
 ```
 
 A render returns one of:
-- **content**: `{ text, keyboard, toast, linkPreview, parseMode, protectContent, deleteAfterMs }`
-  plus one of `photo`, `video`, `animation`, `document`, `audio`, `album`, `copy`
-  (see [Media](media.md)) or `invoice` (see [Payments](payments.md))
+- **content**: `{ text, keyboard, toast, linkPreview, parseMode, protectContent, deleteAfterMs, refreshEveryMs }`
+  plus at most one of `photo`, `video`, `animation`, `document`, `audio`, `album`, `copy`
+  (see [Media](media.md)) or `invoice` (see [Payments](payments.md)).
+  `deleteAfterMs` and `refreshEveryMs` are [scheduled tasks](scheduler.md#built-in-helpers):
+  they need `app.startScheduler(bot)`.
 - **`nav.redirect(page, params)`**: show another page instead
 - **`nav.startDialogue(dialogue, params)`**: start a dialogue; the menu is closed
 - **nothing**: do nothing
@@ -29,13 +32,13 @@ A render returns one of:
 
 | | |
 |---|---|
-| `nav.button(text, pageOrDialogue, params?, { store? })` | open a page or start a dialogue |
+| `nav.button(text, pageOrDialogue, params?, { store?, mode? })` | open a page or start a dialogue; `store`: params kept server-side, `mode: 'send'`: keep the pressed message |
 | `nav.self(text, params)` | re-open the current page with params merged |
 | `nav.back(text?)` | the page this message showed before, with its params; `false` (hidden) when there is none |
 | `nav.home(text?)` / `nav.close(text?)` | home page / delete the message |
 | `nav.pay(text)` | the Pay button of an [invoice](payments.md) |
 | `nav.url(text, url)` / `nav.webApp(text, url)` | links: `http(s)://` or `tg://` only (Telegram rejects `mailto:`, `tel:`); Mini Apps need `https://` |
-| `nav.deepLink(pageOrDialogue, params?)` | `https://t.me/<bot>?start=…` URL (see [Deep links](deep-links.md)) |
+| `nav.deepLink(pageOrDialogue, params?, { store? })` | `https://t.me/<bot>?start=…` URL (see [Deep links](deep-links.md)) |
 | `nav.data(target, params?)` | raw callback data for hand-built keyboards |
 | `nav.redirect(...)` / `nav.startDialogue(...)` | render results |
 
@@ -160,11 +163,40 @@ sent message has no history, so `nav.back()` returns `false` and the button
 disappears. The history lives in the session (the last 20 menu messages, 10
 steps each).
 
+## Slow pages
+
+A page that takes a while (an AI answer, a report) can show something
+meanwhile. Nothing is shown when it's done within `afterMs`:
+
+```ts
+page('answer')
+  .loading({ text: '⏳ Thinking…', action: 'typing', afterMs: 500 })
+  .render(async ({ params }) => ({ text: await askModel(params.q) }));
+
+page('report').loading('⏳ Building your report…').render(...); // a placeholder only
+new EasyTG({ loading: { action: 'typing' } });                   // a default for every page
+```
+
+- `text`: a placeholder. A pressed text menu shows it (without buttons, so it
+  isn't pressed twice); otherwise it is sent as a message. Either way the page
+  replaces it. Under a media message it becomes a toast.
+- `action`: a chat action ("typing…", `upload_photo`, …), repeated until done.
+- `toast`: answers the button press right away.
+- `.loading(true)` is "typing…"; `.loading(false)` turns off the app default
+  for one page.
+- `dialogue(...).loading(...)` does the same for a slow `onFinish`, and
+  `app.withLoading(ctx, job, options)` for your own handlers (its placeholder
+  is deleted when the job is done).
+
+[`examples/loading.ts`](../examples/loading.ts) shows every variant.
+
 ## Updating itself
 
-`refreshEveryMs` renders the page into its message again and again (at least
-every 5 s) for as long as the message shows it, e.g. a live status or a
-scoreboard. It uses the [scheduler](scheduler.md#built-in-helpers).
+`refreshEveryMs` renders the page into its message again every
+`refreshEveryMs` ms (5000 at least; less throws) for as long as the message
+shows it, e.g. a live status or a scoreboard. It is a
+[scheduled task](scheduler.md#built-in-helpers), so it needs
+`app.startScheduler(bot)`.
 
 ```ts
 page('status').render(() => ({ text: `Queue: ${queue.length} jobs`, refreshEveryMs: 10_000 }));

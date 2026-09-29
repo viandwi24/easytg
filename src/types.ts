@@ -185,6 +185,28 @@ export interface TextInputOptions {
   deleteInput?: boolean;
 }
 
+/** A chat action Telegram shows while the bot works: "typing…", "sending photo…". */
+export type ChatAction = Parameters<Context['replyWithChatAction']>[0];
+
+/**
+ * What users see while a slow page renders. Nothing is shown if the render
+ * is done within `afterMs`.
+ */
+export interface LoadingOptions {
+  /** Show the indicators only if the work takes longer than this. Default 500. */
+  afterMs?: number;
+  /** A chat action ("typing…"), repeated every 4 s until done. */
+  action?: ChatAction;
+  /**
+   * A placeholder: a pressed text menu shows it (without buttons) until the
+   * page replaces it; otherwise it is sent as a message that the page then
+   * replaces. Under media messages, it becomes a toast.
+   */
+  text?: TextInput;
+  /** A toast on the pressed button (answers the press early). */
+  toast?: string;
+}
+
 export interface MiddlewareArgs<C extends Context = Context> {
   ctx: C;
   /** Params of the page / dialogue (untrusted input). */
@@ -279,7 +301,13 @@ interface StepBase<P, C extends Context> extends MediaFields {
   text: TextInput | ((helpers: StepHelpers<P, C>) => Awaitable<TextInput>);
   parseMode?: ParseMode;
   /** Extra inline buttons such as "Resend code" (not available on reply-keyboard steps). */
-  actions?: StepAction<P, C>[];
+  actions?: readonly StepAction<P, C>[];
+  /**
+   * Ask this step only when this returns true (e.g. depending on an earlier
+   * answer). A skipped step has no answer, so its answer is optional in the
+   * inferred answers type.
+   */
+  when?: (helpers: StepHelpers<P, C>) => Awaitable<boolean>;
 }
 
 export type DialogueStep<P = Params, C extends Context = Context> =
@@ -299,13 +327,13 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       /** Answer: a `DialogueFile`. */
       type: 'file';
       /** Accepted kinds. Default: all. */
-      accept?: FileKind[];
+      accept?: readonly FileKind[];
       validate?: (file: DialogueFile, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     })
   | (StepBase<P, C> & {
       /** Answer: the chosen option's `value`. Only listed values are accepted. */
       type: 'choice';
-      options: { text: string; value: string }[];
+      options: readonly { text: string; value: string }[];
       /** Buttons per row. Default 1. */
       columns?: number;
       /** Show the options on the reply keyboard (below the input field) instead of as inline buttons. */
@@ -329,10 +357,25 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       validate?: (location: DialogueLocation, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     })
   | (StepBase<P, C> & {
+      /**
+       * Answer: what a Mini App sends back with `Telegram.WebApp.sendData(...)`
+       * (parsed as JSON when it is JSON), or the output of `schema`. The Mini
+       * App opens from a reply-keyboard button. Private chats only.
+       */
+      type: 'webApp';
+      /** The Mini App (https URL), e.g. a date picker, a map, a form. */
+      url: string;
+      /** Label of the button. Default: `texts.openWebApp`. */
+      button?: string;
+      /** A Standard Schema that checks (and converts) the data. The data comes from the client: check it. */
+      schema?: StandardSchemaV1;
+      validate?: (data: unknown, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
+    })
+  | (StepBase<P, C> & {
       /** Answer: `{ texts, files }`, collected until the user presses Done. */
       type: 'collect';
       /** Accepted kinds. Default: text and all files. */
-      accept?: Array<'text' | FileKind>;
+      accept?: readonly ('text' | FileKind)[];
       /** Default 1. */
       min?: number;
       /** Default 50. */

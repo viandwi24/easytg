@@ -13,6 +13,8 @@ per user and chat, one update is handled at a time (`sequential`, on by
 default). This prevents lost writes, e.g. two album photos sent to a `collect`
 step both loading the session and one of them overwriting the other.
 
+- Only messages and button presses are ordered this way; inline queries,
+  member updates and the like aren't.
 - Different users are never blocked by each other.
 - A button pressed while the user's previous update still runs gets the
   "⏳ Please wait…" toast (see [double taps](anti-spam.md#double-taps-and-busy-buttons)).
@@ -23,6 +25,9 @@ step both loading the session and one of them overwriting the other.
 ```ts
 new EasyTG({ sequential: { timeoutMs: 8_000 } }); // or `sequential: false`
 ```
+
+With `sequential: false`, updates run in parallel, but a button pressed while
+the same user's previous press still runs still gets the "Please wait" toast.
 
 With webhooks, Telegram sends an update again when it isn't answered in time
 (grammY's webhook timeout is 10 s by default), which is why the default wait
@@ -65,6 +70,40 @@ Redis across machines.
 
 Locks and queue slots are held with a TTL that is refreshed while they are in
 use, so a crashed process doesn't block users forever.
+
+## Staying within Telegram's limits
+
+Telegram allows a bot about 30 messages per second overall and 20 per minute
+in a group; beyond that it answers 429 "Too Many Requests". `app.throttle()`
+spaces the bot's outgoing messages so that doesn't happen, and
+[`autoRetry`](errors.md#autoretry) waits out the 429s that still come:
+
+```ts
+bot.api.config.use(autoRetry());
+bot.api.config.use(app.throttle());                      // 30/s overall, 20/min per group
+
+bot.api.config.use(app.throttle({
+  global: { limit: 25, perMs: 1000 },
+  groupChat: { limit: 20, perMs: 60_000 },
+  privateChat: { limit: 1, perMs: 1000 },               // default: none
+  chat: (chatId) => (chatId === ANNOUNCEMENTS ? { limit: 5, perMs: 60_000 } : undefined),
+  maxWaitMs: 60_000,                                    // then it goes out anyway
+}));
+```
+
+- Limited calls: sending, copying, forwarding and editing messages (an album
+  counts one per item); `methods` changes that. Chat actions, answers to
+  button presses and everything else are never delayed.
+- `chat(chatId)` returns your own rule for a chat, `false` for no limit, or
+  `undefined` for the defaults.
+- The counters live where rate limits do: in this process, or shared by all
+  processes with `cluster`. Several bots on one shared storage need their own
+  `id` (e.g. the bot's username).
+- A delayed call keeps its update waiting, so with webhooks keep the limits
+  loose enough for replies (broadcasts are paced on their own).
+
+[`examples/throttle.ts`](../examples/throttle.ts) is a commented setup with
+rules per chat.
 
 ## Webhooks
 

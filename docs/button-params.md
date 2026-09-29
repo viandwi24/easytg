@@ -12,7 +12,9 @@ Telegram limits callback data to 64 bytes, and modified clients can forge it.
 
 A stored button saves `{ target, params, user }` and carries only a
 16-character token.
-- The token resolves only for the user the button was rendered for.
+- The token resolves only for the user the button was rendered for, in
+  owner-only menus (`buttons.ownerOnly`, default on). Inline-mode messages and
+  menus with `allowedUsers` aren't bound to one user.
 - Re-rendering the same button reuses its token.
 - In `stored` mode, incoming inline params are rejected, so `p|order|id=999`
   sent by a modified client does nothing.

@@ -4,7 +4,7 @@
  *   BOT_TOKEN=123:abc bun run examples/reminders.ts
  *
  * Shows: `task(...)` with a typed payload, `app.schedule` (once and with
- * `every`), `app.cancelTask`, `app.deleteLater`, `deleteAfterMs`, and
+ * `everyMs`), `app.cancelTask`, `app.deleteLater`, `deleteAfterMs`, and
  * `app.startScheduler`. Stop the bot while a reminder is pending and start it
  * again: the reminder still arrives (late ones right after the start).
  */
@@ -25,7 +25,7 @@ const remind = task<{ chatId: number; userId: number; text: string; id: string }
   await app.sendTo(bot, { chatId: payload.chatId, userId: payload.userId }, reminderCard, { id: payload.id, text: payload.text });
 });
 
-/** A recurring task: scheduled once with `every`, it runs again and again. */
+/** A recurring task: scheduled once with `everyMs`, it runs again and again. */
 const dailyTip = task<{ chatId: number }>('daily-tip').run(async ({ payload, bot }) => {
   await bot.api.sendMessage(payload.chatId, '💡 Tip of the day: drink some water.');
 });

@@ -1,4 +1,5 @@
-import type { Bot, Context, MiddlewareFn, MiddlewareObj } from 'grammy';
+import type { Bot, Context, MiddlewareFn, MiddlewareObj, Transformer } from 'grammy';
+import { createThrottle, type ThrottleOptions } from './throttle';
 import type { InlineQueryResult, Message, PreCheckoutQuery, ReplyKeyboardMarkup, ReplyKeyboardRemove, SuccessfulPayment } from 'grammy/types';
 import {
   BACK_ID,
@@ -17,7 +18,7 @@ import { Locks, Queue, assertAtomic, type AtomicStorage, type QueueOptions, type
 import { runBroadcast, type BroadcastResult, type BroadcastSettings } from './broadcast';
 import { CallbackStore, type CallbackParamsMode, type StoredCallback } from './callback-store';
 import type { Dialogue, Page, Task, TaskBot } from './define';
-import { DialogueRunner, isCommand } from './dialogue';
+import { DialogueRunner, isCommand, parseWebAppData } from './dialogue';
 import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient } from './errors';
 import { Scheduler, type ScheduleOptions, type SchedulerOptions, type TaskErrorEvent } from './scheduler';
 import type { ParseMode, TextInput } from './format';
@@ -51,6 +52,7 @@ import {
   type ButtonOptions,
   type DeliveryMode,
   type DialogueCancelReason,
+  type LoadingOptions,
   type Middleware,
   type MiddlewareArgs,
   type PageContent,
@@ -151,6 +153,8 @@ export interface EasyTGOptions<C extends Context = Context> {
    * `SqliteStorage`). Default false: per process.
    */
   cluster?: boolean | StorageAdapter;
+  /** Loading indicators for every page (pages can set their own with `.loading(...)`). Default: none. */
+  loading?: LoadingOptions;
   /** Concurrency limits for `app.queue` / `app.enterQueue`, by name: `{ ai: { concurrency: 5 } }`. */
   queues?: Record<string, QueueOptions>;
   /** Scheduled tasks (`app.schedule`, `deleteLater`, `sendLater`); run them with `app.startScheduler(bot)`. */
@@ -192,7 +196,7 @@ export interface SessionOptions {
   storage?: StorageAdapter;
   /**
    * The version of your session data. When it changes, `migrate` converts
-   * each stored session (and chat session) the next time it is loaded.
+   * each stored session (user and chat sessions too) the next time it is loaded.
    */
   version?: number;
   /** Convert data stored under an older `version` (0 = before versions were used). */
@@ -296,6 +300,12 @@ export interface EasyTGEvents<C extends Context = Context> {
   queueWait: { ctx?: C; queue: string; position?: number };
   /** A scheduled task failed. */
   taskError: TaskErrorEvent;
+  /**
+   * A Mini App opened from a `replyMenu.webApp` button sent data
+   * (`Telegram.WebApp.sendData`). `data` is parsed JSON when it is JSON.
+   * It comes from the client: check it. The update then goes on to your handlers.
+   */
+  webAppData: { ctx: C; data: unknown; raw: string; button: string };
   /** A batch of `broadcastLater` was sent (`batch` counts from 0). */
   broadcastBatch: { broadcast: string; batch: number; batches: number; result: BroadcastResult };
   /**
@@ -315,6 +325,20 @@ export type DeleteLaterOptions = Pick<ScheduleOptions, 'delayMs' | 'at' | 'id'>;
 
 /** `ScheduleOptions` plus the page's params. */
 export type SendLaterOptions<P> = ScheduleOptions & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
+
+/** What `app.withUser` gives your function. */
+export interface WithUserArgs<C extends Context = Context> {
+  /** A context without an update (see `isProactive`), for `app.open` & co. */
+  ctx: C;
+  /** The user's session in their private chat with the bot (or in the given `chatId`). */
+  session: Session;
+  /** The user's session across all chats. */
+  userSession: Session;
+  locale: string | undefined;
+  t: Translate;
+  nav: Nav<C>;
+  app: EasyTG<C>;
+}
 
 export type InlineResultOptions<P> = {
   /** Shown in the list of results. */
@@ -397,12 +421,20 @@ interface UpdateScope {
   allowedUsers?: number[];
   /** `app.t(ctx)`, created once. */
   t?: Translate;
+  userSession?: Promise<Session>;
+  /** Loaded sessions, for synchronous access. */
+  stateValue?: Session;
+  userValue?: Session;
   /** `refreshEveryMs` of the page content just delivered. */
   refreshEveryMs?: number;
   /** A `refreshEveryMs` re-render: a pending `deleteAfterMs` keeps its deadline. */
   refreshing?: boolean;
   /** Redirects and dialogue starts in this update, against loops. */
   redirects?: number;
+  /** Rendering a message that ends up in someone else's chat (Mini App results): buttons aren't bound to a user. */
+  inlineRender?: boolean;
+  /** A loading placeholder sent while rendering, for the page to replace. */
+  placeholder?: { chatId: number; messageId: number };
   chatSession?: Promise<Session>;
 }
 
@@ -440,6 +472,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly translator: Translator;
   private readonly scheduler: Scheduler;
   private readonly payments?: PaymentsOptions<C>;
+  private readonly defaultLoading?: LoadingOptions;
   private readonly doubleTapMs: number;
   /** Rate limits, double taps and locks: in memory, or shared with `cluster`. */
   private readonly coordination: AtomicStorage;
@@ -514,6 +547,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     );
     this.defineBuiltinTasks();
     this.payments = options.payments;
+    this.defaultLoading = options.loading;
 
     const antiSpam = options.antiSpam === false ? undefined : options.antiSpam ?? {};
     this.antiSpam = antiSpam && { warn: true, ...antiSpam };
@@ -599,7 +633,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       const started = Date.now();
       let outcome: UpdateOutcome = 'error'; // unless run() returns
       try {
-        outcome = await flows.run({ key: userKey(ctx), ctx, queues: new Set() }, () => this.run(ctx, next));
+        outcome = await flows.run({ key: this.userKey(ctx), ctx, queues: new Set() }, () => this.run(ctx, next));
       } finally {
         if (this.listeners.get('update')?.size) {
           await this.emit('update', { ctx, durationMs: Date.now() - started, outcome });
@@ -650,7 +684,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   private async handleUpdate(ctx: C, next: () => Promise<void>) {
     this.scope(ctx).inUpdate = true;
-    const live = userKey(ctx);
+    const live = this.userKey(ctx);
     if (live !== undefined) this.liveUpdates.set(live, ctx);
     let failed = false;
     try {
@@ -669,6 +703,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         if (await this.handleMessage(ctx)) return;
         if (await this.handleDeepLink(ctx)) return;
         if (await this.handleTextInput(ctx)) return;
+        const webAppData = ctx.message.web_app_data;
+        if (webAppData) {
+          // From a replyMenu.webApp button (a dialogue's webApp step took its own already).
+          await this.emit('webAppData', { ctx, data: parseWebAppData(webAppData.data), raw: webAppData.data, button: webAppData.button_text });
+        }
       }
       await next();
     } catch (error) {
@@ -694,7 +733,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private async lockUpdate(ctx: C, signal: AbortSignal): Promise<Release | undefined | 'busy'> {
     const userId = ctx.from?.id;
     if (userId === undefined || (!ctx.message && !ctx.callbackQuery)) return undefined;
-    const key = userKey(ctx)!;
+    const key = this.userKey(ctx)!;
     const data = ctx.callbackQuery?.data;
     if (data !== undefined && (decodeStoredToken(data) || decodeInline(data))) {
       // One button press per user at a time: a press while busy is answered, not queued.
@@ -731,12 +770,25 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     }
 
     const started = Date.now();
+    let previousTarget: { value: EditTarget | undefined } | undefined;
     try {
-      const delivered = await this.present(ctx, await render(), mode, depth);
+      const own = this.pages.get(pageId)?.loadingOptions;
+      const loading = own === undefined ? this.defaultLoading : own;
+      const result = loading ? await this.withPlaceholder(ctx, loading, render) : await render();
+      // A placeholder message was sent while rendering: the page replaces it.
+      let target = editing ? sourceId : undefined;
+      if (scope.placeholder) {
+        previousTarget = { value: scope.editTarget };
+        scope.editTarget = scope.placeholder;
+        scope.placeholder = undefined;
+        target = scope.editTarget.messageId;
+        mode = 'edit';
+      }
+      const delivered = await this.present(ctx, result, mode, depth);
       if (delivered && scope.view) {
-        await this.recordView(ctx, delivered, editing ? sourceId : undefined);
-        await this.scheduleRefresh(ctx, delivered, editing ? sourceId : undefined);
-        const inPlace = delivered === true || (editing && delivered.message_id === sourceId);
+        await this.recordView(ctx, delivered, target);
+        await this.scheduleRefresh(ctx, delivered, target);
+        const inPlace = delivered === true || (target !== undefined && delivered.message_id === target);
         await this.emit('pageView', {
           ctx,
           page: scope.view.id,
@@ -753,6 +805,112 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       scope.navStack = undefined;
       scope.view = undefined;
       scope.refreshEveryMs = undefined;
+      // The placeholder was this page's target only: later opens in this update start fresh.
+      if (previousTarget) scope.editTarget = previousTarget.value;
+    }
+  }
+
+  /**
+   * An API transformer that spaces the bot's outgoing messages to stay within
+   * Telegram's limits (30/s overall, 20/min per group by default; your own
+   * rules per chat). Counted in this process, or across processes with
+   * `cluster`. Install it once per bot:
+   *
+   *   bot.api.config.use(app.throttle());
+   *   bot.api.config.use(app.throttle({ privateChat: { limit: 1, perMs: 1000 }, chat: (id) => (id === VIP ? false : undefined) }));
+   */
+  throttle(options: ThrottleOptions = {}): Transformer {
+    return createThrottle(this.coordination, options);
+  }
+
+  /**
+   * Run `job` and, if it takes longer than `afterMs`, show loading indicators
+   * meanwhile: a repeated chat action ("typing…"), a toast, a placeholder
+   * message (deleted when the job is done). For your own slow handlers:
+   *
+   *   const answer = await app.withLoading(ctx, () => askModel(q), { action: 'typing', text: '⏳ Thinking…' });
+   */
+  async withLoading<T>(ctx: C, job: () => Awaitable<T>, options: LoadingOptions = { action: 'typing' }): Promise<T> {
+    const placeholder = { message: undefined as { chatId: number; messageId: number } | undefined };
+    try {
+      return await this.loadingAround(ctx, options, job, async (text) => {
+        const delivery = await this.deliverContent(ctx, { text }, 'send');
+        const chatId = ctx.chat?.id;
+        if (delivery && delivery.result !== true && chatId !== undefined) placeholder.message = { chatId, messageId: delivery.result.message_id };
+      });
+    } finally {
+      const message = placeholder.message;
+      if (message) await ctx.api.deleteMessage(message.chatId, message.messageId).catch(() => {});
+    }
+  }
+
+  /**
+   * @internal Loading for renders: the placeholder is what the page will
+   * replace. `fresh`: always a new placeholder message (the pressed message
+   * may be gone, e.g. a dialogue prompt).
+   */
+  async withPlaceholder<T>(ctx: C, options: LoadingOptions, job: () => Awaitable<T>, fresh = false): Promise<T> {
+    const scope = this.scope(ctx);
+    let restore: (() => Promise<unknown>) | undefined;
+    try {
+      return await this.loadingAround(ctx, options, job, async (text) => {
+        const pressed = ctx.callbackQuery?.message as Message | undefined;
+        if (pressed && !fresh) {
+          // A text menu shows the placeholder (and no buttons, so it isn't pressed again); media gets a toast.
+          if (pressed.text !== undefined) {
+            restore = () =>
+              ctx.api.editMessageText(pressed.chat.id, pressed.message_id, pressed.text!, { entities: pressed.entities, reply_markup: pressed.reply_markup });
+            await this.deliverContent(ctx, { text }, 'edit');
+          } else if (typeof text === 'string') await this.answerCallback(ctx, { text });
+          return;
+        }
+        if (scope.editTarget && !fresh) {
+          await this.deliverContent(ctx, { text }, 'edit'); // app.edit: in the message itself
+          return;
+        }
+        const delivery = await this.deliverContent(ctx, { text }, 'send');
+        const chatId = ctx.chat?.id;
+        if (delivery && delivery.result !== true && chatId !== undefined) scope.placeholder = { chatId, messageId: delivery.result.message_id };
+      });
+    } catch (error) {
+      // The render failed: don't leave a placeholder behind (a menu gets its buttons back).
+      const placeholder = scope.placeholder;
+      scope.placeholder = undefined;
+      if (placeholder) await ctx.api.deleteMessage(placeholder.chatId, placeholder.messageId).catch(() => {});
+      await restore?.().catch(() => {});
+      throw error;
+    }
+  }
+
+  private async loadingAround<T>(ctx: C, options: LoadingOptions, job: () => Awaitable<T>, showText: (text: TextInput) => Promise<void>): Promise<T> {
+    const chatId = ctx.chat?.id ?? this.scope(ctx).editTarget?.chatId;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    let shown: Promise<void> | undefined;
+    let done = false;
+    const action = () => {
+      if (options.action && chatId !== undefined) {
+        void ctx.api.sendChatAction(chatId, options.action, { message_thread_id: threadIdOf(ctx) }).catch(() => {});
+      }
+    };
+    const show = async () => {
+      // The repeated action starts before anything is awaited, so `finally` always sees (and stops) it.
+      if (options.action) {
+        action();
+        interval = setInterval(action, 4000); // Telegram shows an action for about 5 s
+      }
+      if (options.toast) await this.answerCallback(ctx, { text: options.toast });
+      if (options.text !== undefined && !done) await showText(options.text);
+    };
+    const timer = setTimeout(() => {
+      shown = show().catch((error) => this.logger.debug('Failed to show the loading indicator', error));
+    }, options.afterMs ?? 500);
+    try {
+      return await job();
+    } finally {
+      done = true;
+      clearTimeout(timer);
+      clearInterval(interval);
+      await shown; // the placeholder must exist before the result replaces it
     }
   }
 
@@ -802,7 +960,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   }
 
   private async navHistory(ctx: C): Promise<NavHistory> {
-    const history = (await this.session(ctx)).get<NavHistory>(NAV_KEY);
+    const history = (await this.state(ctx)).get<NavHistory>(NAV_KEY);
     return history && typeof history === 'object' ? history : {};
   }
 
@@ -810,7 +968,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const scope = this.scope(ctx);
     const messageId = delivered === true ? sourceId : delivered.message_id;
     if (messageId === undefined || !scope.view) return;
-    const session = await this.session(ctx);
+    const session = await this.state(ctx);
     const history = { ...(await this.navHistory(ctx)) };
     if (sourceId !== undefined && sourceId !== messageId) delete history[sourceId]; // the menu moved to a new message
     history[messageId] = { current: scope.view, stack: scope.navStack ?? [], at: Date.now() };
@@ -1010,6 +1168,75 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     } finally {
       scope.view = undefined;
     }
+  }
+
+  /**
+   * Work as a user outside an update: a Mini App's request to your server, a
+   * webhook from a payment provider, an admin panel. You get their session
+   * (in their private chat with the bot, or `chatId`), their user session,
+   * `t` in their language and a `nav`; changes are saved when `fn` ends,
+   * in step with the user's own updates (the same lock).
+   *
+   *   const { user } = verifyInitData(initData, token);
+   *   await app.withUser(bot, user!.id, async ({ userSession }) => userSession.set('plan', 'pro'));
+   */
+  async withUser<T>(bot: BotLike, target: number | SendTarget, fn: (args: WithUserArgs<C>) => Awaitable<T>): Promise<T> {
+    const userTarget = typeof target === 'number' ? { chatId: target, userId: target } : target;
+    if (userTarget.userId === undefined) throw new EasyTGError('withUser needs a userId');
+    const ctx = await this.proactiveContext(bot, userTarget);
+    return this.asUser(ctx, async () => {
+      const session = await this.session(ctx);
+      const userSession = await this.userSession(ctx);
+      const result = await fn({ ctx, session, userSession, locale: this.localeOf(ctx), t: this.t(ctx), nav: this.nav(ctx), app: this });
+      await this.flush(ctx);
+      return result;
+    });
+  }
+
+  /**
+   * Answer a Mini App opened from an inline button or the menu button: the
+   * page is sent into the chat as a message from the user, and the Mini App
+   * closes. `queryId` and `userId` come from the verified initData.
+   *
+   *   const init = verifyInitData(body.initData, token);
+   *   await app.answerWebAppQuery(bot, init.queryId!, orderCard, { userId: init.user!.id, params: { id }, title: 'Order' });
+   */
+  async answerWebAppQuery<P>(bot: BotLike, queryId: string, page: Page<P, any, any>, options: InlineResultOptions<P> & { userId: number }) {
+    const result = await this.renderAsInline(bot, options.userId, page, options);
+    return bot.api.answerWebAppQuery(queryId, result);
+  }
+
+  /**
+   * Prepare a page as a message the user can share into any chat from a Mini
+   * App: pass the returned `id` to `Telegram.WebApp.shareMessage(id)`.
+   * By default it may go to users, groups and channels.
+   */
+  async prepareShare<P>(
+    bot: BotLike,
+    userId: number,
+    page: Page<P, any, any>,
+    options: InlineResultOptions<P> & { allowUserChats?: boolean; allowBotChats?: boolean; allowGroupChats?: boolean; allowChannelChats?: boolean },
+  ): Promise<{ id: string; expirationDate: Date }> {
+    const result = await this.renderAsInline(bot, userId, page, options);
+    const { allowUserChats = true, allowBotChats = false, allowGroupChats = true, allowChannelChats = true } = options;
+    // Through `raw`, so it works with grammY versions that don't know the method yet.
+    const prepared = (await (bot.api.raw as unknown as Record<string, (payload: object) => Promise<{ id: string; expiration_date: number }>>)
+      .savePreparedInlineMessage!({
+      user_id: userId,
+      result,
+      allow_user_chats: allowUserChats,
+      allow_bot_chats: allowBotChats,
+      allow_group_chats: allowGroupChats,
+      allow_channel_chats: allowChannelChats,
+    }));
+    return { id: prepared.id, expirationDate: new Date(prepared.expiration_date * 1000) };
+  }
+
+  /** A page rendered for a user as an inline result, with buttons anyone in the target chat may press. */
+  private async renderAsInline<P>(bot: BotLike, userId: number, page: Page<P, any, any>, options: InlineResultOptions<P>) {
+    const ctx = await this.proactiveContext(bot, { chatId: userId, userId });
+    this.scope(ctx).inlineRender = true;
+    return this.asUser(ctx, () => this.inlineResult(ctx, page, options));
   }
 
   /** Start a dialogue for the user of `ctx` (middlewares run first). */
@@ -1297,26 +1524,65 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   /** The session of the user in `ctx`. Loaded once per update. */
   session(ctx: C): Promise<Session> {
+    return this.state(ctx);
+  }
+
+  /**
+   * @internal The session of the user in this chat, where easytg keeps its own
+   * state (dialogues, navigation, text input). Same as `session(ctx)`.
+   * Loading it also resolves the user's language.
+   */
+  state(ctx: C): Promise<Session> {
     const scope = this.scope(ctx);
     const live = scope.sharedWith;
     if (live && !scope.session) {
       // The same session object as the update being handled, so both see (and save) each other's changes.
-      scope.session = this.session(live as C).then((session) => {
+      scope.session = this.state(live as C).then((session) => {
         scope.locale = this.scopes.get(live)?.locale ?? null;
+        scope.stateValue = session;
         return session;
       });
     }
-    scope.session ??= this.loadSession(ctx).then((session) => {
-      // Remember the language for messages sent without an update, if the app is translated at all.
-      const language = ctx.from?.language_code;
+    scope.session ??= (async () => {
+      // The language is the user's, in every chat: kept in the user session, if the app is translated.
       const translated = !this.translator.isEmpty || Object.keys(this.locales).length > 0;
-      if (translated && language && !isProactive(ctx) && session.get(LAST_LANGUAGE_KEY) !== language) {
-        session.set(LAST_LANGUAGE_KEY, language);
-      }
-      scope.locale = this.resolveLocale(ctx, session) ?? null;
+      const [session, user] = await Promise.all([this.loadSession(ctx), translated && ctx.from ? this.userSession(ctx) : undefined]);
+      const language = ctx.from?.language_code;
+      // Remembered for messages sent without an update, which carry no language.
+      if (user && language && !isProactive(ctx) && user.get(LAST_LANGUAGE_KEY) !== language) user.set(LAST_LANGUAGE_KEY, language);
+      scope.locale = this.resolveLocale(ctx, session, user) ?? null;
+      scope.stateValue = session;
       return session;
-    });
+    })();
     return scope.session;
+  }
+
+  /**
+   * The user's session across all chats (private chat, groups), next to the
+   * per-chat `session`: for what belongs to the person, like a plan, a cart
+   * or settings. Loaded once per update and saved with it; changes made by
+   * the user's updates in other chats at the same time are merged per key.
+   */
+  userSession(ctx: C): Promise<Session> {
+    const scope = this.scope(ctx);
+    const live = scope.sharedWith;
+    if (live && !scope.userSession) {
+      scope.userSession = this.userSession(live as C).then((session) => (scope.userValue = session));
+    }
+    scope.userSession ??= (async () => {
+      const key = userSessionKey(ctx, this.botScope(ctx));
+      const session = key ? this.migrated(new Session(await this.sessionStorage.get(key))) : new Session();
+      scope.userValue = session;
+      return session;
+    })();
+    return scope.userSession;
+  }
+
+  /** @internal The session, once `session(ctx)` has been awaited. */
+  loadedSession(ctx: C): Session {
+    const session = this.scope(ctx).stateValue;
+    if (!session) throw new EasyTGError('The session is not loaded yet: await app.session(ctx) first');
+    return session;
   }
 
   /** The user's language: the `locale` option once the session is loaded, else `language_code`. */
@@ -1341,15 +1607,17 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   /**
    * Set the user's language (e.g. from a language picker), or `undefined` to
-   * follow their Telegram app again. It is kept in the session, applies to the
-   * rest of this update at once (`t`, built-in texts), and to messages sent to
-   * them later (`sendTo`, `sendLater`, `broadcast`). It wins over `i18n.locale`.
+   * follow their Telegram app again. It is kept in the user session, so it
+   * applies in every chat, to the rest of this update at once (`t`, built-in
+   * texts), and to messages sent to them later (`sendTo`, `sendLater`,
+   * `broadcast`). It wins over `i18n.locale`.
    */
   async setLocale(ctx: C, locale: string | undefined): Promise<void> {
     const session = await this.session(ctx);
-    if (locale) session.set(LOCALE_KEY, locale);
-    else session.delete(LOCALE_KEY);
-    this.scope(ctx).locale = this.resolveLocale(ctx, session) ?? null;
+    const user = await this.userSession(ctx);
+    if (locale) user.set(LOCALE_KEY, locale);
+    else user.delete(LOCALE_KEY);
+    this.scope(ctx).locale = this.resolveLocale(ctx, session, user) ?? null;
   }
 
   /**
@@ -1357,11 +1625,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    * app's language, else (for `sendTo` & co, which have no language) the one
    * the user had when they last wrote.
    */
-  private resolveLocale(ctx: C, session: Session): string | undefined {
-    const chosen = session.get<string>(LOCALE_KEY);
+  private resolveLocale(ctx: C, session: Session, user: Session | undefined): string | undefined {
+    const chosen = user?.get<string>(LOCALE_KEY);
     if (chosen) return chosen;
     if (this.localeFn) return this.localeFn(ctx, session);
-    return ctx.from?.language_code ?? session.get<string>(LAST_LANGUAGE_KEY);
+    return ctx.from?.language_code ?? user?.get<string>(LAST_LANGUAGE_KEY);
   }
 
   /** Built-in texts in the user's language. */
@@ -1408,14 +1676,18 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     await this.flushCallbacks(scope);
     if (scope.chatSession) {
       const key = chatSessionKey(ctx, this.botScope(ctx));
-      if (key) await this.saveSession(await scope.chatSession, key);
+      if (key) await this.saveSession(await scope.chatSession, key, true);
+    }
+    if (scope.userSession) {
+      const key = userSessionKey(ctx, this.botScope(ctx));
+      if (key) await this.saveSession(await scope.userSession, key, true);
     }
     if (!scope.session) return;
     const key = sessionKey(ctx, this.botScope(ctx));
     if (key) await this.saveSession(await scope.session, key);
   }
 
-  private async saveSession(session: Session, key: string) {
+  private async saveSession(session: Session, key: string, merge = false) {
     const now = Date.now();
     const ttl = this.sessionTtlMs;
     // Keep active users' sessions alive without writing on every update.
@@ -1424,6 +1696,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     if (!session.dirty && !refresh) return;
 
     session.dirty = false;
+    // Shared by concurrent updates: keep what others changed meanwhile.
+    if (merge) session.mergeWith(await this.sessionStorage.get(key));
     if (session.isEmpty) {
       session.savedAt = undefined;
       await this.sessionStorage.delete(key);
@@ -1454,7 +1728,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     }
 
     try {
-      await this.session(ctx); // resolves the user's language
+      await this.state(ctx); // resolves the user's language
       const texts = this.textsFor(ctx);
       let id: string;
       let params: Record<string, string>;
@@ -1496,7 +1770,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       } else if (id === EXIT_ID) {
         await this.closeMessage(ctx);
         // The closed message can't take text anymore.
-        const session = await this.session(ctx);
+        const session = await this.state(ctx);
         if (session.get<TextInputState>(INPUT_KEY)?.messageId === ctx.callbackQuery?.message?.message_id) session.delete(INPUT_KEY);
       } else if (page) {
         await this.open(ctx, page.id, params, { mode: sendNew ? 'send' : 'edit' });
@@ -1550,14 +1824,14 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const text = ctx.message?.text;
     if (!this.menu || text === undefined) return false;
     try {
-      await this.session(ctx); // resolves the user's language
+      await this.state(ctx); // resolves the user's language
       const texts = this.textsFor(ctx);
       const target = this.menu.match(text, this.localeOf(ctx), texts.closeMenu, this.t(ctx));
       if (!target) return false;
       // Like a /command, a menu button leaves the current dialogue.
       if (this.cancelDialogueOnCommand) await this.dialogues.cancel(ctx, { render: false });
       if (target === 'close') {
-        (await this.session(ctx)).delete(INPUT_KEY);
+        (await this.state(ctx)).delete(INPUT_KEY);
         await this.deliverContent(ctx, { text: texts.menuClosed, parseMode: 'plain' }, 'send', { remove_keyboard: true });
       }
       else if (target.kind === 'page') await this.open(ctx, this.page(target), {}, { mode: 'send' });
@@ -1652,7 +1926,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private async handleTextInput(ctx: C): Promise<boolean> {
     const message = ctx.message;
     if (message?.text === undefined) return false;
-    const session = await this.session(ctx);
+    const session = await this.state(ctx);
     if (isCommand(message)) {
       session.delete(INPUT_KEY); // a command moves on: later text isn't for the page anymore
       return false;
@@ -1766,7 +2040,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    * them) or messages with `allowedUsers` (checked through ownership instead).
    */
   private boundUser(ctx: C): number | undefined {
-    const inlineMode = !!ctx.inlineQuery || !!ctx.callbackQuery?.inline_message_id;
+    const inlineMode = !!ctx.inlineQuery || !!ctx.callbackQuery?.inline_message_id || !!this.scopes.get(ctx)?.inlineRender;
     return this.ownerOnly && !inlineMode && !this.allowedUsers(ctx) ? ctx.from?.id : undefined;
   }
 
@@ -1878,7 +2152,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     if (last === undefined) return;
     const id = `_easytg:del:${ctx.me.id}:${chatId}:${last}`;
     // Messages with a pending deletion, per user, so edits only cost a storage call when needed.
-    const session = ctx.from ? await this.session(ctx) : undefined;
+    const session = ctx.from ? await this.state(ctx) : undefined;
     const pending = session?.get<number[]>(AUTODELETE_KEY) ?? [];
     if (deleteAfterMs !== undefined) {
       // A page refreshing itself must not push its own deletion back: the first render scheduled it.
@@ -1906,6 +2180,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   async answer(ctx: C, toast?: string | { text: string; alert?: boolean }): Promise<void> {
     const options = typeof toast === 'string' ? { text: toast } : toast && { text: toast.text, show_alert: toast.alert };
     await this.answerCallback(ctx, options);
+  }
+
+  /** The unit updates are serialized by: a user in a chat. */
+  private userKey(ctx: Context): string | undefined {
+    return userKey(ctx);
   }
 
   /** @internal Answer the current callback query once; later calls are no-ops. */
@@ -2061,6 +2340,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    */
   chatSession(ctx: C): Promise<Session> {
     const scope = this.scope(ctx);
+    const live = scope.sharedWith;
+    if (live && !scope.chatSession && live.chat?.id === ctx.chat?.id) scope.chatSession = this.chatSession(live as C);
     scope.chatSession ??= (async () => {
       const key = chatSessionKey(ctx, this.botScope(ctx));
       if (!key) throw new EasyTGError('chatSession needs a chat');
@@ -2153,6 +2434,11 @@ const flows = new AsyncLocalStorage<Flow>();
 function userKey(ctx: Context): string | undefined {
   const userId = ctx.from?.id;
   return userId === undefined ? undefined : `${ctx.me.id}:${ctx.chat?.id ?? 'global'}:${userId}`;
+}
+
+function userSessionKey(ctx: Context, bot: string): string | null {
+  const userId = ctx.from?.id;
+  return userId === undefined ? null : scoped('usersession', bot, userId);
 }
 
 /** `bot` is '' when keys aren't scoped by bot (`scopeKeysByBot: false`). */

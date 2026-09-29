@@ -40,7 +40,7 @@ type AnyStep<C extends Context> = DialogueStep<any, C>;
 
 /** Steps whose buttons live on the reply keyboard (they send messages, not callbacks). */
 function usesReplyKeyboard(step: DialogueStep<any, any>) {
-  return step.type === 'contact' || step.type === 'location' || (step.type === 'choice' && !!step.reply);
+  return step.type === 'contact' || step.type === 'location' || step.type === 'webApp' || (step.type === 'choice' && !!step.reply);
 }
 
 /** Control button kinds, carried as `k` in the callback params. */
@@ -88,7 +88,7 @@ export class DialogueRunner<C extends Context> {
 
   async start(ctx: C, def: AnyDialogue<C>, params: Record<string, unknown>) {
     if (!ctx.chat) throw new EasyTGError(`Dialogue "${def.id}" can't start without a chat (e.g. from an inline-mode message)`);
-    const session = await this.app.session(ctx);
+    const session = await this.app.state(ctx);
     // Starting a dialogue abandons any other one that is still running.
     await this.abandon(ctx, session, ctx.callbackQuery?.message?.message_id);
 
@@ -101,7 +101,7 @@ export class DialogueRunner<C extends Context> {
 
   /** Feed a message to the active dialogue. Returns false if there is none. */
   async handleMessage(ctx: C): Promise<boolean> {
-    const session = await this.app.session(ctx);
+    const session = await this.app.state(ctx);
     await this.expireIdle(ctx, session);
     const active = this.active(session);
     if (!active) return false;
@@ -145,6 +145,9 @@ export class DialogueRunner<C extends Context> {
         const { latitude, longitude, horizontal_accuracy } = message.location;
         return this.submit(ctx, session, def, state, step, { latitude, longitude, horizontalAccuracy: horizontal_accuracy });
       }
+      if (step.type === 'webApp' && message.web_app_data) {
+        return this.submit(ctx, session, def, state, step, parseWebAppData(message.web_app_data.data), step.schema);
+      }
       if (step.type === 'choice' && text !== undefined) {
         const option = step.options.find((o) => o.text === text);
         if (option) return this.submit(ctx, session, def, state, step, option.value);
@@ -178,12 +181,14 @@ export class DialogueRunner<C extends Context> {
         return this.reject(ctx, session, def, state, texts.expectContact);
       case 'location':
         return this.reject(ctx, session, def, state, texts.expectLocation);
+      case 'webApp':
+        return this.reject(ctx, session, def, state, texts.expectWebApp);
     }
   }
 
   /** Handle a dialogue control button. Returns false when the button is stale or forged. */
   async handleButton(ctx: C, params: Record<string, string>): Promise<boolean> {
-    const session = await this.app.session(ctx);
+    const session = await this.app.state(ctx);
     await this.expireIdle(ctx, session);
     const active = this.active(session);
     if (!active || params.r !== active.state.run) return false;
@@ -237,7 +242,7 @@ export class DialogueRunner<C extends Context> {
    * deleted when there is no result.
    */
   async cancel(ctx: C, options: { render: boolean; keepMessageId?: number; reason?: DialogueCancelReason }): Promise<boolean> {
-    const session = await this.app.session(ctx);
+    const session = await this.app.state(ctx);
     await this.expireIdle(ctx, session); // a dialogue that already timed out ends as 'timeout'
     const active = this.active(session);
     if (!active) return false;
@@ -319,18 +324,25 @@ export class DialogueRunner<C extends Context> {
     }
   }
 
-  private async steps(ctx: C, def: AnyDialogue<C>, state: DialogueState): Promise<AnyStep<C>[]> {
-    const steps = def.stepsDef!;
-    return typeof steps === 'function' ? await steps({ ctx, params: state.params, answers: state.answers, t: this.app.t(ctx) }) : steps;
+  /** The steps as they are now: evaluated for the answers so far, without the ones whose `when` says no. */
+  private async steps(ctx: C, def: AnyDialogue<C>, state: DialogueState): Promise<readonly AnyStep<C>[]> {
+    const defined = def.stepsDef!;
+    const steps = typeof defined === 'function' ? await defined({ ctx, params: state.params, answers: state.answers, t: this.app.t(ctx) }) : defined;
+    if (!steps.some((step) => step.when)) return steps;
+    const helpers = this.helpers(ctx, undefined as never, state);
+    const asked: AnyStep<C>[] = [];
+    for (const step of steps) if (!step.when || (await step.when(helpers))) asked.push(step);
+    return asked;
   }
 
   private async currentStep(ctx: C, def: AnyDialogue<C>, state: DialogueState) {
     return (await this.steps(ctx, def, state))[state.step];
   }
 
-  private helpers(ctx: C, session: Session, state: DialogueState): StepHelpers<any, C> {
+  /** The arguments of step functions and onFinish / onCancel. */
+  private helpers(ctx: C, _state: Session, state: DialogueState): StepHelpers<any, C> {
     const t = this.app.t(ctx);
-    return { ctx, session, locale: this.app.localeOf(ctx), t, params: state.params, answers: state.answers, nav: this.app.nav(ctx), app: this.app };
+    return { ctx, session: this.app.loadedSession(ctx), locale: this.app.localeOf(ctx), t, params: state.params, answers: state.answers, nav: this.app.nav(ctx), app: this.app };
   }
 
   private endArgs(ctx: C, session: Session, state: DialogueState) {
@@ -380,6 +392,7 @@ export class DialogueRunner<C extends Context> {
     const rows: KeyboardButton[][] = [];
     if (step.type === 'contact') rows.push([{ text: step.button ?? texts.shareContact, request_contact: true }]);
     if (step.type === 'location') rows.push([{ text: step.button ?? texts.shareLocation, request_location: true }]);
+    if (step.type === 'webApp') rows.push([{ text: step.button ?? texts.openWebApp, web_app: { url: step.url } }]);
     if (step.type === 'choice') {
       const columns = Math.max(1, step.columns ?? 1);
       for (let i = 0; i < step.options.length; i += columns) {
@@ -499,7 +512,9 @@ export class DialogueRunner<C extends Context> {
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
     await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, params: state.params, answers: state.answers });
-    const result = await def.finishFn!(this.endArgs(ctx, session, state));
+    const finish = () => def.finishFn!(this.endArgs(ctx, session, state));
+    // The prompt was just cleared: the placeholder is always a new message.
+    const result = def.loadingOptions ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();
     await this.app.showResult(ctx, result, 'send');
   }
 
@@ -513,6 +528,15 @@ export class DialogueRunner<C extends Context> {
     } catch (error) {
       this.app.logger.debug('Failed to delete dialogue messages', error);
     }
+  }
+}
+
+/** Mini App data: JSON when it is JSON, else the string as sent. */
+export function parseWebAppData(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return data;
   }
 }
 

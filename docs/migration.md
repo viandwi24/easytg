@@ -18,8 +18,10 @@ things. Most of them are type errors, so TypeScript points you to them.
 **Custom storage adapters:** the third argument of `set` is now a TTL in
 milliseconds (it was seconds), and may be below one second. Convert it where
 you pass it to your database (Redis: `PX` instead of `EX`), then run
-`verifyStorageAdapter(adapter, { ttlMs: 200 })`, which now also takes
-`{ ttlMs }` instead of a key prefix string.
+`verifyStorageAdapter(adapter, { ttlMs: 200 })`, which now takes options
+`{ keyPrefix?, ttlMs? }` instead of a key-prefix string. (The one duration
+still in seconds is `telegramError(…, { retryAfter })` in `easytg/testing`,
+because it mirrors Telegram's `retry_after` field.)
 
 ### Renamed
 
@@ -53,6 +55,14 @@ you pass it to your database (Redis: `PX` instead of `EX`), then run
 - **`dialogueCancel` reasons:** `app.cancelDialogue` now reports `'app'` (was
   `'command'`), and dialogues with a timeout report `'timeout'`. Update
   exhaustive `switch`es over `reason`.
+- **`dialogue()` without a type argument** now infers the answers from the
+  steps. Code that relied on `answers` being `any` may now see precise types
+  (and catch misspellings); steps built in a loop stay untyped. If you
+  annotate the `Dialogue` type yourself, its first type argument defaults to
+  `Auto` now.
+- **`easytg/testing`:** the fake API answers `sendChatAction` with `true`, so
+  chat actions no longer use up message ids; tests that assert exact message
+  ids may shift.
 - **`app.broadcast`** sends up to 5 messages at once (`concurrency`), so
   recipients aren't served strictly in list order. `concurrency: 1` restores
   the 0.2 behaviour.
@@ -61,7 +71,8 @@ you pass it to your database (Redis: `PX` instead of `EX`), then run
 
 If you translate `EasyTGTexts` in full (like `examples/locales/id.ts`):
 
-- add `adminOnly` (used by `requireChatAdmin`);
+- add `adminOnly` (used by `requireChatAdmin`), `openWebApp` and `expectWebApp`
+  (the `webApp` dialogue step);
 - `collectReceived` and `collectLimit` receive the Done button's label:
   `collectReceived: ({ total, done }) => …`, `collectLimit: ({ max, done }) => …`
   (`collectLimit` took a number).

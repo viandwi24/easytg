@@ -26,14 +26,16 @@ dialogue('ban').use(requireChatAdmin({ right: 'can_restrict_members' })).steps(.
 ```
 
 In groups only the chat's admins (and its owner) get through; others get the
-`adminOnly` toast when they press a button. Private chats always pass. The
+`adminOnly` toast when they press a button (and nothing at all otherwise, e.g.
+for a page opened by a command). Private chats and channels always pass. The
 admin status is asked from Telegram and remembered for `cacheMs` (default 5
 minutes).
 
 ## State for the whole chat
 
-Each user has their own `session` per chat. State of the chat itself lives in
-the [chat session](sessions.md#chat-sessions):
+Each user has their own `session` per chat, and a user session that follows
+them into every group. State of the chat itself lives in the
+[chat session](sessions.md#per-chat-and-per-user):
 
 ```ts
 const chat = await app.chatSession(ctx);
@@ -48,6 +50,9 @@ commands and replies to its own messages. Dialogue answers and
 message; turn privacy mode off in @BotFather (`/setprivacy`) to receive every
 message. Page text input only accepts replies to the page's message in groups
 anyway.
+
+In forum groups, pages stay in the topic they were opened in; `sendTo` takes a
+`threadId` for a topic.
 
 [`examples/group.ts`](../examples/group.ts) is a group bot with admin-only
 settings, a live scoreboard and a quiz.

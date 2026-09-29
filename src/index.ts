@@ -14,6 +14,7 @@ export {
   type EditMessageTarget,
   type MediaOptions,
   type InlineResultOptions,
+  type WithUserArgs,
   type DeleteLaterOptions,
   type SendLaterOptions,
   type UpdateOutcome,
@@ -34,6 +35,7 @@ export {
 } from './define';
 export type { ScheduleOptions, SchedulerOptions, TaskErrorEvent } from './scheduler';
 export type { StandardSchemaV1, SchemaOutput } from './schema';
+export type { Auto, AnswersOf, AnswerOf } from './answers';
 export { replyMenu, type ReplyMenu, type MenuButton, type MenuLabel, type ReplyMenuOptions } from './menu';
 export type { Nav } from './nav';
 export type { Session, SessionData, SessionSetOptions } from './session';
@@ -60,6 +62,18 @@ export { defaultTexts, type EasyTGTexts } from './texts';
 export type { Logger } from './logger';
 export { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient, retryAfterMs } from './errors';
 export { autoRetry, type AutoRetryOptions } from './retry';
+export {
+  verifyInitData,
+  verifyInitDataSignature,
+  miniAppLink,
+  WebAppAuthError,
+  type WebAppInitData,
+  type WebAppUser,
+  type WebAppAuthReason,
+  type VerifyInitDataOptions,
+  type MiniAppLinkOptions,
+} from './webapp';
+export type { ThrottleOptions, ThrottleRule } from './throttle';
 export { requireChatAdmin, type RequireChatAdminOptions } from './middlewares';
 export type { AntiSpamOptions, SpamEvent } from './antispam';
 export type { CallbackParamsMode } from './callback-store';
@@ -81,6 +95,8 @@ export type {
   FileKind,
   AlbumItem,
   CopySource,
+  ChatAction,
+  LoadingOptions,
   InvoiceContent,
   MediaFields,
   MediaSource,

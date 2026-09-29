@@ -29,16 +29,17 @@ const home = page('home').render(({ nav }) => ({
 
 // A render may take as long as it needs; other buttons of this user get a
 // "please wait" toast meanwhile.
-const poem = page('poem').render(async ({ ctx, app, nav }) => {
-  // Stop the button's loading spinner now instead of when the job is done.
-  await app.answer(ctx, '⏳ Working on it…');
-  try {
-    const text = await app.queue('ai', () => slowModel('a poem about tea'), { ctx });
-    return { text, parseMode: 'plain', keyboard: [[nav.self('🔁 Another one'), nav.home()]] };
-  } catch (error) {
-    return { text: busyText(error), keyboard: [[nav.home()]] };
-  }
-});
+const poem = page('poem')
+  // While it renders: the menu shows "Writing…" and the chat shows "typing…".
+  .loading({ text: '✍️ Writing a poem…', action: 'typing', toast: '⏳ Working on it…' })
+  .render(async ({ ctx, app, nav }) => {
+    try {
+      const text = await app.queue('ai', () => slowModel('a poem about tea'), { ctx });
+      return { text, parseMode: 'plain', keyboard: [[nav.self('🔁 Another one'), nav.home()]] };
+    } catch (error) {
+      return { text: busyText(error), keyboard: [[nav.home()]] };
+    }
+  });
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -71,8 +72,8 @@ bot.command('ask', async (ctx) => {
   } catch (error) {
     return void (await ctx.reply(busyText(error)));
   }
-  await ctx.replyWithChatAction('typing');
-  await ctx.reply(await slowModel(question));
+  // "typing…" for as long as the model takes.
+  await ctx.reply(await app.withLoading(ctx, () => slowModel(question), { action: 'typing' }));
 });
 bot.catch((err) => console.error('Bot error:', err.error));
 

@@ -67,7 +67,7 @@ export function assertFits(data: string) {
   if (!fitsCallback(data)) {
     throw new EasyTGError(
       `Callback data is ${byteLength(data)} bytes, Telegram allows at most ${MAX_CALLBACK_BYTES}: "${data}". ` +
-        "Use callbackParams: 'auto' or 'stored', or { store: true } on the button.",
+        "Use buttons.params: 'auto' or 'stored', or { store: true } on the button.",
     );
   }
 }

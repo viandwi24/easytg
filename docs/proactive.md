@@ -13,15 +13,18 @@ you are in. `session` is the recipient's normal session. `ctx.from` only
 carries the user id, so keep names and preferences you need in the session.
 
 - **Language:** the recipient's language is the one chosen with
-  `app.setLocale`, else (with translations configured) the language their
-  Telegram app had when they last wrote to the bot. See [Languages](i18n.md).
+  `app.setLocale`, else your `i18n.locale` function, else (with translations
+  configured) the language their Telegram app had when they last wrote to the
+  bot. See [Languages](i18n.md).
 - **Session races:** called while an update of the same user is being handled
   (from that update's handler, a listener or a middleware, or from elsewhere
   in the same process), the page shares that update's session; otherwise it
   waits for the user's lock, so neither overwrites the other's changes.
 
 `prepareProactive` adds what your middlewares normally put on `ctx`, for every
-context easytg creates itself (`sendTo`, `edit`, `broadcast`):
+context easytg creates itself (`sendTo`, `edit`, `broadcast`, `sendLater`,
+`broadcastLater`, `refreshEveryMs` re-renders, `withUser`,
+`answerWebAppQuery`, `prepareShare`):
 
 ```ts
 new EasyTG<MyContext>({

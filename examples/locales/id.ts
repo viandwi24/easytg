@@ -29,6 +29,8 @@ export const id: EasyTGTexts = {
   shareLocation: '📍 Bagikan lokasi saya',
   expectContact: 'Silakan tekan tombol di bawah untuk membagikan kontak Anda.',
   expectLocation: 'Silakan tekan tombol di bawah untuk membagikan lokasi Anda.',
+  openWebApp: '📱 Buka',
+  expectWebApp: 'Silakan gunakan tombol di bawah.',
   contactNotYours: 'Silakan bagikan kontak Anda sendiri.',
   received: '👍 Diterima.',
   cancelled: 'Dibatalkan.',

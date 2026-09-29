@@ -24,8 +24,12 @@ value, so a user named `[free](https://evil)` can't inject a link:
 ```ts
 text: md`Hello **${user.name}**, you owe ${amount}`
 text: html`Hello <b>${user.name}</b>`
-text: [md`**${title}**`, 'a plain line follows parseMode']  // mixing is fine
+text: [md`**${title}**`, 'a plain line follows parseMode']  // mixing is fine (not with parseMode 'markdownv2')
 ```
+
+Fragments nest: `md` keeps nested `md` fragments, `html` keeps nested `md`
+and `html` fragments. An `html` fragment inside `md` is escaped (its tags
+show as text).
 
 `escapeMarkdown`, `escapeHTML` and `escapeMarkdownV2` are also available for
 manual escaping.

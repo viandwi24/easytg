@@ -16,7 +16,7 @@ const product = page<{ id: string }>('product').render(({ params, nav }) => ({
 bot.on('inline_query', async (ctx) => {
   const found = search(ctx.inlineQuery.query);
   const results = await Promise.all(
-    found.map((p) => app.inlineResult(ctx, product, { params: { id: p.id }, title: p.name, description: p.price })),
+    found.map((p) => app.inlineResult(ctx, product, { params: { id: p.id }, title: p.name, description: `$${p.price}` })),
   );
   await ctx.answerInlineQuery(results, { cache_time: 0 });
 });
@@ -32,7 +32,8 @@ bot.on('inline_query', async (ctx) => {
   anyone there: they are never bound to a user. Keep what they do safe for
   that, and use `buttons: { params: 'stored' }` or `'signed'` if the params
   matter.
-- There is no chat to talk in, so these pages can't start dialogues, and text
-  that doesn't fit one message is cut.
+- There is no chat to talk in, so these pages can't start dialogues (a render
+  returning `nav.startDialogue` throws), and text that doesn't fit one message
+  is cut (with a warning in the log).
 
 [`examples/inline.ts`](../examples/inline.ts) is a small catalog shared inline.

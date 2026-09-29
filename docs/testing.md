@@ -19,6 +19,7 @@ expect(t.methods()).toContain('editMessageText');
 await t.message('', { extra: { text: undefined, contact: { phone_number: '+62…', first_name: 'Ann', user_id: 7 } } });
 await t.update({ pre_checkout_query: { … } });      // any other update type
 
+// telegramError(description, { code?, retryAfter? }): retryAfter in seconds, like Telegram's retry_after
 t.responders.editMessageText = () => telegramError('Bad Request: message to edit not found');
 t.responders.sendMessage = () => telegramError('Forbidden: bot was blocked by the user', { code: 403 });
 

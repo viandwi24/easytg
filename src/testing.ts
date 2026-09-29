@@ -66,7 +66,7 @@ export function createTestBot<C extends Context = Context>(options: TestBotOptio
       sent.push(result);
       return result;
     };
-    if (method.startsWith('send')) {
+    if (method.startsWith('send') && method !== 'sendChatAction') {
       // Like Telegram, an album comes back as one message per item.
       const result = method === 'sendMediaGroup' ? (p.media as unknown[]).map(() => message()) : message(p.text);
       return { ok: true, result } as any;

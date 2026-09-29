@@ -4,10 +4,12 @@ import { EasyTGError, InvalidParamsError } from './errors';
 import { isStandardSchema, validateSchema, type StandardSchemaV1 } from './schema';
 import type { EasyTG } from './engine';
 import type { Translate } from './i18n';
+import type { AnswersOf, AnswersSoFar, Auto, ResolveAnswers } from './answers';
 import type {
   Awaitable,
   DialogueEndArgs,
   DialogueStep,
+  LoadingOptions,
   Middleware,
   Params,
   ParamsShape,
@@ -43,6 +45,7 @@ export class Page<P = Params, C extends Context = Context, R = P> {
   /** @internal */ readonly middlewares: Middleware<C>[] = [];
   /** @internal */ deepLinkEnabled = false;
   /** @internal */ textFn?: (args: TextInputArgs<R, C>) => Awaitable<RenderResult>;
+  /** @internal */ loadingOptions?: LoadingOptions | false;
   /** @internal */ textOptions: TextInputOptions = {};
 
   /** @internal Use `page(id)`. */
@@ -94,6 +97,19 @@ export class Page<P = Params, C extends Context = Context, R = P> {
     return self;
   }
 
+  /**
+   * What users see while this page renders slowly (an AI answer, a report):
+   * a placeholder text, a "typing…" action or a toast, shown only after
+   * `afterMs` (default 500). A string is a placeholder text; `true` is
+   * "typing…"; `false` turns off the app's default `loading`.
+   *
+   *   page('answer').loading({ text: '⏳ Thinking…', action: 'typing' }).render(async () => …)
+   */
+  loading(options: LoadingOptions | string | boolean): this {
+    this.loadingOptions = loadingOptions(options);
+    return this;
+  }
+
   render(fn: (args: RenderArgs<R, C>) => Awaitable<RenderResult>): this {
     if (this.renderFn) throw new EasyTGError(`Page "${this.id}" already has a render`);
     this.renderFn = fn;
@@ -127,17 +143,18 @@ export class Page<P = Params, C extends Context = Context, R = P> {
  *     .steps([{ id: 'name', type: 'text', text: 'Your name?' }])
  *     .onFinish(({ answers }) => ({ text: `Welcome ${answers.name}` }));
  */
-export class Dialogue<A = Record<string, any>, P = Params, C extends Context = Context> {
+export class Dialogue<A = Auto, P = Params, C extends Context = Context> {
   readonly kind = 'dialogue' as const;
   declare readonly __params?: P;
 
   /** @internal */ stepsDef?:
-    | DialogueStep<P, C>[]
-    | ((args: { ctx: C; params: P; answers: Partial<A>; t: Translate }) => Awaitable<DialogueStep<P, C>[]>);
-  /** @internal */ finishFn?: (args: DialogueEndArgs<A, P, C>) => Awaitable<RenderResult>;
-  /** @internal */ cancelFn?: (args: DialogueEndArgs<Partial<A>, P, C>) => Awaitable<RenderResult>;
+    | readonly DialogueStep<P, C>[]
+    | ((args: StepsArgs<A, P, C>) => Awaitable<readonly DialogueStep<P, C>[]>);
+  /** @internal */ finishFn?: (args: DialogueEndArgs<AnswersSoFar<A>, P, C>) => Awaitable<RenderResult>;
+  /** @internal */ cancelFn?: (args: DialogueEndArgs<Partial<AnswersSoFar<A>>, P, C>) => Awaitable<RenderResult>;
   /** @internal */ backEnabled = true;
   /** @internal */ timeoutMs?: number;
+  /** @internal */ loadingOptions?: LoadingOptions | false;
   /** @internal */ deepLinkEnabled = false;
   /** @internal */ readonly middlewares: Middleware<C>[] = [];
 
@@ -152,19 +169,22 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
     return this;
   }
 
-  /** The steps, or a function of the answers so far (re-evaluated after every answer). */
-  steps(
-    steps:
-      | DialogueStep<P, C>[]
-      | ((args: { ctx: C; params: P; answers: Partial<A>; t: Translate }) => Awaitable<DialogueStep<P, C>[]>),
-  ): this {
+  /**
+   * The steps, or a function of the answers so far (re-evaluated after every
+   * answer). The answers `onFinish` gets are typed from the steps: ids, choice
+   * values, schema outputs, and optional answers for steps with `when`.
+   * (With `dialogue<{ … }>()`, the declared answers are used instead.)
+   */
+  steps<const T extends readonly DialogueStep<P, C>[]>(
+    steps: T | ((args: StepsArgs<A, P, C>) => Awaitable<T>),
+  ): Dialogue<ResolveAnswers<A, AnswersOf<T>>, P, C> {
     if (this.stepsDef) throw new EasyTGError(`Dialogue "${this.id}" already has steps`);
-    this.stepsDef = steps;
-    return this;
+    this.stepsDef = steps as never;
+    return this as never;
   }
 
   /** Called after the last step; the result is sent as a new message. The dialogue state is then removed. */
-  onFinish(fn: (args: DialogueEndArgs<A, P, C>) => Awaitable<RenderResult>): this {
+  onFinish(fn: (args: DialogueEndArgs<AnswersSoFar<A>, P, C>) => Awaitable<RenderResult>): this {
     if (this.finishFn) throw new EasyTGError(`Dialogue "${this.id}" already has onFinish`);
     this.finishFn = fn;
     return this;
@@ -175,7 +195,7 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
    * the prompt (nothing = prompt deleted). When cancelled by a /command or by
    * starting another dialogue, the result is ignored.
    */
-  onCancel(fn: (args: DialogueEndArgs<Partial<A>, P, C>) => Awaitable<RenderResult>): this {
+  onCancel(fn: (args: DialogueEndArgs<Partial<AnswersSoFar<A>>, P, C>) => Awaitable<RenderResult>): this {
     if (this.cancelFn) throw new EasyTGError(`Dialogue "${this.id}" already has onCancel`);
     this.cancelFn = fn;
     return this;
@@ -198,11 +218,28 @@ export class Dialogue<A = Record<string, any>, P = Params, C extends Context = C
     return this;
   }
 
+  /** What users see while `onFinish` is slow (see `page.loading`). */
+  loading(options: LoadingOptions | string | boolean): this {
+    this.loadingOptions = loadingOptions(options);
+    return this;
+  }
+
   /** Show a Back button on steps after the first. Default true. */
   allowBack(enabled = true): this {
     this.backEnabled = enabled;
     return this;
   }
+}
+
+/** Arguments of a steps function. */
+type StepsArgs<A, P, C> = { ctx: C; params: P; answers: Partial<AnswersSoFar<A>>; t: Translate };
+
+
+/** `false` is stored as "none" (it overrides the app's default). */
+function loadingOptions(options: LoadingOptions | string | boolean): LoadingOptions | false {
+  if (options === true) return { action: 'typing' };
+  if (options === false) return false;
+  return typeof options === 'string' ? { text: options } : options;
 }
 
 /** Declare a page. See `Page`. */
@@ -211,7 +248,7 @@ export function page<P extends ParamsShape<P> = Params, C extends Context = Cont
 }
 
 /** Declare a dialogue. See `Dialogue`. */
-export function dialogue<A = Record<string, any>, P extends ParamsShape<P> = Params, C extends Context = Context>(
+export function dialogue<A = Auto, P extends ParamsShape<P> = Params, C extends Context = Context>(
   id: string,
 ): Dialogue<A, P, C> {
   return new Dialogue<A, P, C>(id);
@@ -225,7 +262,7 @@ export function dialogue<A = Record<string, any>, P extends ParamsShape<P> = Par
 export function withContext<C extends Context>() {
   return {
     page: <P extends ParamsShape<P> = Params>(id: string) => new Page<P, C>(id),
-    dialogue: <A = Record<string, any>, P extends ParamsShape<P> = Params>(id: string) => new Dialogue<A, P, C>(id),
+    dialogue: <A = Auto, P extends ParamsShape<P> = Params>(id: string) => new Dialogue<A, P, C>(id),
     task: <P = undefined>(id: string) => new Task<P, C>(id),
   };
 }

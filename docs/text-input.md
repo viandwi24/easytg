@@ -28,8 +28,8 @@ The **last page shown** to the user in that chat decides. Text goes to its
   one ends the page's text input),
 - in groups, the message is a reply to the page's message.
 
-Showing a page without `onText`, a `/command` or the menu's close button
-ends it; showing the page again (Back, a button, a redirect) starts it again.
+Showing a page without `onText`, a `/command`, the menu's close button,
+closing the page (`nav.close()`) or starting a dialogue ends it; showing the page again (Back, a button, a redirect) starts it again.
 Otherwise the text goes to your own handlers as usual.
 
 ## Options

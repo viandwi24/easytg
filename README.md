@@ -76,16 +76,17 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - ⌨️ **Both keyboards.** Inline buttons on pages, plus a main menu on the reply keyboard (`replyMenu`) with its own close button.
 - 🖼 **Media.** Photos, videos, GIFs, documents, audio, albums and copies of existing messages, with optional `protectContent`.
 - 🔒 **Type-safe links.** `nav.button('Open', order, { id })` fails to compile if a param is missing or misspelled, even when pages link to each other in cycles.
-- 📝 **Dialogues.** Multi-step forms with validation (or zod/valibot schemas), choices, file uploads, phone number and location sharing, Back/Cancel, dynamic steps and timeouts.
+- 📝 **Dialogues.** Multi-step forms with answers typed from the steps, validation (or zod/valibot schemas), choices, file uploads, phone number, location and Mini App input, conditional steps, Back/Cancel and timeouts.
+- 📱 **Mini Apps.** Buttons that open them, `initData` checks, acting for the user from your server, answering into the chat and sharing.
 - 🔎 **Text input on pages.** `page.onText` turns a page into a search box or any other typed input.
 - 🛡️ **Secure by default.** Escaping `md`/`html` templates, signed or stored tamper-proof button params, params validation with `.params(parse)` or any Standard Schema, owner-only group menus (or `allowedUsers`), admin-only pages, and anti-spam with events.
-- 🌍 **i18n.** Your messages with `t('cart.items', { count })`: placeholders, plural rules, fallbacks and escaping; `setLocale` for language pickers, remembered for notifications.
-- 💾 **Sessions and storage.** Per-user and per-chat state saved once per update, typed keys, TTLs and migrations. Built-in `MemoryStorage`, `SqliteStorage` and `RedisStorage`, or any database behind a 3-method interface.
+- 🌍 **Languages.** Your messages with `t('cart.items', { count })`: placeholders, plural rules, fallbacks and escaping; `setLocale` for language pickers, remembered for notifications.
+- 💾 **Sessions and storage.** State per user in a chat, per user across chats, and per chat; saved once per update, typed keys, TTLs and migrations. Built-in `MemoryStorage`, `SqliteStorage` and `RedisStorage`, or any database behind a 3-method interface.
 - ⏰ **Scheduled tasks and queues.** Persistent `task()`s with retries and recurring runs, `deleteLater` / `sendLater` / `broadcastLater`, self-refreshing pages, and concurrency-limited queues for slow jobs.
 - 💳 **Payments.** `invoice` pages for Telegram Stars, checkout checks and a success handler.
-- 🚀 **Production-ready.** Per-user ordering of concurrent updates, and `cluster` mode sharing rate limits, locks and queues across processes (Redis/SQLite).
+- 🚀 **Production-ready.** Per-user ordering of concurrent updates, loading indicators for slow pages, a throttle that keeps sends within Telegram's limits, and `cluster` mode sharing rate limits, locks, queues and throttling across processes (Redis/SQLite).
 - 🔗 **Deep links, inline mode, notifications, broadcasts.** `t.me/bot?start=…` links, pages as inline results, `sendTo` and `app.edit` from cron jobs and webhooks, paced `broadcast` to thousands of users, `autoRetry` for rate limits.
-- 📊 **Events** for analytics and monitoring: `update` (with timings), `pageView`, `sent`, dialogue events, `spam`, `error`, `payment`, `taskError`.
+- 📊 **Events** for analytics and monitoring: `update` (with timings), `pageView`, `sent`, dialogue events, `spam`, `error`, `payment`, `queueWait`, `taskError`, `broadcastBatch`, `webAppData`.
 - 🤖 **Multi-bot ready.** One app instance can serve several bots sharing one storage; sessions, buttons and rate limits stay per bot.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first, works on Node ≥ 18.
@@ -130,11 +131,11 @@ Next, **[Getting started](docs/getting-started.md)** walks through building a sm
 
 | | |
 |---|---|
-| **`page(id).render(fn)`** | A screen. `render` returns `{ text, photo, keyboard }`, a redirect, or a dialogue to start. |
-| **`nav`** | Builds buttons and navigation: `nav.button`, `nav.self`, `nav.back`, `nav.home`, `nav.close`, `nav.redirect`, `nav.deepLink`. |
+| **`page(id).render(fn)`** | A screen. `render` returns `{ text, photo, keyboard }`, a redirect, or a dialogue to start. Pages can also validate params (`.params`), show a loading indicator (`.loading`) and take typed text (`.onText`). |
+| **`nav`** | Builds buttons and navigation: `nav.button`, `nav.self`, `nav.back`, `nav.home`, `nav.close`, `nav.url`, `nav.webApp`, `nav.pay`, `nav.deepLink`, and the render results `nav.redirect` / `nav.startDialogue`. |
 | **`replyMenu([...])`** | A main menu on the reply keyboard; its buttons open pages or start dialogues. |
-| **`dialogue(id).steps([...])`** | A multi-step form. Answers arrive typed in `onFinish`. |
-| **`session`** | Key/value state per user and chat, saved automatically. |
+| **`dialogue(id).steps([...])`** | A multi-step form. Answers arrive in `onFinish`, typed from the steps. |
+| **`session`** | State of the user in this chat; `app.userSession(ctx)` follows the user into every chat, `app.chatSession(ctx)` is shared by a chat. All saved automatically. |
 | **Middlewares** | Run before every page and dialogue, for login checks, admin-only screens and logging. |
 | **`app.open(ctx, page)`** | Shows a page: edits the message when a button was pressed, replies otherwise. |
 | **`app.sendTo` / `app.edit` / `app.broadcast`** | Send or update pages without an incoming update: notifications, status cards, newsletters. |
@@ -142,12 +143,13 @@ Next, **[Getting started](docs/getting-started.md)** walks through building a sm
 
 ```ts
 // A dialogue in a nutshell
-const signup = dialogue<{ name: string; plan: string }>('signup')
+const signup = dialogue('signup')
   .steps([
     { id: 'name', type: 'text', text: 'Your name?', validate: (v) => v.length >= 2 || 'Too short' },
     { id: 'plan', type: 'choice', text: 'Plan?', options: [{ text: 'Free', value: 'free' }, { text: 'Pro', value: 'pro' }] },
   ])
-  .onFinish(({ answers }) => ({ text: md`Welcome, ${answers.name}!` }));
+  // answers: { name: string; plan: 'free' | 'pro' }, read off the steps
+  .onFinish(({ answers }) => ({ text: md`Welcome, ${answers.name}! Plan: ${answers.plan}` }));
 ```
 
 ## Examples
@@ -163,6 +165,10 @@ const signup = dialogue<{ name: string; plan: string }>('signup')
 | [`queue.ts`](examples/queue.ts) | Slow AI-style jobs behind a queue: concurrency, one job per user, place in line |
 | [`payments.ts`](examples/payments.ts) | A Telegram Stars shop: invoices, stock check at checkout, delivery, refunds |
 | [`inline.ts`](examples/inline.ts) | Product pages shared with `@yourbot query`, params checked by a schema, cached photo file ids |
+| [`mini-app.ts`](examples/mini-app.ts) | A bot and its Mini App in one file: a shop with a checked server API, a color picker step, feedback, sharing |
+| [`sessions.ts`](examples/sessions.ts) | State per chat, per user across chats, and per group, side by side |
+| [`loading.ts`](examples/loading.ts) | Slow pages with placeholders, "typing…" and toasts that only show when needed |
+| [`throttle.ts`](examples/throttle.ts) | Keeping sends within Telegram's limits, with rules per chat |
 | [`group.ts`](examples/group.ts) | A group bot: admin-only settings, a self-refreshing scoreboard, a quiz with a timeout |
 | [`production.ts`](examples/production.ts) | Redis or SQLite, several processes with `cluster`, webhooks |
 | [`broadcast.ts`](examples/broadcast.ts) | Newsletter: subscriptions, admin-only compose dialogue, a background broadcast with live progress, `broadcastLater`, events |
@@ -179,7 +185,7 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Documentation](docs/README.md)**: one page per feature.
-  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Groups](docs/groups.md)
+  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
   - Data: [Sessions](docs/sessions.md) · [Storage](docs/storage.md) · [Button params](docs/button-params.md) · [Deep links](docs/deep-links.md)
   - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
   - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md)

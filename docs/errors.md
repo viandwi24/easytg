@@ -28,5 +28,5 @@ bot.api.config.use(autoRetry({ maxRetries: 5, maxDelayMs: 30_000, retryUnsure: t
   errors. Off by default because the request may have gone through, so a
   retried send could arrive twice.
 
-It doesn't slow the bot down to stay under the limits; for that, see grammY's
-[transformer-throttler](https://grammy.dev/plugins/transformer-throttler).
+It only reacts to 429s. To stay under the limits in the first place, use
+[`app.throttle()`](scaling.md#staying-within-telegrams-limits).

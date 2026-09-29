@@ -22,7 +22,8 @@ A large release. **Breaking changes are listed first; see [docs/migration.md](do
 - Calling `onText`, `steps`, `onFinish` or `onCancel` twice throws.
 - `app.cancelDialogue` reports `reason: 'app'` (was `'command'`); `DialogueCancelReason` adds `'app'` and `'timeout'`.
 - `app.broadcast` sends up to 5 messages at once (`concurrency`, default 5).
-- `texts.collectReceived` / `texts.collectLimit` receive the Done label (`({ total, done })`, `({ max, done })`); new `texts.adminOnly`.
+- `dialogue()` without a type argument infers the answers from the steps; `Dialogue`'s first type argument defaults to `Auto` (was `Record<string, any>`).
+- `texts.collectReceived` / `texts.collectLimit` receive the Done label (`({ total, done })`, `({ max, done })`); new `texts.adminOnly`, `texts.openWebApp`, `texts.expectWebApp`.
 - Docs are one markdown file per feature under `docs/` (index: `docs/README.md`); `docs/guide.md` is gone.
 
 ### Added
@@ -40,12 +41,19 @@ A large release. **Breaking changes are listed first; see [docs/migration.md](do
 - **Sessions:** `app.chatSession(ctx)` for chat-wide state; typed keys by declaring `interface SessionData` in `declare module 'easytg'`; `session.version` + `session.migrate` for data migrations.
 - **Groups:** `requireChatAdmin()` middleware.
 - `app.answer(ctx, toast)` answers a button press early.
+- **User sessions:** `app.userSession(ctx)` holds state that follows a user across all chats, next to the per-chat `session`. User and chat sessions merge per key when saved, so concurrent updates (the same user in two chats, two users in a group) don't lose each other's changes. The language from `setLocale` is kept per user.
+- **Loading indicators:** `page(...).loading({ text, action, toast, afterMs })`, `dialogue(...).loading(...)` for a slow `onFinish`, a `loading` default for all pages, and `app.withLoading(ctx, job, options)` for handlers: a placeholder the result replaces, a repeated "typing…" action, or a toast.
+- **Typed dialogue answers:** `dialogue('x').steps([...])` reads the answers type off the steps (ids, choice values, schema outputs; steps with `when` are optional), no generic needed. `dialogue<{ … }>()` still works; `Auto` types only the params.
+- **Conditional steps:** `when(helpers)` on any step.
+- **Mini Apps:** `verifyInitData` / `verifyInitDataSignature`, `miniAppLink`, `replyMenu.webApp` with the `webAppData` event, a `webApp` dialogue step, `app.answerWebAppQuery`, `app.prepareShare`, and `app.withUser` to act for a user outside an update (also for webhooks).
+- **Throttling:** `app.throttle(options)` API transformer keeps outgoing messages within Telegram's limits (30/s overall, 20/min per group by default, own rules per chat), shared across processes with `cluster`.
 - `autoRetry()` API transformer that waits out 429s on every call; `isTransient(error)`.
-- `media.cacheFileIds`: photos and videos sent by URL are sent by their file id next time.
+- `media.cacheFileIds`: photos, videos, animations, documents and audio sent by URL are sent by their file id next time (kept `media.cacheTtlMs`, default 30 days).
+- `page.params(parse)` may be async; `withContext()` also returns `task`.
 - `update` event with `durationMs` and `outcome`; `pageView` has `chatId`, `userId` and `durationMs`; dialogue events have `params`.
 - `app` in dialogue step helpers and `onFinish` / `onCancel`.
-- Docs: API reference (`docs/app.md`), migration guide, inline mode, groups, scaling, queues, scheduler, payments, text input.
-- Examples: `search.ts`, `queue.ts`, `reminders.ts`, `payments.ts`, `production.ts`, `inline.ts`, `group.ts`; `notify.ts` and `course.ts` use the scheduler; `broadcast.ts` runs broadcasts in the background.
+- Docs: API reference (`docs/app.md`), migration guide, inline mode, Mini Apps, groups, scaling, queues, scheduler, payments, text input.
+- Examples: `search.ts`, `queue.ts`, `reminders.ts`, `payments.ts`, `production.ts`, `inline.ts`, `group.ts`, `sessions.ts`, `loading.ts`, `throttle.ts`, `mini-app.ts`; `notify.ts` and `course.ts` use the scheduler; `broadcast.ts` runs broadcasts in the background.
 
 ### Fixed
 
@@ -65,6 +73,7 @@ A large release. **Breaking changes are listed first; see [docs/migration.md](do
 - Redis: `increment` extended the TTL of existing keys; task keys share a hash tag for Redis Cluster.
 - Anti-spam: concurrent updates past the limit gave several `spam` events and strikes.
 - Group menu ownership expired 7 days after sending, even while in use; nav history evicted menus by message id instead of by last use.
+- `easytg/testing`: the fake API answered `sendChatAction` with a message instead of `true`.
 
 ## 0.2.1 (2026-09-28)
 

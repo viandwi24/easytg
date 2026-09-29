@@ -14,7 +14,8 @@ await app.deepLink(bot, product, { id: '42' });               // anywhere else
 
 - Links aren't bound to a user, so they're meant for sharing.
 - Params that don't fit the 64-character payload are stored server-side
-  (`deepLinks.ttlMs`, default 365 days).
+  (`deepLinks.ttlMs`, default 365 days); with `buttons.params: 'inline'` that
+  throws instead.
 - In `stored` mode, params are always stored and crafted payloads are ignored.
 - `/start` without a payload, or with a payload easytg doesn't recognise, goes
   to your own `/start` handler.

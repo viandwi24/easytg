@@ -23,6 +23,9 @@ export interface EasyTGTexts {
   shareLocation: string;
   expectContact: string;
   expectLocation: string;
+  /** Label of a `webApp` step's button. */
+  openWebApp: string;
+  expectWebApp: string;
   contactNotYours: string;
   /** Sent after a step with reply-keyboard buttons, to put the menu back. */
   received: string;
@@ -57,6 +60,8 @@ export const defaultTexts: EasyTGTexts = {
   shareLocation: '📍 Share my location',
   expectContact: 'Please use the button below to share your contact.',
   expectLocation: 'Please use the button below to share your location.',
+  openWebApp: '📱 Open',
+  expectWebApp: 'Please use the button below.',
   contactNotYours: 'Please share your own contact.',
   received: '👍 Got it.',
   cancelled: 'Cancelled.',

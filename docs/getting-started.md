@@ -92,15 +92,17 @@ A **dialogue** asks questions one step at a time and validates each answer.
 It shows Back and Cancel buttons and cleans up its messages as it goes.
 
 ```ts
-import { dialogue } from 'easytg';
+import { dialogue, type Auto } from 'easytg';
 
-const orderForm = dialogue<{ quantity: string; note: string }, { product: string }>('order')
+// Auto: the answers are read off the steps; the params are declared ({ product }).
+const orderForm = dialogue<Auto, { product: string }>('order')
   .steps([
     { id: 'quantity', type: 'choice', text: 'How many?', columns: 3,
       options: ['1', '2', '3'].map((n) => ({ text: n, value: n })) },
     { id: 'note', type: 'text', text: 'Any note for the kitchen?',
       validate: (note) => note.length <= 200 || 'Please keep it under 200 characters.' },
   ])
+  // answers: { quantity: string; note: string } (options built with .map give plain strings)
   .onFinish(({ answers, params }) => ({
     text: `✅ ${answers.quantity} × ${params.product} ordered. Note: ${answers.note}`,
   }))
@@ -117,8 +119,11 @@ Remember to register it: `app.register(home, productList, productDetail, orderFo
 
 ## 5. Remember things with the session
 
-`session` is a small key/value store per user. Changes are saved automatically
-at the end of the update.
+`session` is a small key/value store per user in this chat. Changes are saved
+automatically at the end of the update. (For state that follows the user into
+every chat, there is `app.userSession(ctx)`; see [Sessions](sessions.md).)
+
+Replace the `onFinish` from step 4 with:
 
 ```ts
 .onFinish(({ answers, params, session, nav }) => {
@@ -179,7 +184,7 @@ test('shows the menu', async () => {
   t.bot.command('start', (ctx) => app.open(ctx, home));
 
   await t.message('/start');
-  expect(t.find('sendMessage')[0].payload.text).toContain('Welcome');
+  expect(t.find('sendMessage')[0]?.payload.text).toContain('Welcome');
 });
 ```
 
@@ -187,11 +192,14 @@ test('shows the menu', async () => {
 
 The [documentation](README.md) covers everything else, one page per feature:
 
-- [Main menu](menu.md): more on the reply keyboard, and `contact` / `location` dialogue steps
-- [Pages](pages.md): Back buttons, keeping the pressed message, validating params, `app.edit`, middlewares
+- [Main menu](menu.md): more on the reply keyboard
+- [Dialogues](dialogues.md): all step types (files, contacts, locations, Mini Apps), typed answers, conditional steps, timeouts
+- [Pages](pages.md): Back buttons, keeping the pressed message, validating params, `app.edit`, middlewares, loading indicators for slow pages
+- [Sessions](sessions.md): state per chat, per user across chats, and per group
 - [Media](media.md): videos, documents, albums, copies from a channel, `protectContent`
 - [Text input](text-input.md): search boxes with `page.onText`
 - [Languages](i18n.md): translate your messages with `t()`
+- [Groups](groups.md), [inline mode](inline-mode.md) and [Mini Apps](mini-apps.md)
 - [Text formatting](formatting.md): Markdown, HTML, escaping
 - [Button params](button-params.md): tamper-proof buttons, and [deep links](deep-links.md)
 - [Sending without an update](proactive.md): notifications, `sendLater`, broadcasts

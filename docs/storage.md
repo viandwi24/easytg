@@ -36,9 +36,9 @@ const storage = new RedisStorage((command, args) => redis.send(command, args), {
 ```
 
 `RedisStorage` works with Redis-compatible servers (Valkey, KeyDB, Dragonfly)
-that support Lua scripts. `SqliteStorage({ table })` and
-`RedisStorage({ prefix })` namespace the data, e.g. for two bots in one
-database.
+that support Lua scripts. `new SqliteStorage(db, { table })` and
+`new RedisStorage(run, { prefix })` namespace the data, e.g. for two bots in
+one database.
 
 ## What is stored where
 
@@ -46,11 +46,12 @@ database.
 |---|---|---|---|
 | sessions (incl. dialogue state) | `session:<bot>:<chat>:<user>` | `session.storage` | `session.ttlMs` (default: none) |
 | chat sessions | `chatsession:<bot>:<chat>` | `session.storage` | `session.ttlMs` |
+| user sessions (across chats) | `usersession:<bot>:<user>` | `session.storage` | `session.ttlMs` |
 | stored button params | `cb:<bot>:<token>` | `buttons.storage` | `buttons.ttlMs` (default 30 days) |
 | stored deep-link params | `dl:<token>` | `buttons.storage` | `deepLinks.ttlMs` (default 365 days) |
 | cached file ids (`media.cacheFileIds`) | `fileid:<bot>:…` | `buttons.storage` | `media.cacheTtlMs` (default 30 days) |
 | group menu owners, split messages | `msgowner:<bot>:…`, `msggroup:<bot>:…` | `buttons.storage` | 7 days |
-| rate limits, double taps, locks, queue slots | `spam:…`, `press:…`, `lock:…`, `queue:…` | `cluster` | seconds |
+| rate limits, double taps, locks, queue slots, throttle counters | `spam:…`, `press:…`, `lock:…`, `queue:…`, `throttle:…` | `cluster` | seconds (strikes 24 h; `limitUser` mutes as long as given) |
 | scheduled tasks | a `TaskStore` (see below) | `scheduler.store` | until they ran |
 
 `<bot>` is the bot's id, so several bots can share one storage without mixing

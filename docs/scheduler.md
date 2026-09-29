@@ -129,7 +129,7 @@ Tasks are kept in a `TaskStore`. `MemoryStorage`, `SqliteStorage` and
 `RedisStorage` all implement it, and `storage` is used by default. With
 `MemoryStorage` tasks are lost on restart, so use SQLite or Redis in
 production. Tasks aren't namespaced by `keyPrefix`: give separate apps their
-own `SqliteStorage({ table })` or `RedisStorage({ prefix })`. A custom
+own `new SqliteStorage(db, { table })` or `new RedisStorage(run, { prefix })`. A custom
 `TaskStore` is checked with `verifyTaskStore` from `easytg/testing`; see
 [Storage](storage.md#scheduled-tasks).
 

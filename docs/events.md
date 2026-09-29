@@ -13,10 +13,11 @@ const off = app.on('pageView', ({ ctx, page, params, mode }) => track(ctx.from?.
 | `dialogueFinish` | `{ ctx, dialogue, params, answers }` | a dialogue was completed |
 | `dialogueCancel` | `{ ctx, dialogue, params, answers, reason }` | `reason`: `user`, `command`, `replaced`, `app` or `timeout` (see [Dialogues](dialogues.md#ending-a-dialogue)) |
 | `spam` | `SpamEvent` | see [Anti-spam](anti-spam.md) |
-| `error` | `{ error, ctx, source }` | an error while handling buttons, dialogue input, menu buttons, deep links or page text input (`source: 'update'`), or in `sendTo` / `edit` with `emitProactiveErrors`; without a listener it is logged |
+| `error` | `{ error, ctx, source: 'update' \| 'sendTo' \| 'edit' }` | an error while handling buttons, dialogue input, menu buttons, deep links, page text input or the `payments` handlers (`source: 'update'`), or in `sendTo` / `edit` with `emitProactiveErrors`; without a listener it is logged |
 | `queueWait` | `{ ctx?, queue, position? }` | a job has to wait for a [queue](queues.md) slot |
-| `taskError` | `{ error, task, willRetry }` | a [scheduled task](scheduler.md) failed; without a listener it is logged |
+| `taskError` | `{ error, task: { id, name, payload, attempts }, willRetry }` | a [scheduled task](scheduler.md) failed; without a listener it is logged |
 | `payment` | `{ ctx, payment, payload }` | a [payment](payments.md) succeeded (with the `payments` option) |
+| `webAppData` | `{ ctx, data, raw, button }` | a Mini App opened from `replyMenu.webApp` sent data; see [Mini Apps](mini-apps.md) |
 | `broadcastBatch` | `{ broadcast, batch, batches, result }` | a batch of [`broadcastLater`](proactive.md#broadcasts-that-survive-restarts) was sent |
 
 ```ts
