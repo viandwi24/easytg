@@ -18,6 +18,8 @@ export interface RunOptions {
   log(level: LogLevel, args: unknown[]): void;
   /** Add a group with a few members (for group examples). */
   group?: boolean;
+  /** Add two more users, without a group. */
+  users?: boolean;
   latencyMs?: number;
 }
 
@@ -36,11 +38,11 @@ export function compile(code: string): string {
 
 export function runBot(code: string, options: RunOptions): Run {
   const sim = new TelegramSimulator({ latencyMs: options.latencyMs ?? 40 });
-  if (options.group) {
+  if (options.group || options.users) {
     sim.addUser({ first_name: 'Alice', language_code: 'en' });
     sim.addUser({ first_name: 'Bob', language_code: 'en' });
-    sim.createGroup({ title: 'Playground group', members: [...sim.users.keys()] });
   }
+  if (options.group) sim.createGroup({ title: 'Playground group', members: [...sim.users.keys()] });
   const bots: grammy.Bot<any>[] = [];
   const stops: (() => Promise<void>)[] = [];
   const timers = new Set<ReturnType<typeof setTimeout>>();

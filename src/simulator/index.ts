@@ -279,6 +279,22 @@ export class TelegramSimulator {
   }
 
   /** Forget all chats and messages (users, commands and the bot stay). */
+  /**
+   * "Clear history", like in Telegram: the chat is emptied for everyone
+   * watching the simulator, and the bot isn't told. Buttons of cleared
+   * messages can't be pressed any more; reply keyboards go with them.
+   */
+  clearHistory(chatId = this.user.id) {
+    const chat = this.chats.get(chatId);
+    if (!chat) return;
+    chat.messages = [];
+    chat.replyKeyboard = null;
+    chat.replyKeyboardHidden = false;
+    chat.forceReply = null;
+    chat.pinned = [];
+    this.emit('change', { chatId });
+  }
+
   reset() {
     this.chats.clear();
     this.messageIds.clear();

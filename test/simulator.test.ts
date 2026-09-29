@@ -169,6 +169,19 @@ describe('Telegram errors', () => {
     expect((error as GrammyError).error_code).toBe(403);
   });
 
+  test('clearHistory empties the chat without telling the bot', async () => {
+    const { sim, bot } = setup();
+    bot.command('start', (ctx) => ctx.reply('Hi', { reply_markup: { keyboard: [[{ text: 'A' }]], resize_keyboard: true } }));
+    await sim.send('/start');
+    const calls = sim.calls.length;
+    sim.clearHistory();
+    expect(sim.messages()).toEqual([]);
+    expect(sim.chat(sim.user.id)!.replyKeyboard).toBeNull();
+    expect(sim.calls.length).toBe(calls);
+    await sim.send('/start'); // ids go on, like in Telegram
+    expect(sim.messages()[0]!.message.message_id).toBe(3);
+  });
+
   test('an edit without reply_markup removes the keyboard', async () => {
     const { sim, bot } = setup();
     await sim.send('hello');

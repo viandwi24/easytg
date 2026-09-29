@@ -175,6 +175,7 @@ const signup = dialogue('signup')
 | [`group.ts`](examples/group.ts) | A group bot: admin-only settings, a self-refreshing scoreboard, a quiz with a timeout |
 | [`production.ts`](examples/production.ts) | Redis or SQLite, several processes with `cluster`, webhooks |
 | [`broadcast.ts`](examples/broadcast.ts) | Newsletter: subscriptions, admin-only compose dialogue, a background broadcast with live progress, `broadcastLater`, events |
+| [`match.ts`](examples/match.ts) | A swipe-style "meet people" bot: profile cards with ❤️ 💌 👎 💤 on the reply keyboard, sign-up dialogue, likes and matches between users |
 | [`captcha.ts`](examples/captcha.ts) | Button and typed captchas, server-side answers, per-key TTL |
 | [`notify.ts`](examples/notify.ts) | SQLite storage, tamper-proof buttons, `sendLater` notifications that survive restarts |
 | [`locales/id.ts`](examples/locales/id.ts) | Translating the built-in texts |

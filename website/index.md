@@ -42,11 +42,12 @@ features:
 
 <div class="playground-home">
 
-## Try it
+## See it run
 
-This is `examples/getting-started.ts`, running in your browser. Press the
-buttons, type into the chat, or change the code and press **Run**.
+`examples/match.ts`, a swipe-style "meet people" bot, running in your
+browser: a real bot on a simulated Telegram. Open it in the playground to make
+a profile, like and match, edit the code, and try the other examples.
 
-<ClientOnly><Playground example="getting-started" /></ClientOnly>
+<ClientOnly><Playground example="match" preview /></ClientOnly>
 
 </div>

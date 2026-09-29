@@ -9,15 +9,18 @@ interface Example {
   start?: string;
   /** Needs a group chat. */
   group?: boolean;
+  /** Needs more users (switch between them at the top of the chat). */
+  users?: boolean;
 }
 
 const LIST: Example[] = [
-  { file: 'getting-started', title: 'Getting started: a small shop', description: 'Pages, typed navigation, a dialogue, sessions and a main menu (docs/getting-started.md).' },
-  { file: 'shop', title: 'Shop with a menu', description: 'A reply-keyboard menu, pagination, Back, photos and albums, and a checkout asking for size, contact and location.' },
-  { file: 'search', title: 'Search in two languages', description: 'page.onText, i18n messages with plurals and a language picker.' },
+  { file: 'match', title: 'Match (swipe)', description: 'Profile cards with ❤️ 💌 👎 💤 reactions, like the dating bots on Telegram. Make a profile, then switch to Alice (top of the chat) to like each other and match.', users: true },
+  { file: 'getting-started', title: 'Getting started', description: 'Pages, typed navigation, a dialogue, sessions and a main menu (docs/getting-started.md).' },
+  { file: 'shop', title: 'Shop', description: 'A reply-keyboard menu, pagination, Back, photos and albums, and a checkout asking for size, contact and location.' },
+  { file: 'search', title: 'Search, 2 languages', description: 'page.onText, i18n messages with plurals and a language picker.' },
   { file: 'media', title: 'Media', description: 'Photos, videos, GIFs, documents, audio and albums, switched in place.' },
-  { file: 'loading', title: 'Loading indicators', description: 'Placeholders, "typing…" and toasts for slow pages and dialogues.' },
-  { file: 'payments', title: 'Payments with Stars', description: 'Invoices, a pre-checkout check and a receipt. Paying here is simulated.' },
+  { file: 'loading', title: 'Loading', description: 'Placeholders, "typing…" and toasts for slow pages and dialogues.' },
+  { file: 'payments', title: 'Payments', description: 'Invoices, a pre-checkout check and a receipt. Paying here is simulated.' },
   { file: 'inline', title: 'Inline mode', description: 'Type "@demo_bot tea" in the message field to share pages into a chat.', start: '' },
   { file: 'sessions', title: 'Sessions', description: 'Per-chat, per-user and chat-wide state. Switch between the private chat and the group at the top of the chat.', group: true },
   { file: 'group', title: 'Group bot', description: 'Admin-only settings, a live scoreboard and a quiz. Pick the group (and who is typing) at the top of the chat.', group: true, start: '' },

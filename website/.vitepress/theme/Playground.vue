@@ -3,8 +3,8 @@
  * A code editor next to a Telegram simulator. The code is a whole bot, the
  * same you would run with Node or Bun; edit it and press Run (⌘/Ctrl+Enter).
  */
-import { useData } from 'vitepress';
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { useData, withBase } from 'vitepress';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { EXAMPLES } from './examples';
 
 const props = withDefaults(
@@ -19,8 +19,10 @@ const props = withDefaults(
     start?: string;
     /** Add a group with three members. */
     group?: boolean;
+    /** Read-only teaser: the bot runs, and a click opens it in the playground. */
+    preview?: boolean;
   }>(),
-  { start: undefined, group: false },
+  { start: undefined, group: false, preview: false },
 );
 
 type Runner = typeof import('./runner');
@@ -43,6 +45,16 @@ const errorsSeen = computed(() => logs.value.filter((l) => l.level === 'error').
 const example = computed(() => (props.code === undefined ? EXAMPLES.find((e) => e.file === selected.value) : undefined));
 const initialCode = () => (props.code !== undefined ? decodeURIComponent(props.code) : (example.value?.code ?? ''));
 const startText = computed(() => props.start ?? example.value?.start ?? '/start');
+const playgroundLink = computed(() => withBase(`/playground?example=${selected.value}`));
+
+function pick(file: string) {
+  selected.value = file;
+  try {
+    history.replaceState(history.state, '', `?example=${file}`); // a link to this example
+  } catch {
+    // not in a browser window
+  }
+}
 
 let runner: Runner | undefined;
 let editor: import('@codemirror/view').EditorView | undefined;
@@ -83,7 +95,7 @@ async function run() {
   logs.value = [];
   calls.value = [];
   const code = editor?.state.doc.toString() ?? initialCode();
-  current = runner.runBot(code, { log, group: props.group || example.value?.group });
+  current = runner.runBot(code, { log, group: props.group || example.value?.group, users: example.value?.users });
   const sim = current.sim;
   unsubscribe.push(
     sim.on('call', (call) => {
@@ -129,6 +141,10 @@ watch(isDark, (dark) => {
 });
 
 onMounted(async () => {
+  if (props.picker) {
+    const wanted = new URLSearchParams(location.search).get('example');
+    if (wanted && EXAMPLES.some((e) => e.file === wanted)) selected.value = wanted;
+  }
   const [loaded, view, state, cm, js, dark] = await Promise.all([
     import('./runner'),
     import('@codemirror/view'),
@@ -148,6 +164,7 @@ onMounted(async () => {
       cm.basicSetup,
       js.javascript({ typescript: true }),
       themeCompartment.of(isDark.value ? oneDark : []),
+      ...(props.preview ? [state.EditorState.readOnly.of(true), view.EditorView.editable.of(false)] : []),
       view.keymap.of([{ key: 'Mod-Enter', run: () => (void run(), true) }]),
       view.EditorView.theme({ '&': { fontSize: '13px' }, '.cm-scroller': { fontFamily: 'var(--vp-font-family-mono)' } }),
     ],
@@ -175,22 +192,26 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="host" class="pg" :class="{ 'no-code': !showCode }">
+  <div ref="host" class="pg" :class="{ 'no-code': !showCode, preview }">
+    <nav v-if="picker && code === undefined" class="examples" aria-label="Examples">
+      <span class="examples-title">Examples</span>
+      <button v-for="e in EXAMPLES" :key="e.file" class="chip" :class="{ on: e.file === selected }" @click="pick(e.file)">{{ e.title }}</button>
+    </nav>
     <div class="bar">
-      <select v-if="picker && code === undefined" v-model="selected" class="pick" aria-label="Example">
-        <option v-for="e in EXAMPLES" :key="e.file" :value="e.file">{{ e.title }}</option>
-      </select>
-      <span v-else class="label">▶ Playground</span>
+      <span class="label">{{ code === undefined ? `examples/${selected}.ts` : '▶ Playground' }}</span>
       <span class="spacer" />
-      <button class="btn" :title="showCode ? 'Hide the code' : 'Show the code'" @click="showCode = !showCode">{{ showCode ? 'Hide code' : 'Show code' }}</button>
-      <button class="btn" title="Back to the original code" @click="reset">Reset</button>
-      <button class="btn primary" title="Run (⌘/Ctrl + Enter)" :disabled="running" @click="run">{{ running ? 'Starting…' : 'Run' }}</button>
+      <template v-if="!preview">
+        <button class="btn" :title="showCode ? 'Hide the code' : 'Show the code'" @click="showCode = !showCode">{{ showCode ? 'Hide code' : 'Show code' }}</button>
+        <button class="btn" title="Back to the original code" @click="reset">Reset</button>
+        <button class="btn primary" title="Run (⌘/Ctrl + Enter)" :disabled="running" @click="run">{{ running ? 'Starting…' : 'Run' }}</button>
+      </template>
+      <a v-else class="btn primary" :href="playgroundLink">Open in the playground →</a>
     </div>
     <p v-if="example?.description && picker" class="about">{{ example.description }}</p>
     <div class="body">
-      <div v-show="showCode" ref="editorHost" class="editor" />
+      <div v-show="showCode" class="editor"><div ref="editorHost" class="editor-inner" /></div>
       <div class="side">
-        <div class="tabs" role="tablist">
+        <div v-show="!preview" class="tabs" role="tablist">
           <button :class="{ on: tab === 'chat' }" @click="tab = 'chat'">Chat</button>
           <button :class="{ on: tab === 'calls' }" @click="tab = 'calls'">API calls <small>{{ calls.length }}</small></button>
           <button :class="{ on: tab === 'console' }" @click="tab = 'console'">
@@ -211,6 +232,10 @@ onBeforeUnmount(() => {
           <pre v-for="(l, i) in logs" :key="i" :class="l.level">{{ l.text }}</pre>
         </div>
       </div>
+      <a v-if="preview" class="overlay" :href="playgroundLink" aria-label="Open in the playground">
+        <span class="cta">▶ Try it in the playground</span>
+        <small>Edit the code, press the buttons, and switch between {{ EXAMPLES.length }} examples.</small>
+      </a>
     </div>
   </div>
 </template>
@@ -236,17 +261,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
   font-size: 14px;
   color: var(--vp-c-brand-1);
-}
-.pick {
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 4px 8px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-1);
-  max-width: 100%;
 }
 .spacer {
   flex: 1;
@@ -283,6 +297,84 @@ onBeforeUnmount(() => {
 .body {
   display: grid;
   grid-template-columns: 1fr;
+  position: relative;
+}
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+.examples-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--vp-c-text-3);
+  margin-right: 4px;
+}
+.chip {
+  font-size: 13px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-2);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chip:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+.chip.on {
+  background: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-white);
+  font-weight: 600;
+}
+.label {
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+}
+a.btn {
+  text-decoration: none;
+  display: inline-block;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 24px;
+  text-decoration: none;
+  background: linear-gradient(to bottom, transparent 35%, color-mix(in srgb, var(--vp-c-bg) 88%, transparent) 85%);
+  transition: background 0.2s;
+}
+.overlay:hover {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--vp-c-bg) 20%, transparent), color-mix(in srgb, var(--vp-c-bg) 92%, transparent) 80%);
+}
+.overlay .cta {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--vp-c-white);
+  background: var(--vp-c-brand-1);
+  padding: 10px 22px;
+  border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+.overlay small {
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+}
+.preview .chat {
+  --easytg-chat-height: 440px;
 }
 @container (min-width: 820px) {
   .body {
@@ -291,13 +383,19 @@ onBeforeUnmount(() => {
   .no-code .body {
     grid-template-columns: 1fr;
   }
+  /* The editor fills the row the chat sets, and scrolls inside. */
   .editor {
+    position: relative;
     border-bottom: none !important;
     border-right: 1px solid var(--vp-c-divider);
   }
-  .editor :deep(.cm-editor) {
+  .editor-inner {
+    position: absolute;
+    inset: 0;
+  }
+  .pg .editor :deep(.cm-editor) {
     height: 100%;
-    max-height: 640px;
+    max-height: none;
   }
 }
 .editor {

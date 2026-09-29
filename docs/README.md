@@ -78,6 +78,7 @@ Runnable bots (`BOT_TOKEN=… bun run examples/<file>`) that show features in co
 | [`group.ts`](../examples/group.ts) | `chatSession`, `requireChatAdmin`, `refreshEveryMs`, `dialogue.timeout` |
 | [`production.ts`](../examples/production.ts) | `RedisStorage` / `SqliteStorage`, `cluster`, webhooks, the scheduler, `autoRetry` |
 | [`broadcast.ts`](../examples/broadcast.ts) | `broadcast` in the background with progress, `broadcastLater`, dialogue middlewares, `pageView`/`spam` events |
+| [`match.ts`](../examples/match.ts) | a reply-keyboard menu acting on the card on screen, `showMenu` / `hideMenu` in renders, a dialogue with `when` and a photo, `sendTo` for likes and matches |
 | [`captcha.ts`](../examples/captcha.ts) | server-side answers, per-key session TTL, dialogues |
 | [`notify.ts`](../examples/notify.ts) | SQLite storage, `stored` buttons, `sendLater` |
 | [`locales/id.ts`](../examples/locales/id.ts) | translating built-in texts |

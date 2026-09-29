@@ -71,6 +71,14 @@ header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; backg
 .status.active { color: var(--tg-accent); }
 header select { font: inherit; font-size: 13px; background: transparent; color: var(--tg-text); border: 1px solid var(--tg-border); border-radius: 6px; padding: 3px 4px; max-width: 130px; }
 header select option { background: var(--tg-panel); }
+header .icon-btn { width: 34px; height: 34px; font-size: 18px; }
+.popup-layer { position: absolute; inset: 0; z-index: 4; }
+.popup { position: absolute; top: 48px; right: 8px; background: var(--tg-panel); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); padding: 4px; min-width: 190px; border: 1px solid var(--tg-border); }
+.popup button { display: flex; gap: 10px; align-items: center; width: 100%; font: inherit; font-size: 14px; color: var(--tg-text); background: none; border: none; border-radius: 6px; padding: 8px 10px; cursor: pointer; text-align: left; }
+.popup button:hover { background: var(--tg-code); }
+.popup button.danger { color: #e5484d; }
+.start { display: block; width: calc(100% - 16px); margin: 8px 8px 0; font: inherit; font-weight: 600; letter-spacing: .04em; color: #fff; background: var(--tg-accent); border: none; border-radius: 10px; padding: 11px; cursor: pointer; }
+.start:hover { filter: brightness(1.08); }
 .list { flex: 1; overflow-y: auto; padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 4px; scrollbar-width: thin; }
 .empty { margin: auto; text-align: center; color: var(--tg-muted); font-size: 14px; padding: 20px; }
 .empty b { display: block; color: var(--tg-text); margin-bottom: 4px; }
@@ -156,7 +164,9 @@ blockquote { margin: 4px 0; border-left: 3px solid var(--tg-accent); background:
 type Modal =
   | { kind: 'alert'; text: string }
   | { kind: 'webApp'; url: string; button?: string }
-  | { kind: 'attach' };
+  | { kind: 'attach' }
+  | { kind: 'more' }
+  | { kind: 'clear' };
 
 const esc = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const time = (date: number) => new Date(date * 1000).toTimeString().slice(0, 5);
@@ -374,7 +384,7 @@ export class EasyTGChatElement extends HTMLElement {
       users.length > 1
         ? `<select data-act="user" title="Acting as">${users.map((u) => `<option value="${u.id}"${u.id === this.userId ? ' selected' : ''}>🙂 ${esc(u.first_name)}</option>`).join('')}</select>`
         : '';
-    return chatSelect + userSelect;
+    return `${chatSelect}${userSelect}<button class="icon-btn" data-act="more" title="More">⋮</button>`;
   }
 
   private empty() {
@@ -590,7 +600,9 @@ export class EasyTGChatElement extends HTMLElement {
           )
           .join('')}</div>`
       : '';
-    return `<div class="dock">${panel}
+    // An empty private chat offers START, like a bot you haven't talked to yet.
+    const start = chat?.type !== 'private' && chat ? '' : !chat?.messages.length ? '<button class="start" data-act="command" data-cmd="/start">START</button>' : '';
+    return `<div class="dock">${panel}${start}
       <div class="input">
         ${sim.commands.length ? `<button class="icon-btn menu" data-act="menu" title="Commands">☰ Menu</button>` : ''}
         <button class="icon-btn" data-act="attach" title="Attach">📎</button>
@@ -626,6 +638,13 @@ export class EasyTGChatElement extends HTMLElement {
           <div class="item" data-act="send-location"><span>📍</span><div>Location</div></div>
           <div class="item" data-act="send-contact"><span>👤</span><div>My contact</div></div>
         </div><div class="actions"><button data-act="close">Cancel</button></div></div></div>`;
+    }
+    if (modal.kind === 'more') {
+      return `<div class="popup-layer" data-act="close-backdrop"><div class="popup"><button class="danger" data-act="ask-clear">🧹 Clear history</button></div></div>`;
+    }
+    if (modal.kind === 'clear') {
+      return `<div class="modal"><div class="dialog"><div class="title">Clear history</div><p>Are you sure you want to delete all messages in this chat? The bot won't know.</p>
+        <div class="actions"><button data-act="close">Cancel</button><button data-act="clear" style="color:#e5484d">Clear history</button></div></div></div>`;
     }
     const data = modal.button
       ? `<p>A Mini App would open here and could send data back with <code>Telegram.WebApp.sendData</code>. Send it:</p><textarea data-focus="webapp">{"ok":true}</textarea>`
@@ -776,6 +795,19 @@ export class EasyTGChatElement extends HTMLElement {
         this.schedule();
         break;
       }
+      case 'more':
+        this.modal = { kind: 'more' };
+        this.schedule();
+        break;
+      case 'ask-clear':
+        this.modal = { kind: 'clear' };
+        this.schedule();
+        break;
+      case 'clear':
+        this.modal = null;
+        this.panel = null;
+        sim.clearHistory(this.chatId);
+        break;
       case 'close':
         this.modal = null;
         this.schedule();

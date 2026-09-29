@@ -100,7 +100,9 @@ sim.calls;                                                 // the last 200 calls
 ```
 
 `new TelegramSimulator({ latencyMs: 300 })` delays every API call, to see
-loading indicators. `sim.reset()` clears the chats.
+loading indicators. `sim.clearHistory(chatId?)` empties one chat like
+Telegram's "Clear history" (the bot isn't told), and `sim.reset()` forgets
+all chats.
 
 ## `bot.start()`
 
@@ -114,7 +116,8 @@ ones). This is how the playground runs unchanged example files.
 `easytg/simulator/element` is a Telegram-like chat for the browser: bubbles
 with formatting, inline and reply keyboards, toasts and alerts, photos and
 albums, invoices, inline results, the command menu (from `setMyCommands`),
-attachments, and a chat and user picker when there are several.
+attachments, a chat and user picker when there are several, "Clear history"
+in the ⋮ menu, and a START button in an empty private chat.
 
 ```ts
 import { TelegramSimulator } from 'easytg/simulator';

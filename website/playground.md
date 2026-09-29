@@ -12,7 +12,8 @@ Every example from the repository's [`examples/`](https://github.com/viandwi24/e
 folder that works without a server, running in a Telegram simulator in your
 browser. The code is unchanged: the same file runs with
 `BOT_TOKEN=… bun run examples/<file>.ts`. Edit it and press **Run**
-(⌘/Ctrl + Enter). Nothing is sent to Telegram.
+(⌘/Ctrl + Enter). Nothing is sent to Telegram. Pick an example below; the
+chat's ⋮ menu clears its history.
 
 <ClientOnly><Playground picker /></ClientOnly>
 
