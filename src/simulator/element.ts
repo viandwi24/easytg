@@ -188,6 +188,8 @@ export class EasyTGChatElement extends HTMLElement {
   private inlineTimer?: ReturnType<typeof setTimeout>;
   private draft = '';
   private dark?: MediaQueryList;
+  /** Whether the chat was scrolled to its end when last rendered or scrolled. */
+  private atBottom = true;
 
   constructor() {
     super();
@@ -196,6 +198,15 @@ export class EasyTGChatElement extends HTMLElement {
     this.root.addEventListener('keydown', (event) => this.onKey(event as KeyboardEvent));
     this.root.addEventListener('input', (event) => this.onInput(event));
     this.root.addEventListener('change', (event) => this.onChange(event));
+    // A picture that loads after the chat scrolled down would push the end out of view.
+    this.root.addEventListener(
+      'load',
+      () => {
+        const list = this.shell?.list;
+        if (list && this.atBottom) list.scrollTop = list.scrollHeight;
+      },
+      true,
+    );
   }
 
   /** The simulator to show. */
@@ -346,6 +357,10 @@ export class EasyTGChatElement extends HTMLElement {
       (shell.modal.querySelector('[data-focus="webapp"]') as HTMLElement | null)?.focus();
     }
     if (stick) list.scrollTop = list.scrollHeight;
+    this.atBottom = stick;
+    list.onscroll = () => {
+      this.atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+    };
   }
 
   /** Keyed update of the message list: unchanged messages keep their DOM. */
@@ -424,6 +439,7 @@ export class EasyTGChatElement extends HTMLElement {
 
   private message(item: SimMessage, chat: SimChat) {
     const m = item.message;
+    if (item.notice) return `<div class="service notice">${esc(item.notice)}</div>`;
     const service = this.service(m);
     if (service) return `<div class="service">${esc(service)}</div>`;
     const key = `${chat.id}:${m.message_id}`;
@@ -588,7 +604,7 @@ export class EasyTGChatElement extends HTMLElement {
     const placeholder = chat?.forceReply?.input_field_placeholder ?? (showReply ? keyboard!.input_field_placeholder : undefined) ?? 'Message';
     const panel =
       this.panel === 'commands'
-        ? `<div class="panel">${sim.commands.map((c) => `<div class="item" data-act="command" data-cmd="/${esc(c.command)}"><div><b>/${esc(c.command)}</b><small>${esc(c.description)}</small></div></div>`).join('') || '<div class="hint">No commands set (setMyCommands)</div>'}</div>`
+        ? `<div class="panel">${sim.commandsFor(this.chatId, this.userId).map((c) => `<div class="item" data-act="command" data-cmd="/${esc(c.command)}"><div><b>/${esc(c.command)}</b><small>${esc(c.description)}</small></div></div>`).join('') || '<div class="hint">No commands set (setMyCommands)</div>'}</div>`
         : this.panel === 'inline'
           ? `<div class="panel">${this.inlinePanel()}</div>`
           : '';
@@ -604,7 +620,7 @@ export class EasyTGChatElement extends HTMLElement {
     const start = chat?.type !== 'private' && chat ? '' : !chat?.messages.length ? '<button class="start" data-act="command" data-cmd="/start">START</button>' : '';
     return `<div class="dock">${panel}${start}
       <div class="input">
-        ${sim.commands.length ? `<button class="icon-btn menu" data-act="menu" title="Commands">☰ Menu</button>` : ''}
+        ${sim.commandsFor(this.chatId, this.userId).length ? `<button class="icon-btn menu" data-act="menu" title="Commands">☰ Menu</button>` : ''}
         <button class="icon-btn" data-act="attach" title="Attach">📎</button>
         <input data-focus="text" placeholder="${esc(placeholder)}" autocomplete="off" enterkeyhint="send">
         ${keyboard ? `<button class="icon-btn" data-act="toggle-reply" title="${showReply ? 'Hide' : 'Show'} keyboard">${showReply ? '⌄' : '⌨'}</button>` : ''}

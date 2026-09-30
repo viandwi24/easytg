@@ -6,6 +6,9 @@ use inline mode. Nothing is sent to Telegram and no token is needed. It runs
 in Bun, Node, Deno and browsers; the [playground](https://viandwi24.github.io/easytg/playground)
 on the docs site is this simulator with a chat window on top.
 
+To run your bot's own file in it, with a chat window, use
+[`easytg preview`](preview.md); to test that file, `loadBot` (same page).
+
 Use it for tests that read like a conversation, for trying a bot before it
 has a token, and for demos.
 
@@ -66,6 +69,7 @@ see every message (as with privacy mode off).
 | `pay(messageId, options?)` | pay an invoice: pre-checkout, then `successful_payment` |
 | `join(chatId, userId)` / `leave(chatId, userId)` | join or leave a group |
 | `block(userId?, blocked?)` | block the bot: sending to them fails with 403 |
+| `tap(label, options?)` | the newest button with this label: inline, else on the reply keyboard |
 | `update(raw)` | any other update |
 
 ## Answers and errors like Telegram's
@@ -87,6 +91,28 @@ fails where Telegram fails, with Telegram's descriptions:
 
 An edit without `reply_markup` removes the inline keyboard, and a chat action
 ("typing…") lasts 5 seconds or until the next message, as in Telegram.
+
+## Commands, notes and files
+
+- `sim.commandsFor(chatId?, userId?)` is the command menu a user sees in a
+  chat, picked from the `setMyCommands` lists like Telegram does (the chat's
+  own, private chats or groups, then the default; in the user's language if
+  there is a list for it). `sim.commands` is the default list.
+- `sim.notice(text, chatId?)` puts a note in the chat that isn't a message
+  ("🔄 Restarted"); the bot never sees it.
+- Files the bot uploads are kept: `getFile` and `/file/bot…/<path>` return
+  them. `new TelegramSimulator({ storeFile })` decides the URL a chat window
+  shows them at (default: an object URL in browsers).
+
+## Over HTTP
+
+`sim.handleRequest(request)` is the Bot API as a fetch handler:
+`POST /bot<token>/<method>` with JSON, form or multipart bodies (files
+included, gzip too) and `/file/bot<token>/<path>` downloads. Serve it and a
+bot in another process can use it (`new Bot(token, { client: { apiRoot } })`),
+or route a bot's calls to it with `interceptBotApi` from
+`easytg/simulator/load`. Updates then go out through `getUpdates`;
+`sim.waitForPolling()` resolves once a bot asks for them.
 
 ## Watching
 

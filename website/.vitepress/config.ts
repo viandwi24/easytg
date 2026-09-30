@@ -50,6 +50,7 @@ export default defineConfig({
           { text: 'Pages', link: '/docs/pages' },
           { text: 'Media', link: '/docs/media' },
           { text: 'Main menu', link: '/docs/menu' },
+          { text: 'Commands', link: '/docs/commands' },
           { text: 'Dialogues', link: '/docs/dialogues' },
           { text: 'Text input', link: '/docs/text-input' },
           { text: 'Text formatting', link: '/docs/formatting' },
@@ -72,6 +73,7 @@ export default defineConfig({
         text: 'Beyond a single update',
         items: [
           { text: 'Sending without an update', link: '/docs/proactive' },
+          { text: 'Relays', link: '/docs/relay' },
           { text: 'Scheduled tasks', link: '/docs/scheduler' },
           { text: 'Queues', link: '/docs/queues' },
           { text: 'Payments', link: '/docs/payments' },
@@ -82,12 +84,14 @@ export default defineConfig({
         items: [
           { text: 'Anti-spam', link: '/docs/anti-spam' },
           { text: 'Scaling', link: '/docs/scaling' },
+          { text: 'Serverless and edge', link: '/docs/serverless' },
           { text: 'Security notes', link: '/docs/security' },
           { text: 'Events', link: '/docs/events' },
           { text: 'Error helpers', link: '/docs/errors' },
           { text: 'Options', link: '/docs/options' },
           { text: 'API reference', link: '/docs/app' },
           { text: 'Testing', link: '/docs/testing' },
+          { text: 'Preview and recorded tests', link: '/docs/preview' },
           { text: 'Simulator', link: '/docs/simulator' },
           { text: 'Migrating', link: '/docs/migration' },
         ],
@@ -132,6 +136,7 @@ export default defineConfig({
         const attrs = [`code="${encodeURIComponent(token.content)}"`];
         if (start !== undefined) attrs.push(`start="${md.utils.escapeHtml(start)}"`);
         if (info.includes('group')) attrs.push('group');
+        if (info.includes('users')) attrs.push('users');
         return `<ClientOnly><Playground ${attrs.join(' ')} /></ClientOnly>\n`;
       };
     },

@@ -10,10 +10,14 @@
  * too: when someone likes you, you get a message and can like them back. Try
  * it with two accounts (in the playground: switch the user at the top).
  *
+ * A match with a real user can chat anonymously: messages go through the
+ * bot (`app.relay`), so neither sees the other's account; /end stops.
+ *
  * Shows: a reply-keyboard menu whose buttons act on the card on screen (kept
  * in the session), `app.showMenu` / `app.hideMenu` from renders, a dialogue
  * with a `when` step and a photo upload, a dialogue started from the menu,
- * and `app.sendTo` to notify other users.
+ * `app.sendTo` to notify other users, `app.relay` for anonymous chats, and
+ * `app.command` + `app.syncCommands` for the command menu.
  */
 import { Bot } from 'grammy';
 import { EasyTG, dialogue, md, page, replyMenu } from '../src';
@@ -134,9 +138,38 @@ const matched = page<{ id: string }>('matched').render(({ params, nav }) => {
   return {
     photo: them.photo,
     text: [md`🎉 **It's a match with ${them.name}!**`, them.demo ? '(A demo profile, so there is no one to write to.)' : 'Say hi 👋'],
-    keyboard: them.demo ? [] : [[nav.url(`💬 Write to ${them.name}`, `tg://user?id=${them.id}`)]],
+    keyboard: them.demo ? [] : [[nav.button('💬 Chat anonymously', chat, { id: params.id }, { mode: 'send' })]],
   };
 });
+
+// ---- anonymous chat between two matches ---------------------------------------
+
+const chat = page<{ id: string }>('chat').render(async ({ ctx, params, app }) => {
+  const them = profiles.get(Number(params.id));
+  const me = profiles.get(ctx.from!.id);
+  if (!them || !me || them.demo) return;
+  await app.relay.start(ctx, me.id, them.id);
+  await app.hideMenu(ctx, md`💬 You're chatting with **${them.name}**. Send anything: it goes to them through the bot. /end to stop.`);
+  await app.sendTo(bot, them.id, chatting, { id: String(me.id) });
+});
+
+/** For the other side: they didn't press anything, the chat just started. */
+const chatting = page<{ id: string }>('chatting').render(({ params }) => {
+  const them = profiles.get(Number(params.id));
+  return { text: md`💬 **${them?.name ?? 'Your match'}** started a chat with you. Messages you send go to them. /end to stop.` };
+});
+
+const endChat = page('end-chat').render(async ({ ctx, app, nav }) => {
+  const link = await app.relay.end(ctx, ctx.from!.id);
+  if (!link) return { text: "You're not in a chat." };
+  await app.sendTo(bot, link.peer, chatEnded);
+  return nav.redirect(home);
+});
+
+const chatEnded = page('chat-ended').render(({ nav }) => ({
+  text: '👋 The chat has ended.',
+  keyboard: [[nav.button('🚀 Find people', browse, {}, { mode: 'send' })]],
+}));
 
 const likedYou = page<{ id: string; message?: string }>('liked-you').render(({ params, nav }) => ({
   text: ['💘 **Someone liked your profile!**', params.message ? md`They wrote: “${params.message}”` : ''],
@@ -232,11 +265,20 @@ if (!token) {
 }
 
 const bot = new Bot(token);
-const app = new EasyTG({ menu: reactions }).register(card, like, skip, pause, note, matched, likedYou, admirer, likeBack, home, browse, myProfile, signup);
+const app = new EasyTG({ menu: reactions })
+  .register(card, like, skip, pause, note, matched, likedYou, admirer, likeBack, chat, chatting, chatEnded, browse, signup)
+  .command('start', home, { description: 'Main menu' })
+  .command('profile', myProfile, { description: 'Your profile' })
+  .command('end', endChat, { description: 'End the current chat' });
+
+// The other person blocked the bot: tell the one who wrote.
+app.on('relayEnd', async ({ ctx, reason }) => {
+  if (reason === 'unreachable') await ctx?.reply('😕 They left the chat.');
+});
 
 bot.use(app);
-bot.command('start', (ctx) => app.open(ctx, home));
 bot.catch((err) => console.error('Bot error:', err.error));
+await app.syncCommands(bot); // the command menu next to the message field
 
 process.once('SIGINT', () => bot.stop());
 process.once('SIGTERM', () => bot.stop());

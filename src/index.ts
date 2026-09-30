@@ -20,6 +20,8 @@ export {
   type UpdateOutcome,
   type PaymentsOptions,
   type PaymentArgs,
+  type RelayApi,
+  type RelayOptions,
 } from './engine';
 export {
   page,
@@ -60,6 +62,8 @@ export { QueueFullError, QueueTimeoutError, type QueueOptions } from './coordina
 export type { Translate, TranslateVars, Messages, Message, PluralMessage } from './i18n';
 export { defaultTexts, type EasyTGTexts } from './texts';
 export type { Logger } from './logger';
+export type { CommandChats, CommandOptions } from './commands';
+export type { RelayBot, RelayEndReason, RelayLink, RelayStartOptions } from './relay';
 export { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient, retryAfterMs } from './errors';
 export { autoRetry, type AutoRetryOptions } from './retry';
 export {

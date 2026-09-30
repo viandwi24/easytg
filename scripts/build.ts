@@ -8,6 +8,8 @@ import { $, type BunPlugin } from 'bun';
 import { rm } from 'node:fs/promises';
 
 const entrypoints = ['./src/index.ts', './src/testing.ts', './src/simulator/index.ts', './src/simulator/element.ts'];
+/** Server runtimes only (they read files and patch grammY's fetch). The CLI runs from src/ with Bun. */
+const serverOnly = ['./src/simulator/load.ts'];
 
 /** Browsers have no AsyncLocalStorage: use platform/context.browser.ts instead. */
 const browserPlatform: BunPlugin = {
@@ -22,7 +24,7 @@ const browserPlatform: BunPlugin = {
 await rm('dist', { recursive: true, force: true });
 
 const builds = [
-  Bun.build({ entrypoints, outdir: 'dist', root: './src', target: 'node', packages: 'external' }),
+  Bun.build({ entrypoints: [...entrypoints, ...serverOnly], outdir: 'dist', root: './src', target: 'node', packages: 'external' }),
   Bun.build({ entrypoints, outdir: 'dist/browser', root: './src', target: 'browser', packages: 'external', plugins: [browserPlatform] }),
 ];
 for (const result of await Promise.all(builds)) {

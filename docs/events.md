@@ -19,6 +19,8 @@ const off = app.on('pageView', ({ ctx, page, params, mode }) => track(ctx.from?.
 | `payment` | `{ ctx, payment, payload }` | a [payment](payments.md) succeeded (with the `payments` option) |
 | `webAppData` | `{ ctx, data, raw, button }` | a Mini App opened from `replyMenu.webApp` sent data; see [Mini Apps](mini-apps.md) |
 | `broadcastBatch` | `{ broadcast, batch, batches, result }` | a batch of [`broadcastLater`](proactive.md#broadcasts-that-survive-restarts) was sent |
+| `relayMessage` | `{ ctx, from, to, messageId }` | a message was copied to the other user of a [relay](relay.md) |
+| `relayEnd` | `{ botId, users, reason: 'app' \| 'unreachable', ctx? }` | a [relay](relay.md) ended; with `unreachable`, `ctx` is the sender's update |
 
 ```ts
 // Slow updates, e.g. for metrics:

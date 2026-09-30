@@ -84,6 +84,9 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - 🤖 **Multi-bot ready.** One app instance can serve several bots sharing one storage; sessions, buttons and rate limits stay per bot.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
 - 💬 **Telegram simulator.** `easytg/simulator` is an in-memory Telegram with users, groups, buttons, inline mode and payments, plus a chat window for the browser. The [docs site](https://viandwi24.github.io/easytg) uses it for live playgrounds.
+- 👀 **Preview without a token.** `bunx easytg preview bot.ts` runs your bot file in a simulated Telegram in the browser, restarts it on save, and turns what you click into a `bun test` file.
+- ⌘ **Commands and relays.** `app.command` binds `/commands` to pages and dialogues and syncs Telegram's command menu; `app.relay` lets two users talk through the bot.
+- ☁️ **Serverless and edge.** Webhooks on Cloudflare Workers, Deno Deploy or Vercel, with Redis over HTTP and cron-driven tasks.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first; works on Node ≥ 20, Deno and in browsers.
 
 ## Install
@@ -175,7 +178,8 @@ const signup = dialogue('signup')
 | [`group.ts`](examples/group.ts) | A group bot: admin-only settings, a self-refreshing scoreboard, a quiz with a timeout |
 | [`production.ts`](examples/production.ts) | Redis or SQLite, several processes with `cluster`, webhooks |
 | [`broadcast.ts`](examples/broadcast.ts) | Newsletter: subscriptions, admin-only compose dialogue, a background broadcast with live progress, `broadcastLater`, events |
-| [`match.ts`](examples/match.ts) | A swipe-style "meet people" bot: profile cards with ❤️ 💌 👎 💤 on the reply keyboard, sign-up dialogue, likes and matches between users |
+| [`match.ts`](examples/match.ts) | A swipe-style "meet people" bot: profile cards with ❤️ 💌 👎 💤 on the reply keyboard, sign-up dialogue, likes, matches and anonymous chats (relay), `app.command` |
+| [`cloudflare-worker.ts`](examples/cloudflare-worker.ts) | A Cloudflare Worker: webhook, Redis over HTTP, a Cron Trigger for scheduled tasks |
 | [`captcha.ts`](examples/captcha.ts) | Button and typed captchas, server-side answers, per-key TTL |
 | [`notify.ts`](examples/notify.ts) | SQLite storage, tamper-proof buttons, `sendLater` notifications that survive restarts |
 | [`locales/id.ts`](examples/locales/id.ts) | Translating the built-in texts |
@@ -190,10 +194,10 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 - **[Docs site](https://viandwi24.github.io/easytg)**: these docs with live playgrounds, and every example running [in your browser](https://viandwi24.github.io/easytg/playground).
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Documentation](docs/README.md)**: one page per feature.
-  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
+  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Commands](docs/commands.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
   - Data: [Sessions](docs/sessions.md) · [Storage](docs/storage.md) · [Button params](docs/button-params.md) · [Deep links](docs/deep-links.md)
-  - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
-  - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md) · [Simulator](docs/simulator.md)
+  - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Relays](docs/relay.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
+  - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Serverless and edge](docs/serverless.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md) · [Preview](docs/preview.md) · [Simulator](docs/simulator.md)
 - **[API reference](docs/app.md)**: every export and `app` method.
 - **[Migrating](docs/migration.md)**: breaking changes and how to update.
 - **[Changelog](CHANGELOG.md)**

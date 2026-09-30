@@ -29,7 +29,10 @@ createTestBot({ botInfo: { id: 2, username: 'second_bot' } }); // several bots, 
 `createTestBot` records API calls and lets you check them. For tests that
 read like a conversation (what does the chat show after pressing this?), use
 the [simulator](simulator.md): it keeps the messages, edits them in place and
-answers like Telegram, errors included.
+answers like Telegram, errors included. To test your bot's actual file
+(`await bot.start()` and all), load it with
+[`loadBot`](preview.md#loadbot-in-your-own-tests), or record a test by
+clicking through it in [`easytg preview`](preview.md#recording-a-test).
 
 The fake API answers `send*`, `copyMessage(s)` and `forwardMessage(s)` like
 Telegram: albums return one message per item, and copies return

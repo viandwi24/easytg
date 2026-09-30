@@ -21,6 +21,7 @@ new EasyTG<MyContext>({
   queues: {},                      // { name: { concurrency, perUser?, maxWaiting?, timeoutMs? } }
   loading: undefined,              // { afterMs, action, text, toast } for every page
   payments: undefined,             // { preCheckout?, onSuccess? }
+  relay: undefined,                // { filter? } for relayed messages
 
   session:   { storage, ttlMs: undefined, refreshOnActivity: true, version: undefined, migrate: undefined },
   buttons:   { storage, params: 'auto', secret, ttlMs: 30 days, doubleTapMs: 700, ownerOnly: true, mediaToText: 'replace' },
@@ -52,6 +53,7 @@ new EasyTG<MyContext>({
 | `queues` | [Queues](queues.md) |
 | `scheduler` | [Scheduled tasks](scheduler.md) |
 | `payments` | [Payments](payments.md) |
+| `relay` | [Relays](relay.md) |
 | `i18n` | [Languages](i18n.md) |
 | `prepareProactive`, `emitProactiveErrors` | [Sending without an update](proactive.md) |
 

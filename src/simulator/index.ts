@@ -21,6 +21,7 @@
  */
 import { Bot, type BotConfig, type Context } from 'grammy';
 import type {
+  BotCommand,
   Chat,
   ChatMember,
   ForceReply,
@@ -59,6 +60,8 @@ export interface SimMessage {
   media?: SimMedia;
   /** Set for messages sent through inline mode that can be edited. */
   inlineMessageId?: string;
+  /** A note shown in the chat that isn't a Telegram message ("Bot restarted"); the bot never sees it. */
+  notice?: string;
 }
 
 export interface SimMember {
@@ -127,6 +130,11 @@ export interface SimulatorOptions {
   latencyMs?: number;
   /** Keep this many API calls in `calls`. Default 200. */
   callLog?: number;
+  /**
+   * Where uploaded files go, for chat windows to show them: returns a URL.
+   * Default: an object URL (in browsers). `easytg preview` serves them itself.
+   */
+  storeFile?: (data: Blob, name?: string) => string | undefined;
 }
 
 export interface SendOptions {
@@ -170,8 +178,8 @@ export class TelegramSimulator {
   readonly chats = new Map<number, SimChat>();
   /** Recent Bot API calls, oldest first. */
   readonly calls: SimApiCall[] = [];
-  /** Commands set with `setMyCommands` (default scope). */
-  commands: { command: string; description: string }[] = [];
+  /** Command lists from `setMyCommands`, by scope and language. */
+  private readonly commandLists = new Map<string, BotCommand[]>();
   latencyMs: number;
 
   private bot?: Bot<any>;
@@ -182,6 +190,13 @@ export class TelegramSimulator {
   private nextQuery = 1;
   private nextGroup = 1;
   private readonly files = new Map<string, SimMedia>();
+  /** File contents by file id, for downloads (`getFile` + `/file/bot…/path`). */
+  private readonly fileData = new Map<string, Blob>();
+  private readonly mediaData = new WeakMap<SimMedia, Blob>();
+  private readonly storeFile?: (data: Blob, name?: string) => string | undefined;
+  private polled = false;
+  private pollWaiters: (() => void)[] = [];
+  private nextNotice = 1;
   private readonly messageIds = new Map<number, number>();
   private readonly callbackQueries = new Map<string, { answer?: SimCallbackAnswer; chatId?: number; userId: number }>();
   private readonly inlineQueries = new Map<string, (results: InlineQueryResult[] | null) => void>();
@@ -208,6 +223,7 @@ export class TelegramSimulator {
     this.token = `${this.botInfo.id}:SIMULATOR`;
     this.latencyMs = options.latencyMs ?? 0;
     this.callLimit = options.callLog ?? 200;
+    this.storeFile = options.storeFile;
     this.addUser({ id: 1001, first_name: 'You', language_code: 'en', ...options.user });
   }
 
@@ -278,6 +294,33 @@ export class TelegramSimulator {
     return this.messages(chatId).at(-1);
   }
 
+  /** The commands of the default list (all chats, no language). */
+  get commands(): BotCommand[] {
+    return this.commandLists.get('default|') ?? [];
+  }
+
+  /**
+   * The command menu a user sees in a chat, picked like Telegram does: the
+   * most specific scope with a list (the chat, its admins, private chats or
+   * groups, then the default), in the user's language if there is a list
+   * for it.
+   */
+  commandsFor(chatId = this.user.id, userId = this.user.id): BotCommand[] {
+    const chat = this.chats.get(chatId);
+    const language = this.users.get(userId)?.language_code?.split('-')[0] ?? '';
+    const status = chat?.members.get(userId)?.status;
+    const admin = status === 'creator' || status === 'administrator';
+    const scopes =
+      !chat || chat.type === 'private'
+        ? [`chat:${chatId}`, 'all_private_chats', 'default']
+        : [`chat_member:${chatId}:${userId}`, ...(admin ? [`chat_administrators:${chatId}`] : []), `chat:${chatId}`, ...(admin ? ['all_chat_administrators'] : []), 'all_group_chats', 'default'];
+    for (const scope of scopes) {
+      const list = this.commandLists.get(`${scope}|${language}`) ?? this.commandLists.get(`${scope}|`);
+      if (list) return list;
+    }
+    return [];
+  }
+
   /** Forget all chats and messages (users, commands and the bot stay). */
   /**
    * "Clear history", like in Telegram: the chat is emptied for everyone
@@ -309,6 +352,78 @@ export class TelegramSimulator {
     return () => set!.delete(listener);
   }
 
+  /**
+   * Resolves once a bot polls for updates (`bot.start()`, or a bot in another
+   * process). Rejects after `timeoutMs`.
+   */
+  waitForPolling(timeoutMs = 5000): Promise<void> {
+    if (this.polled) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`No bot polled for updates within ${timeoutMs} ms`)), timeoutMs);
+      this.pollWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** A note in the chat that isn't a message ("🔄 Bot restarted"); the bot never sees it. Default: every chat. */
+  notice(text: string, chatId?: number) {
+    for (const chat of chatId === undefined ? this.chats.values() : [this.chatFor(chatId)]) {
+      const message = { message_id: -this.nextNotice++, date: now(), chat: this.chatObject(chat) } as Message;
+      chat.messages.push({ message, fromBot: false, notice: text });
+      this.emit('change', { chatId: chat.id });
+    }
+  }
+
+  /**
+   * A user presses the button labelled `label`: the newest inline button with
+   * that text in the chat, else a reply-keyboard button. Handy in tests:
+   *
+   *   await sim.tap('🛍 Products');
+   */
+  async tap(label: string, options: SendOptions = {}): Promise<SimCallbackAnswer | SimMessage | undefined> {
+    const userId = options.user ?? this.user.id;
+    const chat = this.chatFor(options.chat ?? userId);
+    for (const item of [...chat.messages].reverse()) {
+      const rows = item.message.reply_markup?.inline_keyboard ?? [];
+      const button = rows.flat().find((b) => b.text === label);
+      if (button) return this.press(item.message.message_id, button, { user: userId, chat: chat.id, inlineMessageId: item.inlineMessageId });
+    }
+    const reply = chat.replyKeyboard?.keyboard.flat().find((b) => (typeof b === 'string' ? b : b.text) === label);
+    if (reply) return this.pressReply(reply, { ...options, user: userId, chat: chat.id });
+    throw new Error(`No button "${label}" in chat ${chat.title ?? chat.id}`);
+  }
+
+  /**
+   * The Bot API over HTTP, as a fetch handler: `POST /bot<token>/<method>`
+   * (JSON, form or multipart with files) and file downloads
+   * (`/file/bot<token>/<file_path>`). Serve it, and point a bot in another
+   * process at it (`new Bot(token, { client: { apiRoot } })`); `easytg
+   * preview` does.
+   */
+  async handleRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const download = /\/file\/bot[^/]+\/(.+)$/.exec(url.pathname);
+    if (download) {
+      const id = decodeURIComponent(download[1]!).split('/').pop()!;
+      const data = this.fileData.get(id);
+      if (data) return new Response(data);
+      const remote = this.files.get(id)?.url;
+      return remote && /^https?:/.test(remote) ? Response.redirect(remote, 302) : new Response('Not Found', { status: 404 });
+    }
+    const call = /\/bot[^/]+\/(\w+)$/.exec(url.pathname);
+    if (!call) return Response.json({ ok: false, error_code: 404, description: 'Not Found' }, { status: 404 });
+    let payload: Record<string, any>;
+    try {
+      payload = await readPayload(request, url);
+    } catch {
+      return Response.json({ ok: false, error_code: 400, description: 'Bad Request: invalid request body' }, { status: 400 });
+    }
+    const result = await this.call(call[1]!, payload, request.signal);
+    return Response.json(result, { status: result.ok ? 200 : result.error_code });
+  }
+
   /* ---------------------------- user actions ---------------------------- */
 
   /** A user sends a text message. Resolves when the bot has handled it (unless the bot polls with `bot.start()`). */
@@ -319,14 +434,15 @@ export class TelegramSimulator {
   }
 
   /** A user sends a photo (any URL a browser can show) or a document. */
-  async sendMedia(kind: SimMediaKind, source: { url?: string; name?: string; caption?: string }, options: SendOptions = {}) {
-    const fileId = this.registerFile({ kind, url: source.url, name: source.name });
+  async sendMedia(kind: SimMediaKind, source: { url?: string; data?: Blob; name?: string; caption?: string }, options: SendOptions = {}) {
+    const stored = source.data ? this.mediaFrom(kind, source.data, source.name) : { kind, url: source.url, name: source.name };
+    const fileId = this.registerFile(stored);
     const file = { file_id: fileId, file_unique_id: fileId, file_size: 1024 };
     const media =
       kind === 'photo'
         ? { photo: [{ ...file, width: 800, height: 600 }] }
         : { [kind]: { ...file, file_name: source.name, ...(kind === 'video' || kind === 'animation' ? { width: 640, height: 360, duration: 5 } : {}) } };
-    return this.userMessage({ ...media, caption: source.caption }, options, { kind, url: source.url, name: source.name });
+    return this.userMessage({ ...media, caption: source.caption }, options, stored);
   }
 
   async sendLocation(latitude: number, longitude: number, options: SendOptions = {}) {
@@ -561,9 +677,9 @@ export class TelegramSimulator {
   private async deliver(update: Omit<Update, 'update_id'>) {
     const full = { update_id: this.updateId++, ...update } as Update;
     const bot = this.bot;
-    if (!bot) throw new Error('Connect a bot first: sim.connect(bot)');
-    if (bot.isRunning()) {
-      // bot.start(): hand it out through getUpdates; grammY confirms it once handled.
+    if (!bot || bot.isRunning()) {
+      // bot.start() (or a bot in another process, over handleRequest): hand it
+      // out through getUpdates; grammY confirms it once handled.
       this.queue.push(full);
       this.waiting?.();
       await new Promise<void>((resolve) => {
@@ -630,6 +746,10 @@ export class TelegramSimulator {
 
     getUpdates: async (p: Record<string, any>, signal?: AbortSignal) => {
       const offset = p.offset ?? 0;
+      if (!this.polled) {
+        this.polled = true;
+        this.pollWaiters.splice(0).forEach((resolve) => resolve());
+      }
       while (this.queue.length && this.queue[0]!.update_id < offset) this.queue.shift();
       for (const entry of this.unconfirmed.filter((e) => e.updateId < offset)) entry.done();
       if (!this.queue.length && (p.timeout ?? 0) > 0) {
@@ -860,13 +980,19 @@ export class TelegramSimulator {
     },
 
     setMyCommands: (p: Record<string, any>) => {
-      if (!p.scope || p.scope.type === 'default') this.commands = p.commands;
+      const commands = p.commands as BotCommand[];
+      if (!Array.isArray(commands) || commands.length > 100) throw badRequest('commands must be a list of at most 100 commands');
+      for (const c of commands) {
+        if (!/^[a-z0-9_]{1,32}$/.test(c.command)) throw badRequest('BOT_COMMAND_INVALID');
+        if (!c.description || c.description.length > 256) throw badRequest('command description must be 1-256 characters');
+      }
+      this.commandLists.set(commandKey(p), commands);
       this.emit('change', {});
       return true;
     },
-    getMyCommands: () => this.commands,
-    deleteMyCommands: () => {
-      this.commands = [];
+    getMyCommands: (p: Record<string, any>) => this.commandLists.get(commandKey(p)) ?? [],
+    deleteMyCommands: (p: Record<string, any>) => {
+      this.commandLists.delete(commandKey(p));
       this.emit('change', {});
       return true;
     },
@@ -880,7 +1006,7 @@ export class TelegramSimulator {
     getFile: (p: Record<string, any>) => {
       const file = this.files.get(p.file_id);
       if (!file) throw badRequest('invalid file_id');
-      return { file_id: p.file_id, file_unique_id: p.file_id, file_size: 1024, file_path: file.url ?? `${file.kind}/${p.file_id}` };
+      return { file_id: p.file_id, file_unique_id: p.file_id, file_size: this.fileData.get(p.file_id)?.size ?? 1024, file_path: `${file.kind}/${p.file_id}` };
     },
     getUserProfilePhotos: () => ({ total_count: 0, photos: [] }),
   };
@@ -1033,6 +1159,8 @@ export class TelegramSimulator {
   private registerFile(media: SimMedia): string {
     const id = `sim-${media.kind}-${this.nextFile++}`;
     this.files.set(id, media);
+    const data = this.mediaData.get(media);
+    if (data) this.fileData.set(id, data);
     return id;
   }
 
@@ -1040,18 +1168,26 @@ export class TelegramSimulator {
   private mediaFrom(kind: SimMediaKind, source: unknown, filename?: string): SimMedia {
     if (typeof source === 'string') {
       const known = this.files.get(source);
-      if (known) return { ...known, kind };
+      if (known) {
+        const media = { ...known, kind };
+        const data = this.fileData.get(source);
+        if (data) this.mediaData.set(media, data);
+        return media;
+      }
       if (/^(https?:|data:|blob:)/.test(source)) return { kind, url: source, name: filename ?? source.split('/').pop()?.split('?')[0] };
       return { kind, name: filename };
     }
-    const data = (source as { fileData?: unknown } | undefined)?.fileData;
-    const name = filename ?? (source as { filename?: string } | undefined)?.filename;
+    // A file uploaded over HTTP (handleRequest), or an InputFile's contents.
+    const data = typeof Blob !== 'undefined' && source instanceof Blob ? source : (source as { fileData?: unknown } | undefined)?.fileData;
+    const name = filename ?? (source as { filename?: string; name?: string } | undefined)?.filename ?? (source as { name?: string } | undefined)?.name;
     if (data instanceof URL) return { kind, url: data.href, name };
     if (typeof data === 'string' && /^(https?:|data:|blob:)/.test(data)) return { kind, url: data, name };
-    const createUrl = (globalThis as { URL?: { createObjectURL?: (blob: Blob) => string } }).URL?.createObjectURL;
-    if (createUrl && typeof Blob !== 'undefined') {
-      if (data instanceof Blob) return { kind, url: createUrl(data), name };
-      if (data instanceof Uint8Array) return { kind, url: createUrl(new Blob([data as never])), name };
+    if (typeof Blob !== 'undefined' && (data instanceof Blob || data instanceof Uint8Array)) {
+      const blob = data instanceof Blob ? data : new Blob([data as never]);
+      const createUrl = (globalThis as { URL?: { createObjectURL?: (blob: Blob) => string } }).URL?.createObjectURL;
+      const media: SimMedia = { kind, url: this.storeFile ? this.storeFile(blob, name) : createUrl?.(blob), name };
+      this.mediaData.set(media, blob);
+      return media;
     }
     return { kind, name };
   }
@@ -1165,6 +1301,61 @@ export class TelegramSimulator {
     const sent = this.botMessage(chat, forward ? { ...p, reply_markup: undefined } : p, fields as Partial<Message>, source.media);
     return idOnly ? sent.message.message_id : sent;
   }
+}
+
+const NUMERIC = /(^|_)(id|ids|offset|limit|timeout|latitude|longitude|date|duration|width|height|amount|period|count|radius|heading|position|length)$/;
+
+/** A Bot API request body as the payload object grammY sent. */
+async function readPayload(request: Request, url: URL): Promise<Record<string, any>> {
+  const type = request.headers.get('content-type') ?? '';
+  // grammY compresses request bodies (node-fetch's `compress`), like Telegram allows.
+  const encoding = request.headers.get('content-encoding')?.toLowerCase();
+  if (request.body && (encoding === 'gzip' || encoding === 'deflate')) {
+    const body = request.body.pipeThrough(new DecompressionStream(encoding) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+    const headers = new Headers(request.headers);
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+    request = new Request(request.url, { method: request.method, headers, body, duplex: 'half' } as RequestInit);
+  }
+  if (type.includes('application/json')) {
+    const text = await request.text();
+    return (text.trim() ? JSON.parse(text) : {}) as Record<string, any>;
+  }
+  const entries: [string, string | Blob][] = [...url.searchParams];
+  if (type.includes('multipart/form-data') || type.includes('application/x-www-form-urlencoded')) {
+    for (const [key, value] of (await request.formData()) as unknown as Iterable<[string, string | Blob]>) entries.push([key, value]);
+  }
+  // Files come as parts of their own, referenced as "attach://<name>" (grammY
+  // sends every InputFile like that, top-level ones too).
+  const files = new Map(entries.filter((e): e is [string, Blob] => typeof e[1] !== 'string'));
+  const revive = (value: unknown): unknown => {
+    if (typeof value === 'string') return value.startsWith('attach://') ? (files.get(value.slice(9)) ?? value) : value;
+    if (Array.isArray(value)) return value.map(revive);
+    if (value && typeof value === 'object' && !(value instanceof Blob)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, revive(v)]));
+    return value;
+  };
+  const payload: Record<string, any> = {};
+  for (const [key, value] of entries) {
+    if (typeof value !== 'string') {
+      if (!key.match(/^[a-z0-9]{16}$/)) payload[key] = value; // a file sent under the param's own name
+      continue;
+    }
+    let parsed: unknown = value;
+    if (/^[[{]/.test(value)) {
+      try {
+        parsed = JSON.parse(value);
+      } catch {}
+    } else if (value === 'true' || value === 'false') parsed = value === 'true';
+    else if (NUMERIC.test(key) && /^-?\d+(\.\d+)?$/.test(value)) parsed = Number(value);
+    payload[key] = revive(parsed);
+  }
+  return payload;
+}
+
+function commandKey(p: Record<string, any>) {
+  const scope = (p.scope ?? { type: 'default' }) as { type: string; chat_id?: number | string; user_id?: number };
+  const target = [scope.chat_id, scope.user_id].filter((part) => part !== undefined).join(':');
+  return `${scope.type}${target ? `:${target}` : ''}|${p.language_code ?? ''}`;
 }
 
 function formatAmount(amount: number, currency: string) {

@@ -19,10 +19,12 @@ const props = withDefaults(
     start?: string;
     /** Add a group with three members. */
     group?: boolean;
+    /** Add two more users (switch between them at the top of the chat). */
+    users?: boolean;
     /** Read-only teaser: the bot runs, and a click opens it in the playground. */
     preview?: boolean;
   }>(),
-  { start: undefined, group: false, preview: false },
+  { start: undefined, group: false, users: false, preview: false },
 );
 
 type Runner = typeof import('./runner');
@@ -95,7 +97,7 @@ async function run() {
   logs.value = [];
   calls.value = [];
   const code = editor?.state.doc.toString() ?? initialCode();
-  current = runner.runBot(code, { log, group: props.group || example.value?.group, users: example.value?.users });
+  current = runner.runBot(code, { log, group: props.group || example.value?.group, users: props.users || example.value?.users });
   const sim = current.sim;
   unsubscribe.push(
     sim.on('call', (call) => {

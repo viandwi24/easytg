@@ -15,6 +15,7 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [Pages](pages.md) | pages, `nav`, delivery modes, keeping messages, `app.edit`, params validation (functions or zod/valibot), long messages, middlewares, Back, `refreshEveryMs` |
 | [Media](media.md) | photos, videos, documents, audio, albums, copies from a channel, `protectContent`, file id cache |
 | [Main menu](menu.md) | a reply-keyboard menu with `replyMenu` |
+| [Commands](commands.md) | `app.command`: `/commands` for pages and dialogues, and Telegram's command menu (`syncCommands`) |
 | [Dialogues](dialogues.md) | multi-step forms: text, files, choices, contacts, locations, Mini Apps; typed answers, schemas, `when`, timeouts |
 | [Text input](text-input.md) | `page.onText`: search boxes and other typed input on a page |
 | [Text formatting](formatting.md) | Markdown, HTML, safe `md` / `html` templates |
@@ -37,6 +38,7 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | | |
 |---|---|
 | [Sending without an update](proactive.md) | `sendTo`, `sendLater`, `broadcast`, `broadcastLater` |
+| [Relays](relay.md) | `app.relay`: two users talking through the bot (anonymous chats, support) |
 | [Scheduled tasks](scheduler.md) | `task()`, `app.schedule`, recurring tasks, `deleteLater`, `deleteAfterMs` |
 | [Queues](queues.md) | concurrency limits for slow jobs |
 | [Payments](payments.md) | invoices, Telegram Stars, checkout, `onSuccess` |
@@ -47,6 +49,7 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 |---|---|
 | [Anti-spam](anti-spam.md) | rate limits, mutes, double taps |
 | [Scaling](scaling.md) | sequential updates, Telegram's rate limits (`app.throttle`), several processes (`cluster`), webhooks |
+| [Serverless and edge](serverless.md) | Cloudflare Workers, Deno Deploy, Vercel: webhooks, Redis over HTTP, cron for tasks |
 | [Security notes](security.md) | what to trust and what not |
 | [Events](events.md) | `update` (timings), `pageView`, `sent`, `spam`, `error`, `payment`, … |
 | [Error helpers](errors.md) | `isChatUnreachable`, `isTransient`, `retryAfterMs`, `autoRetry` |
@@ -54,6 +57,7 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [API reference](app.md) | every export and `app` method |
 | [Migrating](migration.md) | breaking changes between versions |
 | [Testing](testing.md) | `easytg/testing`: a fake Telegram API for your tests |
+| [Preview and recorded tests](preview.md) | `easytg preview`: your bot file in a simulated Telegram in the browser; tests recorded from it; `loadBot` |
 | [Simulator](simulator.md) | `easytg/simulator`: an in-memory Telegram with users, groups and a browser chat window; easytg in the browser |
 
 ## Examples
@@ -78,7 +82,8 @@ Runnable bots (`BOT_TOKEN=… bun run examples/<file>`) that show features in co
 | [`group.ts`](../examples/group.ts) | `chatSession`, `requireChatAdmin`, `refreshEveryMs`, `dialogue.timeout` |
 | [`production.ts`](../examples/production.ts) | `RedisStorage` / `SqliteStorage`, `cluster`, webhooks, the scheduler, `autoRetry` |
 | [`broadcast.ts`](../examples/broadcast.ts) | `broadcast` in the background with progress, `broadcastLater`, dialogue middlewares, `pageView`/`spam` events |
-| [`match.ts`](../examples/match.ts) | a reply-keyboard menu acting on the card on screen, `showMenu` / `hideMenu` in renders, a dialogue with `when` and a photo, `sendTo` for likes and matches |
+| [`match.ts`](../examples/match.ts) | a reply-keyboard menu acting on the card on screen, `showMenu` / `hideMenu` in renders, a dialogue with `when` and a photo, `sendTo` for likes and matches, `app.relay` chats, `app.command` + `syncCommands` |
+| [`cloudflare-worker.ts`](../examples/cloudflare-worker.ts) | a Cloudflare Worker: webhook, Redis over HTTP, cron for scheduled tasks |
 | [`captcha.ts`](../examples/captcha.ts) | server-side answers, per-key session TTL, dialogues |
 | [`notify.ts`](../examples/notify.ts) | SQLite storage, `stored` buttons, `sendLater` |
 | [`locales/id.ts`](../examples/locales/id.ts) | translating built-in texts |

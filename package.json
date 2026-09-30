@@ -20,26 +20,39 @@
     ".": {
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
+      "workerd": "./dist/browser/index.js",
+      "worker": "./dist/browser/index.js",
       "browser": "./dist/browser/index.js",
       "default": "./dist/index.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",
       "bun": "./src/testing.ts",
+      "workerd": "./dist/browser/testing.js",
+      "worker": "./dist/browser/testing.js",
       "browser": "./dist/browser/testing.js",
       "default": "./dist/testing.js"
     },
     "./simulator": {
       "types": "./dist/simulator/index.d.ts",
       "bun": "./src/simulator/index.ts",
+      "workerd": "./dist/browser/simulator/index.js",
+      "worker": "./dist/browser/simulator/index.js",
       "browser": "./dist/browser/simulator/index.js",
       "default": "./dist/simulator/index.js"
     },
     "./simulator/element": {
       "types": "./dist/simulator/element.d.ts",
       "bun": "./src/simulator/element.ts",
+      "workerd": "./dist/browser/simulator/element.js",
+      "worker": "./dist/browser/simulator/element.js",
       "browser": "./dist/browser/simulator/element.js",
       "default": "./dist/simulator/element.js"
+    },
+    "./simulator/load": {
+      "types": "./dist/simulator/load.d.ts",
+      "bun": "./src/simulator/load.ts",
+      "default": "./dist/simulator/load.js"
     }
   },
   "files": [
@@ -86,5 +99,8 @@
     "sucrase": "^3.35.1",
     "typescript": "^7",
     "vitepress": "^1.6.4"
+  },
+  "bin": {
+    "easytg": "./src/cli.ts"
   }
 }

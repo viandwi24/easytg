@@ -25,6 +25,8 @@ in [Options](options.md). All durations are in milliseconds.
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
 | `easytg/testing` | `createTestBot`, `telegramError`, `verifyStorageAdapter`, `verifyTaskStore` — [Testing](testing.md) |
 | `easytg/simulator` | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2` — [Simulator](simulator.md) |
+| `easytg/simulator/load` | `loadBot`, `interceptBotApi`, `trackBots`: your bot file against a simulator (Bun, Node) — [Preview and recorded tests](preview.md) |
+| `easytg preview <file>` (CLI) | your bot file in a simulated Telegram, in the browser — [Preview](preview.md) |
 | `easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |
 
 ## `app` methods
@@ -35,6 +37,8 @@ in [Options](options.md). All durations are in milliseconds.
 |---|---|
 | `new EasyTG(options)` | [Options](options.md) |
 | `app.register(...items)` | pages, dialogues and tasks |
+| `app.command(names, target, { description, chats, params })` | a `/command` that opens a page or starts a dialogue — [Commands](commands.md) |
+| `app.syncCommands(bot)` | Telegram's command menu from the commands with a description |
 | `bot.use(app)` | handle updates; register before your own handlers |
 | `app.on(event, listener)` | returns an unsubscribe function — [Events](events.md) |
 
@@ -51,6 +55,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `app.answerWebAppQuery(bot, queryId, page, options)` | a Mini App puts a page into the chat — [Mini Apps](mini-apps.md) |
 | `app.prepareShare(bot, userId, page, options)` | a page the user shares from a Mini App — [Mini Apps](mini-apps.md#sharing) |
 | `app.showMenu(ctx, text)` / `app.hideMenu(ctx, text)` | show or remove the main menu |
+| `app.relay.start(ctx \| bot, userA, userB, options)` / `app.relay.end(…, userId)` / `app.relay.peer(…, userId)` | two users talking through the bot — [Relays](relay.md) |
 | `app.answer(ctx, toast?)` | answer a button press now (e.g. before slow work) |
 | `app.withLoading(ctx, job, options)` | run slow work with "typing…", a placeholder or a toast — [Pages](pages.md#slow-pages) |
 | `app.throttle(options)` | API transformer keeping sends within Telegram's limits — [Scaling](scaling.md#staying-within-telegrams-limits) |

@@ -19,6 +19,8 @@ import { runBroadcast, type BroadcastResult, type BroadcastSettings } from './br
 import { CallbackStore, type CallbackParamsMode, type StoredCallback } from './callback-store';
 import type { Dialogue, Page, Task, TaskBot } from './define';
 import { DialogueRunner, isCommand, parseWebAppData } from './dialogue';
+import { Commands, type CommandOptions } from './commands';
+import { RelayStore, relayBotId, type RelayBot, type RelayEndReason, type RelayLink, type RelayStartOptions } from './relay';
 import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient } from './errors';
 import { Scheduler, type ScheduleOptions, type SchedulerOptions, type TaskErrorEvent } from './scheduler';
 import type { ParseMode, TextInput } from './format';
@@ -110,6 +112,8 @@ export interface EasyTGOptions<C extends Context = Context> {
   middlewares?: Middleware<C>[];
   /** Custom logger, or `false` to silence easytg. Default: warnings and errors to the console. */
   logger?: Logger | false;
+  /** Relays between users (`app.relay`): checks for relayed messages. */
+  relay?: RelayOptions<C>;
   /** Main menu on the reply keyboard; show it with `app.showMenu(ctx, text)`. See `replyMenu`. */
   menu?: ReplyMenu<C>;
   /** Protect all sent messages from forwarding and saving (`protect_content`). Pages can override it. Default false. */
@@ -318,6 +322,33 @@ export interface EasyTGEvents<C extends Context = Context> {
   update: { ctx: C; durationMs: number; outcome: UpdateOutcome };
   /** A payment succeeded (only with the `payments` option). Keep `payment.telegram_payment_charge_id` for refunds. */
   payment: { ctx: C; payment: SuccessfulPayment; payload: string };
+  /** A message was copied to the other user of a relay. */
+  relayMessage: { ctx: C; from: number; to: number; messageId: number };
+  /**
+   * A relay ended: `app` (`app.relay.end`, or one of its users started
+   * another) or `unreachable` (the other user blocked the bot or is gone;
+   * `ctx` is the update of the user whose message couldn't be delivered:
+   * tell them).
+   */
+  relayEnd: { botId: number; users: [number, number]; reason: RelayEndReason; ctx?: C };
+}
+
+/** Relays between two users' private chats with the bot. */
+export interface RelayApi {
+  /** Connect two users: from now on what one sends the bot is copied to the other. Ends their earlier relays. */
+  start(bot: RelayBot, userA: number, userB: number, options?: RelayStartOptions): Promise<void>;
+  /** End the user's relay, for both sides. Returns the link that ended. */
+  end(bot: RelayBot, userId: number): Promise<RelayLink | undefined>;
+  /** Who the user is connected to, if anyone. */
+  peer(bot: RelayBot, userId: number): Promise<RelayLink | undefined>;
+}
+
+export interface RelayOptions<C extends Context = Context> {
+  /**
+   * Check a message before it is copied: `false` drops it, a string drops it
+   * and tells the sender why (e.g. no links), anything else lets it through.
+   */
+  filter?: (args: { ctx: C; peer: number }) => Awaitable<boolean | string | void>;
 }
 
 /** When to delete (`delayMs` / `at`) and, optionally, your own task id. */
@@ -492,6 +523,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly listeners = new Map<keyof EasyTGEvents<C>, Set<(event: any) => unknown>>();
   private readonly ownerOnly: boolean;
   private readonly menu?: ReplyMenu<C>;
+  private readonly commands = new Commands<Page<any, any, any> | Dialogue<any, any, any>>();
+  private readonly localeNames: string[];
+  private readonly relays: RelayStore;
+  private readonly relayFilter?: RelayOptions<C>['filter'];
+  private readonly fallbackLocale: string;
   /** @internal */ readonly mediaToText: 'replace' | 'keep';
   private readonly protectContent: boolean;
   private readonly scopeKeysByBot: boolean;
@@ -564,6 +600,10 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     );
     this.locales = Object.fromEntries(Object.entries(i18n.locales ?? {}).map(([locale, texts]) => [normalizeLocale(locale), texts]));
     this.localeFn = i18n.locale;
+    this.fallbackLocale = i18n.fallbackLocale ?? 'en';
+    this.relays = new RelayStore(this.sessionStorage);
+    this.relayFilter = options.relay?.filter;
+    this.localeNames = [...new Set([...Object.keys(i18n.messages ?? {}), ...Object.keys(i18n.locales ?? {})].map(normalizeLocale))];
 
     this.logger = options.logger === false ? silentLogger : options.logger ?? createConsoleLogger();
     this.parseMode = options.parseMode ?? 'markdown';
@@ -602,6 +642,63 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     }
     return this;
   }
+
+  /**
+   * A `/command` that opens a page or starts a dialogue (registered here if
+   * it isn't yet). With a `description` it is listed in Telegram's command
+   * menu by `app.syncCommands(bot)`.
+   *
+   *   app.command('start', home, { description: 'Main menu' });
+   *   app.command(['find', 'search'], search, { params: (args) => ({ q: args }) });
+   */
+  command(names: string | string[], target: Page<any, any, any> | Dialogue<any, any, any>, options: CommandOptions = {}): this {
+    const registered = target.kind === 'page' ? this.pages.get(target.id) : this.dialogueDefs.get(target.id);
+    if (!registered) this.register(target as Registrable<C>);
+    else if (registered !== target) throw new EasyTGError(`Another page or dialogue is registered as "${target.id}"`);
+    this.commands.add(names, target, options);
+    return this;
+  }
+
+  /**
+   * Set Telegram's command menu from the commands with a `description`:
+   * for all chats, and separately for private chats and groups when some
+   * commands are only for those. With translated descriptions, once more per
+   * language of `i18n.messages` / `i18n.locales`. Call it at startup.
+   */
+  async syncCommands(bot: Pick<BotLike, 'api'>): Promise<void> {
+    const languages = this.commands.translated ? [...new Set(this.localeNames.map((l) => l.split('-')[0]!))] : [];
+    for (const language of [undefined, ...languages]) {
+      const locale = language ?? this.fallbackLocale;
+      for (const { scope, commands } of this.commands.lists(locale, this.translator.for(locale))) {
+        const other = { scope, ...(language ? { language_code: language as never } : {}) };
+        if (commands?.length) await bot.api.setMyCommands(commands, other);
+        else await bot.api.deleteMyCommands(other);
+      }
+    }
+  }
+
+  /**
+   * Two users talking through the bot: messages in one's private chat are
+   * copied to the other's, until `end` (or `ttlMs`). /commands, menu
+   * buttons, dialogues and buttons keep working as usual.
+   *
+   *   await app.relay.start(ctx, ctx.from.id, otherUserId);
+   *   await app.relay.end(ctx, ctx.from.id);
+   */
+  readonly relay: RelayApi = {
+    start: async (bot, userA, userB, options = {}) => {
+      const botId = relayBotId(bot);
+      const { ended } = await this.relays.start(botId, userA, userB, options);
+      for (const users of ended) await this.emit('relayEnd', { botId, users, reason: 'app' });
+    },
+    end: async (bot, userId) => {
+      const botId = relayBotId(bot);
+      const link = await this.relays.end(botId, userId);
+      if (link) await this.emit('relayEnd', { botId, users: [userId, link.peer], reason: 'app' });
+      return link;
+    },
+    peer: (bot, userId) => this.relays.get(relayBotId(bot), userId),
+  };
 
   hasPage(id: string) {
     return this.pages.has(id);
@@ -702,6 +799,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         if (await this.handleMenu(ctx)) return;
         if (await this.handleMessage(ctx)) return;
         if (await this.handleDeepLink(ctx)) return;
+        if (await this.handleCommand(ctx)) return;
+        if (await this.handleRelay(ctx)) return;
         if (await this.handleTextInput(ctx)) return;
         const webAppData = ctx.message.web_app_data;
         if (webAppData) {
@@ -1890,6 +1989,57 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       } catch {}
       return true;
     }
+  }
+
+  /** A command from `app.command`. False if the message isn't one. */
+  private async handleCommand(ctx: C): Promise<boolean> {
+    if (!this.commands.size) return false;
+    const found = this.commands.match(ctx.message, ctx.me?.username);
+    if (!found) return false;
+    try {
+      (await this.state(ctx)).delete(INPUT_KEY); // a command moves on from the page's text input
+      const { target, options } = found.entry;
+      const params = normalizeParams(options.params?.(found.args));
+      if (target.kind === 'page') await this.open(ctx, this.page(target), params);
+      else await this.guardedDialogueStart(ctx, this.dialogue(target), params, { mode: 'send', closeMenu: false });
+    } catch (error) {
+      await this.reportError(error, ctx);
+      try {
+        await ctx.reply(this.textsFor(ctx).error);
+      } catch {}
+    }
+    return true;
+  }
+
+  /** A message in a relay: copy it to the other user. False if the user isn't in one. */
+  private async handleRelay(ctx: C): Promise<boolean> {
+    const message = ctx.message;
+    const from = ctx.from;
+    if (!message || !from || message.chat.type !== 'private' || isCommand(message, ctx.me?.username)) return false;
+    const botId = ctx.me.id;
+    const link = await this.relays.get(botId, from.id);
+    if (!link) return false;
+    try {
+      const verdict = this.relayFilter ? await this.relayFilter({ ctx, peer: link.peer }) : undefined;
+      if (verdict === false) return true;
+      if (typeof verdict === 'string') {
+        await ctx.reply(verdict);
+        return true;
+      }
+      await ctx.api.copyMessage(link.peer, message.chat.id, message.message_id);
+      await this.emit('relayMessage', { ctx, from: from.id, to: link.peer, messageId: message.message_id });
+    } catch (error) {
+      if (isChatUnreachable(error)) {
+        await this.relays.end(botId, from.id);
+        await this.emit('relayEnd', { botId, users: [from.id, link.peer], reason: 'unreachable', ctx });
+        return true;
+      }
+      await this.reportError(error, ctx);
+      try {
+        await ctx.reply(this.textsFor(ctx).error);
+      } catch {}
+    }
+    return true;
   }
 
   private async handlePreCheckout(ctx: C, query: PreCheckoutQuery) {

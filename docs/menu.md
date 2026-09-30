@@ -59,5 +59,8 @@ bot.start();
 - `{ persistent: false }` lets users collapse the menu into the keyboard icon
   instead of always showing it.
 
+For `/commands` and Telegram's command menu (the ☰ button), see
+[Commands](commands.md).
+
 A message carries either inline buttons or a reply keyboard, never both. So
 pages keep their inline keyboards, and the menu is set by its own message.

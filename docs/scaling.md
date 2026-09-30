@@ -114,6 +114,9 @@ Bun.serve({ port: 8080, fetch: webhookCallback(bot, 'bun', { secretToken: proces
 await bot.api.setWebhook('https://bot.example.com', { secret_token: process.env.WEBHOOK_SECRET });
 ```
 
+On serverless and edge platforms (Cloudflare Workers, Deno Deploy, Vercel),
+see [Serverless and edge](serverless.md).
+
 [`examples/production.ts`](../examples/production.ts) puts it together:
 Redis or SQLite, `cluster`, webhooks or long polling, the scheduler, and
 logging of errors and spam.
