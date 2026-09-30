@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.3.1 (2026-09-30)
+
 ### Breaking
 
 See [docs/migration.md](docs/migration.md).
