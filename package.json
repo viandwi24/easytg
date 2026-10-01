@@ -1,6 +1,6 @@
 {
   "name": "easytg",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Page-based Telegram bot UIs on top of grammY: one page definition, rendered the same whether it is sent, replied or edited.",
   "license": "MIT",
   "author": "viandwi24",

@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.3.2 (2026-10-01)
+
 ### Added
 
 - **Dialogue steps** `multiChoice` (toggle options with ✅, then Done; `min`, `max`, `initial`), `number` (➖ / ➕ around the value, `bigStep`, `format`, or typed) and `date` (an inline calendar in the user's language, `min` / `max` as dates, strings or functions, or typed as `YYYY-MM-DD`). Answers are typed (`string[]` of the option values, `number`, `string`), and forged button values are refused. New built-in texts `chooseAtLeast`, `chooseAtMost`, `expectNumber`, `expectDate` are optional in `EasyTGTexts`, so existing translations keep compiling. See [docs/dialogues.md](docs/dialogues.md).
