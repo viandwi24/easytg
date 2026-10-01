@@ -21,10 +21,12 @@ const props = withDefaults(
     group?: boolean;
     /** Add two more users (switch between them at the top of the chat). */
     users?: boolean;
+    /** Telegram's rate limits (429) in the simulator. */
+    limits?: boolean;
     /** Read-only teaser: the bot runs, and a click opens it in the playground. */
     preview?: boolean;
   }>(),
-  { start: undefined, group: false, users: false, preview: false },
+  { start: undefined, group: false, users: false, limits: false, preview: false },
 );
 
 type Runner = typeof import('./runner');
@@ -97,7 +99,7 @@ async function run() {
   logs.value = [];
   calls.value = [];
   const code = editor?.state.doc.toString() ?? initialCode();
-  current = runner.runBot(code, { log, group: props.group || example.value?.group, users: props.users || example.value?.users });
+  current = runner.runBot(code, { log, group: props.group || example.value?.group, users: props.users || example.value?.users, rateLimits: props.limits || example.value?.rateLimits });
   const sim = current.sim;
   unsubscribe.push(
     sim.on('call', (call) => {

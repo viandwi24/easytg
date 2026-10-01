@@ -11,6 +11,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ServerWebSocket, Subprocess } from 'bun';
 import { TelegramSimulator, type SimChat, type SimMediaKind } from '../simulator';
+import { mermaidLiveUrl } from '../flow';
 import { generateTest, optionsCode, screenOf, type RecordedStep } from './testgen';
 
 export interface PreviewOptions {
@@ -72,6 +73,8 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
     for (const socket of sockets) socket.send(text);
   };
   let status: Status = 'starting';
+  /** The bot's latest flowchart (Mermaid), sent by its process. */
+  let flow = '';
   let restarts = 0;
   const setStatus = (next: Status) => {
     status = next;
@@ -184,6 +187,10 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
       await restart('🔄 Started over');
     },
     exportTest: async () => ({ code: generateTest(sim, steps, `./${relative(root, botFile)}`), steps: steps.length }),
+    addUser: async () => {
+      const user = sim.addUser({ first_name: NAMES[sim.users.size - 1] ?? `User ${sim.users.size + 1}` });
+      return user.id;
+    },
   };
 
   // ---- the server: chat window, websocket, Bot API, files ----
@@ -202,6 +209,11 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
           const data = files.get(url.pathname.split('/')[2]!);
           return data ? new Response(data) : new Response('Not Found', { status: 404 });
         }
+        if (url.pathname === '/_preview/flow' && request.method === 'POST') {
+          flow = await request.text();
+          broadcast({ type: 'flow', chart: flow, url: mermaidLiveUrl(flow) });
+          return new Response('ok');
+        }
         if (url.pathname === '/upload' && request.method === 'POST') {
           const id = store(await request.blob(), url.searchParams.get('name') ?? undefined).split('/')[2];
           return Response.json({ id });
@@ -215,6 +227,7 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
           socket.send(JSON.stringify({ type: 'state', state: snapshot() }));
           socket.send(JSON.stringify({ type: 'status', status, restarts, file: relative(root, botFile) }));
           socket.send(JSON.stringify({ type: 'logs', logs }));
+          if (flow) socket.send(JSON.stringify({ type: 'flow', chart: flow, url: mermaidLiveUrl(flow) }));
         },
         close(socket) {
           sockets.delete(socket);
@@ -357,7 +370,11 @@ const PAGE = `<!doctype html>
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   main { flex: 1; display: grid; grid-template-columns: minmax(320px, 520px) minmax(0, 1fr); gap: 16px; padding: 16px; min-height: 0; }
-  #chat { min-height: 0; }
+  main.split { grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr) minmax(280px, 0.8fr); }
+  #chat, #chat2 { min-height: 0; }
+  #chat2 { display: none; }
+  main.split #chat2 { display: block; }
+  .pane pre { margin: 0; white-space: pre; overflow: auto; }
   easytg-chat { --easytg-chat-height: 100%; height: 100%; }
   aside { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
   .tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
@@ -368,7 +385,13 @@ const PAGE = `<!doctype html>
   .err { color: var(--bad); } .info { color: var(--muted); }
   .pane b { font-weight: 600; }
   textarea { width: 100%; height: 100%; min-height: 300px; font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } aside { min-height: 300px; } #chat { height: 70vh; } }
+  @media (max-width: 900px) {
+    main, main.split { grid-template-columns: 1fr; padding: 10px; gap: 10px; }
+    #chat, #chat2 { height: 75vh; }
+    aside { min-height: 320px; }
+    header { padding: 8px 10px; }
+    header code { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -376,16 +399,19 @@ const PAGE = `<!doctype html>
   <b>easytg preview</b><code>%FILE%</code>
   <span id="status"><span class="dot"></span>connecting…</span>
   <span class="spacer"></span>
+  <button id="split" title="Two chat windows side by side, as two users">Two chats</button>
   <button id="restart" title="Restart the bot (keeps the chat)">Restart</button>
   <button id="reset" title="Clear the chats and restart the bot">Start over</button>
   <button id="export" class="primary" title="A bun test file that replays this conversation">Export test</button>
 </header>
 <main>
   <div id="chat"></div>
+  <div id="chat2"></div>
   <aside>
-    <div class="tabs"><button data-tab="logs" class="on">Bot output</button><button data-tab="calls">API calls</button><button data-tab="test">Test</button></div>
+    <div class="tabs"><button data-tab="logs" class="on">Bot output</button><button data-tab="calls">API calls</button><button data-tab="flow">Flow</button><button data-tab="test">Test</button></div>
     <div class="pane" id="logs"></div>
     <div class="pane" id="calls" hidden></div>
+    <div class="pane" id="flow" hidden><p class="info">Use the bot: its map (pages, dialogues, commands, and the buttons you pressed) appears here.</p></div>
     <div class="pane" id="test" hidden><p>Use the chat, then press <b>Export test</b>: the conversation becomes a <code>bun test</code> file.</p></div>
   </aside>
 </main>

@@ -32,6 +32,15 @@ export function relayBotId(bot: RelayBot): number {
   return 'me' in bot && bot.me ? bot.me.id : (bot as { botInfo: { id: number } }).botInfo.id;
 }
 
+/** How long relayed message pairs are remembered, for replies and edits. */
+const MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A message in a chat. */
+export interface RelayedMessage {
+  chat: number;
+  id: number;
+}
+
 export class RelayStore {
   constructor(private readonly storage: StorageAdapter) {}
 
@@ -56,6 +65,21 @@ export class RelayStore {
     await this.storage.set(this.key(botId, a), { peer: b, since, data: options.data } satisfies RelayLink, options.ttlMs);
     await this.storage.set(this.key(botId, b), { peer: a, since, data: options.data } satisfies RelayLink, options.ttlMs);
     return { ended };
+  }
+
+  private messageKey(botId: number, message: RelayedMessage) {
+    return `relaymsg:${botId}:${message.chat}:${message.id}`;
+  }
+
+  /** Remember that `a` and `b` are the same message on both sides (both ways). */
+  async pair(botId: number, a: RelayedMessage, b: RelayedMessage) {
+    await this.storage.set(this.messageKey(botId, a), b, MESSAGE_TTL_MS);
+    await this.storage.set(this.messageKey(botId, b), a, MESSAGE_TTL_MS);
+  }
+
+  /** The other side's copy of a relayed message (or the original of a copy). */
+  async counterpart(botId: number, message: RelayedMessage): Promise<RelayedMessage | undefined> {
+    return ((await this.storage.get(this.messageKey(botId, message))) as RelayedMessage | null) ?? undefined;
   }
 
   /** Ends the user's relay (both sides). Returns the link that ended, if any. */

@@ -91,3 +91,21 @@ describe('app.relay', () => {
     expect(() => app.relay.start(bot, ann, ann)).toThrow();
   });
 });
+
+test('replies point at the right message on the other side, and edits follow', async () => {
+  const { sim, bot, app, ann, bob } = setup();
+  await sim.send('/start', { user: bob });
+  await sim.send('/start');
+  await app.relay.start(bot, ann, bob);
+  const question = await sim.send('Coffee or tea?');
+  const copyForBob = sim.last(bob)!;
+  expect(copyForBob.message.text).toBe('Coffee or tea?');
+
+  // Bob replies to the copy he got; Ann sees a reply to her own message.
+  await sim.send('Tea!', { user: bob, replyTo: copyForBob.message.message_id });
+  expect(sim.last(ann)!.message.reply_to_message?.message_id).toBe(question.message.message_id);
+
+  // Ann edits her question; Bob's copy changes too.
+  await sim.editMessage(question.message.message_id, 'Coffee or tea, or water?');
+  expect(sim.messages(bob).find((m) => m.message.message_id === copyForBob.message.message_id)!.message.text).toBe('Coffee or tea, or water?');
+});

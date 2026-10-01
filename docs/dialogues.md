@@ -31,6 +31,9 @@ await app.startDialogue(ctx, signup);
 | `contact` | `DialogueContact` | "📱 Share my contact" button; only the user's own number unless `allowOthers` |
 | `location` | `DialogueLocation` | "📍 Share my location" button (`button` to relabel) |
 | `webApp` | the data a [Mini App](mini-apps.md) sends (parsed JSON), or the output of `schema` | a button that opens `url`; private chats only |
+| `multiChoice` | the chosen option values, in option order | toggle buttons (✅) and Done; `min` (default 1), `max`, `initial`, `columns` |
+| `number` | `number` | ➖ / ➕ buttons (`step`, default 1; `bigStep` adds ⏪ / ⏩) around the value, then Done; or typed. `min`, `max`, `initial`, `format` |
+| `date` | `'YYYY-MM-DD'` | an inline calendar in the user's language, month by month; or typed as `2026-12-31`. `min`, `max`, `initial`, `weekStartsOn` |
 
 `contact`, `location` and `choice` with `reply: true` put their buttons on
 the **reply keyboard**, including Back and Cancel. When the dialogue moves on to
@@ -45,6 +48,69 @@ dialogue('checkout').steps([   // answers: { size, phone: DialogueContact, where
   { id: 'where', type: 'location', text: 'Delivery address?' },
 ]);
 ```
+
+### Several options, numbers and dates
+
+```ts
+dialogue('booking').steps([
+  // A calendar from today to 60 days ahead. Functions are evaluated each time: "today" stays today.
+  { id: 'day', type: 'date', text: 'Which day?', min: () => new Date(), max: () => new Date(Date.now() + 60 * 86_400_000) },
+  { id: 'guests', type: 'number', text: 'How many guests?', min: 1, max: 12, initial: 2, format: (n) => `${n} guests` },
+  { id: 'extras', type: 'multiChoice', text: 'Anything else?', min: 0, columns: 2,
+    options: [{ text: '🪟 Window seat', value: 'window' }, { text: '🎂 Birthday', value: 'birthday' }] },
+]); // answers: { day: string; guests: number; extras: ('window' | 'birthday')[] }
+```
+
+- The buttons change in place: a toggle, ➕ or the next month edits the
+  prompt's keyboard instead of sending a new message.
+- Values from buttons are checked like typed ones (options offered, number
+  and date in range), so forged callback data gets "This button is no longer
+  active".
+- `date`: month and weekday names follow the user's language (`Intl`);
+  `min` / `max` / `initial` take a `Date`, a `YYYY-MM-DD` string or a
+  function returning one. Days out of range show as `·`. Dates are calendar
+  days in the server's time zone.
+- `number`: a typed number in range is accepted too (`4`, `2.5`); `format`
+  only changes how the value is shown.
+- New built-in texts (`chooseAtLeast`, `chooseAtMost`, `expectNumber`,
+  `expectDate`) are optional in `EasyTGTexts`, so translations written
+  before keep compiling; English is used where they are missing.
+
+[`examples/booking.ts`](../examples/booking.ts) is a table reservation with
+all three.
+
+```ts playground start="/book"
+import { Bot } from 'grammy';
+import { EasyTG, dialogue, md } from 'easytg';
+
+const book = dialogue('book')
+  .steps([
+    { id: 'day', type: 'date', text: '📅 Which day?', min: () => new Date(), max: () => new Date(Date.now() + 60 * 86_400_000) },
+    { id: 'guests', type: 'number', text: '👥 How many guests?', min: 1, max: 12, initial: 2, bigStep: 5 },
+    {
+      id: 'extras',
+      type: 'multiChoice',
+      text: '✨ Anything else?',
+      min: 0,
+      columns: 2,
+      options: [
+        { text: '🪟 Window', value: 'window' },
+        { text: '🎂 Birthday', value: 'birthday' },
+        { text: '👶 High chair', value: 'highchair' },
+      ],
+    },
+  ])
+  .onFinish(({ answers }) => ({
+    text: md`✅ ${answers.day}, ${answers.guests} guests${answers.extras.length ? md`, ${answers.extras.join(', ')}` : ''}`,
+  }));
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG().command('book', book, { description: 'Book a table' });
+bot.use(app);
+bot.start();
+```
+
+### Step options
 
 - `validate(value, helpers)` returns `true` or nothing for valid, `false` for
   invalid with the generic message, or a string for invalid with that message.
@@ -61,7 +127,8 @@ dialogue('checkout').steps([   // answers: { size, phone: DialogueContact, where
 - The step `text` can be a function of `{ ctx, session, locale, t, params, answers, nav, app }`,
   and `steps(...)` a function of `{ ctx, params, answers, t }` (see [Languages](i18n.md)).
 - `when(helpers)` (any step) decides whether the step is asked, from the
-  answers so far; it can be async.
+  answers so far; it can be async. It runs once the dialogue gets to that
+  step, so every earlier answer is there.
 - Params arrive as strings, however the dialogue was started (a button,
   `nav.startDialogue(d, { id: 42 })`, `app.startDialogue`).
 - A Back button appears from step 2 (`.allowBack(false)` hides it). Cancel is
@@ -118,6 +185,8 @@ hand:
 | `choice` | the union of its option values (`'free' \| 'pro'`) |
 | `file`, `collect`, `contact`, `location` | `DialogueFile`, `Collected`, `DialogueContact`, `DialogueLocation` |
 | `webApp` | the output of its `schema`, else `unknown` |
+| `multiChoice` | an array of its option values (`('window' \| 'birthday')[]`) |
+| `number`, `date` | `number`, `string` (`YYYY-MM-DD`) |
 | any step with `when` | optional (it may be skipped) |
 
 A misspelled answer (`answers.nmae`) is then a compile error. A few things

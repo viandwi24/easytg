@@ -157,6 +157,11 @@ const sim = new RemoteSimulator((message) => {
     for (const entry of message.logs) addLine(logs, esc(entry.line), entry.stream);
   } else if (message.type === 'log') {
     addLine(logs, esc(message.line), message.stream);
+  } else if (message.type === 'flow') {
+    const pane = $('#flow');
+    pane.innerHTML = `<p><button id="copy-flow">Copy</button> <a href="${esc(message.url)}" target="_blank" rel="noopener"><button>Open in Mermaid Live</button></a> <span class="info">Paste it into GitHub Markdown in a \`\`\`mermaid block.</span></p><pre></pre>`;
+    pane.querySelector('pre')!.textContent = message.chart;
+    (pane.querySelector('#copy-flow') as HTMLButtonElement).onclick = () => void navigator.clipboard.writeText(message.chart);
   } else if (message.type === 'call') {
     const { method, payload, error, at } = message.call;
     addLine(calls, `<b>${esc(method)}</b> <span class="info">${new Date(at).toLocaleTimeString()}</span>${error ? `<br><span class="err">${esc(error)}</span>` : ''}<br><span class="info">${esc(JSON.stringify(payload))}</span>`);
@@ -164,6 +169,18 @@ const sim = new RemoteSimulator((message) => {
 });
 
 mountChat($('#chat'), sim as unknown as TelegramSimulator, { theme: 'auto' });
+
+// "Two chats": a second window, as another user (added when there is none).
+let second: HTMLElement | undefined;
+$('#split').onclick = async () => {
+  const main = document.querySelector('main')!;
+  const on = !main.classList.contains('split');
+  main.classList.toggle('split', on);
+  $('#split').textContent = on ? 'One chat' : 'Two chats';
+  if (!on || second) return;
+  const other = [...sim.users.keys()][1] ?? (await sim.call<number>('addUser'));
+  second = mountChat($('#chat2'), sim as unknown as TelegramSimulator, { theme: 'auto', user: other, chat: other });
+};
 
 // Tabs.
 for (const tab of document.querySelectorAll<HTMLButtonElement>('.tabs button')) {

@@ -51,6 +51,7 @@ export default defineConfig({
           { text: 'Media', link: '/docs/media' },
           { text: 'Main menu', link: '/docs/menu' },
           { text: 'Commands', link: '/docs/commands' },
+          { text: 'Flow map', link: '/docs/flowchart' },
           { text: 'Dialogues', link: '/docs/dialogues' },
           { text: 'Text input', link: '/docs/text-input' },
           { text: 'Text formatting', link: '/docs/formatting' },
@@ -137,6 +138,7 @@ export default defineConfig({
         if (start !== undefined) attrs.push(`start="${md.utils.escapeHtml(start)}"`);
         if (info.includes('group')) attrs.push('group');
         if (info.includes('users')) attrs.push('users');
+        if (info.includes('limits')) attrs.push('limits');
         return `<ClientOnly><Playground ${attrs.join(' ')} /></ClientOnly>\n`;
       };
     },

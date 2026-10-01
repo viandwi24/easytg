@@ -126,7 +126,12 @@ sim.calls;                                                 // the last 200 calls
 ```
 
 `new TelegramSimulator({ latencyMs: 300 })` delays every API call, to see
-loading indicators. `sim.clearHistory(chatId?)` empties one chat like
+loading indicators. `rateLimits: true` answers floods with Telegram's
+`429 Too Many Requests: retry after N` (30 messages per second overall, 20
+per minute per group, counted in fixed windows like `app.throttle`); pass
+`{ global, groupChat, privateChat }` rules (`{ limit, perMs }` or `false`) for
+your own. Sending, copying, forwarding and editing count, an album one per
+item. `sim.clearHistory(chatId?)` empties one chat like
 Telegram's "Clear history" (the bot isn't told), and `sim.reset()` forgets
 all chats.
 

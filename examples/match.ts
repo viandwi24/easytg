@@ -149,14 +149,11 @@ const chat = page<{ id: string }>('chat').render(async ({ ctx, params, app }) =>
   const me = profiles.get(ctx.from!.id);
   if (!them || !me || them.demo) return;
   await app.relay.start(ctx, me.id, them.id);
+  // Both sides lose the ❤️ 💌 👎 💤 keyboard while chatting, so those labels are sent as messages.
   await app.hideMenu(ctx, md`💬 You're chatting with **${them.name}**. Send anything: it goes to them through the bot. /end to stop.`);
-  await app.sendTo(bot, them.id, chatting, { id: String(me.id) });
-});
-
-/** For the other side: they didn't press anything, the chat just started. */
-const chatting = page<{ id: string }>('chatting').render(({ params }) => {
-  const them = profiles.get(Number(params.id));
-  return { text: md`💬 **${them?.name ?? 'Your match'}** started a chat with you. Messages you send go to them. /end to stop.` };
+  await app.withUser(bot, them.id, ({ ctx: theirs }) =>
+    app.hideMenu(theirs, md`💬 **${me.name}** started a chat with you. Messages you send go to them. /end to stop.`),
+  );
 });
 
 const endChat = page('end-chat').render(async ({ ctx, app, nav }) => {
@@ -266,7 +263,7 @@ if (!token) {
 
 const bot = new Bot(token);
 const app = new EasyTG({ menu: reactions })
-  .register(card, like, skip, pause, note, matched, likedYou, admirer, likeBack, chat, chatting, chatEnded, browse, signup)
+  .register(card, like, skip, pause, note, matched, likedYou, admirer, likeBack, chat, chatEnded, browse, signup)
   .command('start', home, { description: 'Main menu' })
   .command('profile', myProfile, { description: 'Your profile' })
   .command('end', endChat, { description: 'End the current chat' });

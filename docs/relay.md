@@ -11,7 +11,13 @@ await app.relay.end(ctx, ctx.from!.id);                        // ends it for bo
 ```
 
 - Messages are copied with `copyMessage`: text, photos, voice notes, files,
-  locations… arrive from the bot. Edits and replies aren't carried over.
+  locations… arrive from the bot.
+- A reply to a relayed message is a reply to its counterpart on the other
+  side, and editing a message edits its copy (text and captions). Message
+  pairs are kept for 7 days in the session storage.
+- Service messages (Mini App data, payments, pins) aren't relayed: they go
+  on to their handlers. Telegram doesn't tell bots when someone is typing,
+  so "typing…" can't be passed on.
 - /commands, [menu](menu.md) buttons, active [dialogues](dialogues.md) and
   buttons keep working as usual and aren't relayed, so a `/end` command (and
   anything else) stays available.
@@ -97,5 +103,9 @@ await app.syncCommands(bot);
 bot.start();
 ```
 
-[`examples/match.ts`](../examples/match.ts) uses a relay for matches who
-want to chat.
+[`examples/support.ts`](../examples/support.ts) is a support desk: customers
+open tickets, an agent takes one and they talk through a relay, with a link
+filter and a rating at the end. [`examples/match.ts`](../examples/match.ts)
+uses a relay for matches who want to chat, and hides both users' reply
+keyboards while they do (`app.hideMenu`, and `app.withUser` for the other
+side).

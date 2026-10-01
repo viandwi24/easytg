@@ -63,6 +63,7 @@ export type { Translate, TranslateVars, Messages, Message, PluralMessage } from 
 export { defaultTexts, type EasyTGTexts } from './texts';
 export type { Logger } from './logger';
 export type { CommandChats, CommandOptions } from './commands';
+export { mermaidLiveUrl, type FlowEdge, type FlowEdgeKind, type FlowchartOptions } from './flow';
 export type { RelayBot, RelayEndReason, RelayLink, RelayStartOptions } from './relay';
 export { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient, retryAfterMs } from './errors';
 export { autoRetry, type AutoRetryOptions } from './retry';

@@ -25,7 +25,9 @@ export class Nav<C extends Context = Context> {
   button<P = Params>(text: string, target: Target<P>, ...args: ParamsArgs<P>): InlineKeyboardButton;
   button(text: string, target: string, params?: ParamsInput, options?: ButtonOptions): InlineKeyboardButton;
   button(text: string, target: Target<any> | string, params?: ParamsInput, options?: ButtonOptions): InlineKeyboardButton {
-    return { text, callback_data: this.data(target as string, params, options) };
+    const id = typeof target === 'string' ? target : target.id;
+    this.app.noteFlow(this.ctx, id, 'button', text);
+    return { text, callback_data: this.app.callbackData(this.ctx, id, params, options) };
   }
 
   /** Raw callback data for a page or dialogue (for hand-built keyboards). */
@@ -33,6 +35,7 @@ export class Nav<C extends Context = Context> {
   data(target: string, params?: ParamsInput, options?: ButtonOptions): string;
   data(target: Target<any> | string, params?: ParamsInput, options?: ButtonOptions): string {
     const id = typeof target === 'string' ? target : target.id;
+    this.app.noteFlow(this.ctx, id, 'button');
     return this.app.callbackData(this.ctx, id, params, options);
   }
 
@@ -99,13 +102,16 @@ export class Nav<C extends Context = Context> {
   redirect<P = Params>(target: Page<P, any, any>, ...args: ParamArgs<P>): Redirect;
   redirect(target: string, params?: ParamsInput): Redirect;
   redirect(target: Page<any, any, any> | string, params?: ParamsInput): Redirect {
-    return new Redirect(typeof target === 'string' ? target : target.id, normalizeParams(params));
+    const id = typeof target === 'string' ? target : target.id;
+    this.app.noteFlow(this.ctx, id, 'redirect');
+    return new Redirect(id, normalizeParams(params));
   }
 
   /** Return this from a render to start a dialogue (the current menu is closed). */
   startDialogue<P = Params>(dialogue: Dialogue<any, P, any>, ...args: ParamArgs<P>): DialogueStart;
   startDialogue(dialogue: Dialogue<any, any, any>, params?: ParamsInput): DialogueStart {
     // Strings, like when the dialogue is started from a button.
+    this.app.noteFlow(this.ctx, dialogue.id, 'dialogue');
     return new DialogueStart(dialogue.id, normalizeParams(params));
   }
 

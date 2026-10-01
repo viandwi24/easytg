@@ -20,6 +20,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `MemoryStorage`, `SqliteStorage`, `RedisStorage`, `withPrefix` | [Storage](storage.md) |
 | `autoRetry(options)` | API transformer for 429s — [Error helpers](errors.md#autoretry) |
 | `verifyInitData`, `verifyInitDataSignature`, `miniAppLink`, `WebAppAuthError` | [Mini Apps](mini-apps.md) |
+| `mermaidLiveUrl(chart)` | a link that opens a diagram in Mermaid Live — [Flow map](flowchart.md) |
 | `Auto` | "infer the answers from the steps": `dialogue<Auto, Params>(id)` — [Dialogues](dialogues.md#typed-answers) |
 | `isChatUnreachable`, `isMessageNotFound`, `isTransient`, `retryAfterMs` | [Error helpers](errors.md) |
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
@@ -39,6 +40,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `app.register(...items)` | pages, dialogues and tasks |
 | `app.command(names, target, { description, chats, params })` | a `/command` that opens a page or starts a dialogue — [Commands](commands.md) |
 | `app.syncCommands(bot)` | Telegram's command menu from the commands with a description |
+| `app.flowchart({ direction, observed })` | the bot's pages, dialogues, commands and the buttons seen, as a Mermaid diagram — [Flow map](flowchart.md) |
 | `bot.use(app)` | handle updates; register before your own handlers |
 | `app.on(event, listener)` | returns an unsubscribe function — [Events](events.md) |
 

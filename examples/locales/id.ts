@@ -37,4 +37,9 @@ export const id: EasyTGTexts = {
   collectMin: (min) => (min <= 1 ? 'Anda belum mengirim apa pun.' : `Kirim minimal ${min} item.`),
   collectReceived: ({ total, done }) => `Diterima ${total} item. Kirim lagi, atau tekan ${done}.`,
   collectLimit: ({ max, done }) => `Maksimal ${max} item. Tekan ${done} untuk melanjutkan.`,
+  chooseAtLeast: (min) => (min <= 1 ? 'Pilih minimal satu opsi.' : `Pilih minimal ${min} opsi.`),
+  chooseAtMost: (max) => `Anda hanya bisa memilih maksimal ${max}.`,
+  expectNumber: ({ min, max }) =>
+    min !== undefined && max !== undefined ? `Kirim angka dari ${min} sampai ${max}.` : min !== undefined ? `Kirim angka minimal ${min}.` : max !== undefined ? `Kirim angka maksimal ${max}.` : 'Kirim sebuah angka.',
+  expectDate: 'Pilih tanggal, atau kirim seperti 2026-12-31.',
 };

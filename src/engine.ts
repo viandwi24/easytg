@@ -20,8 +20,9 @@ import { CallbackStore, type CallbackParamsMode, type StoredCallback } from './c
 import type { Dialogue, Page, Task, TaskBot } from './define';
 import { DialogueRunner, isCommand, parseWebAppData } from './dialogue';
 import { Commands, type CommandOptions } from './commands';
+import { FlowRecorder, toMermaid, type FlowEdge, type FlowEdgeKind, type FlowchartOptions } from './flow';
 import { RelayStore, relayBotId, type RelayBot, type RelayEndReason, type RelayLink, type RelayStartOptions } from './relay';
-import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isTransient } from './errors';
+import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isMessageUnavailable, isNotModified, isTransient } from './errors';
 import { Scheduler, type ScheduleOptions, type SchedulerOptions, type TaskErrorEvent } from './scheduler';
 import type { ParseMode, TextInput } from './format';
 import { createConsoleLogger, silentLogger, type Logger } from './logger';
@@ -452,6 +453,8 @@ interface UpdateScope {
   allowedUsers?: number[];
   /** `app.t(ctx)`, created once. */
   t?: Translate;
+  /** The page or dialogue whose render (or onFinish) is running: where `nav` buttons lead from, for `flowchart`. */
+  flowFrom?: string;
   userSession?: Promise<Session>;
   /** Loaded sessions, for synchronous access. */
   stateValue?: Session;
@@ -526,6 +529,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly commands = new Commands<Page<any, any, any> | Dialogue<any, any, any>>();
   private readonly localeNames: string[];
   private readonly relays: RelayStore;
+  private readonly flow = new FlowRecorder();
   private readonly relayFilter?: RelayOptions<C>['filter'];
   private readonly fallbackLocale: string;
   /** @internal */ readonly mediaToText: 'replace' | 'keep';
@@ -602,6 +606,9 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     this.localeFn = i18n.locale;
     this.fallbackLocale = i18n.fallbackLocale ?? 'en';
     this.relays = new RelayStore(this.sessionStorage);
+    // Found by tooling in the same process (`easytg preview` reads flowcharts); weakly held.
+    const registry = ((globalThis as Record<symbol, unknown>)[Symbol.for('easytg.apps')] ??= new Set<WeakRef<object>>()) as Set<WeakRef<object>>;
+    registry.add(new WeakRef(this));
     this.relayFilter = options.relay?.filter;
     this.localeNames = [...new Set([...Object.keys(i18n.messages ?? {}), ...Object.keys(i18n.locales ?? {})].map(normalizeLocale))];
 
@@ -700,6 +707,37 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     peer: (bot, userId) => this.relays.get(relayBotId(bot), userId),
   };
 
+  /**
+   * The bot's flow as a Mermaid diagram: pages, dialogues, the /commands and
+   * menu buttons that open them, and the buttons, redirects and dialogue
+   * starts seen while the bot ran in this process (use it, or run your tests
+   * or `easytg preview`, first). Paste it into GitHub Markdown or mermaid.live.
+   */
+  flowchart(options: FlowchartOptions = {}): string {
+    const edges: FlowEdge[] = this.commands.list().map((c) => ({ from: `/${c.name}`, to: c.target.id, kind: 'command' }));
+    const t = this.translator.for(this.fallbackLocale);
+    for (const row of this.menu?.rows ?? []) {
+      for (const button of row) {
+        if (!('target' in button)) continue;
+        const label = typeof button.text === 'function' ? button.text(this.fallbackLocale, t) : button.text;
+        edges.push({ from: label, to: button.target.id, kind: 'menu' });
+      }
+    }
+    if (options.observed !== false) edges.push(...this.flow.all);
+    return toMermaid({ pages: [...this.pages.keys()], dialogues: [...this.dialogueDefs.keys()], edges, direction: options.direction });
+  }
+
+  /** @internal A `nav` button, redirect or dialogue start, from the screen being rendered. */
+  noteFlow(ctx: C, to: string, kind: FlowEdgeKind, label?: string) {
+    const from = this.scope(ctx).flowFrom;
+    if (from && (this.pages.has(to) || this.dialogueDefs.has(to))) this.flow.record({ from, to, kind, label });
+  }
+
+  /** @internal What `nav` calls lead from (a dialogue's onFinish / onCancel). */
+  setFlowSource(ctx: C, id: string) {
+    this.scope(ctx).flowFrom = id;
+  }
+
   hasPage(id: string) {
     return this.pages.has(id);
   }
@@ -795,6 +833,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       }
       if (ctx.callbackQuery?.data) {
         if (await this.handleCallback(ctx)) return;
+      } else if (ctx.editedMessage) {
+        if (await this.handleRelayEdit(ctx)) return;
       } else if (ctx.message) {
         if (await this.handleMenu(ctx)) return;
         if (await this.handleMessage(ctx)) return;
@@ -2016,6 +2056,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const message = ctx.message;
     const from = ctx.from;
     if (!message || !from || message.chat.type !== 'private' || isCommand(message, ctx.me?.username)) return false;
+    // Service messages (Mini App data, payments, pins…) can't be copied: they go on to their handlers.
+    if (message.web_app_data || message.successful_payment || message.pinned_message || message.refunded_payment) return false;
     const botId = ctx.me.id;
     const link = await this.relays.get(botId, from.id);
     if (!link) return false;
@@ -2026,7 +2068,12 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         await ctx.reply(verdict);
         return true;
       }
-      await ctx.api.copyMessage(link.peer, message.chat.id, message.message_id);
+      // A reply to a relayed message replies to its counterpart on the other side.
+      const repliedTo = message.reply_to_message && (await this.relays.counterpart(botId, { chat: message.chat.id, id: message.reply_to_message.message_id }));
+      const copy = await ctx.api.copyMessage(link.peer, message.chat.id, message.message_id, {
+        ...(repliedTo?.chat === link.peer ? { reply_parameters: { message_id: repliedTo.id, allow_sending_without_reply: true } } : {}),
+      });
+      await this.relays.pair(botId, { chat: message.chat.id, id: message.message_id }, { chat: link.peer, id: copy.message_id });
       await this.emit('relayMessage', { ctx, from: from.id, to: link.peer, messageId: message.message_id });
     } catch (error) {
       if (isChatUnreachable(error)) {
@@ -2038,6 +2085,22 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       try {
         await ctx.reply(this.textsFor(ctx).error);
       } catch {}
+    }
+    return true;
+  }
+
+  /** An edited message that was relayed: edit its copy too. False if it wasn't relayed. */
+  private async handleRelayEdit(ctx: C): Promise<boolean> {
+    const edited = ctx.editedMessage;
+    if (!edited || edited.chat.type !== 'private' || !ctx.from) return false;
+    const copy = await this.relays.counterpart(ctx.me.id, { chat: edited.chat.id, id: edited.message_id });
+    if (!copy) return false;
+    try {
+      if (edited.text !== undefined) await ctx.api.editMessageText(copy.chat, copy.id, edited.text, { entities: edited.entities });
+      else if (edited.caption !== undefined) await ctx.api.editMessageCaption(copy.chat, copy.id, { caption: edited.caption, caption_entities: edited.caption_entities });
+    } catch (error) {
+      // Gone, too old to edit, or unchanged: nothing to do.
+      if (!isMessageUnavailable(error) && !isNotModified(error)) await this.reportError(error, ctx);
     }
     return true;
   }
@@ -2092,6 +2155,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     if (message.chat.type !== 'private' && message.reply_to_message?.message_id !== input.messageId) return false;
 
     const { mode = 'send', deleteInput = false } = page.textOptions;
+    this.scope(ctx).flowFrom = page.id;
     try {
       if (mode === 'edit') this.scope(ctx).editTarget = { chatId: message.chat.id, messageId: input.messageId };
       await this.show(ctx, page.id, mode, () =>
@@ -2425,6 +2489,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   }
 
   private renderPage(ctx: C, page: Page<any, C, any>, params: Record<string, string>): Promise<RenderResult> {
+    this.scope(ctx).flowFrom = page.id;
     return this.guard(ctx, page, params, async ({ target: _target, ...args }) => {
       this.scope(ctx).view = { id: page.id, params };
       const renderArgs: RenderArgs<any, C> = { ...args, params: await this.parseParams(page, params), page };

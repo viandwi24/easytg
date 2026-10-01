@@ -3,6 +3,7 @@ import type { InlineKeyboardButton, KeyboardButton, Message, ReplyKeyboardMarkup
 import type { Dialogue } from './define';
 import { EasyTGError } from './errors';
 import { validateSchema, type StandardSchemaV1 } from './schema';
+import { addStep, calendar, inRange, numberInRange, parseIsoDate, resolveDate, startMonth, validMonth } from './steps';
 import type { EasyTG } from './engine';
 import type { Session } from './session';
 import type {
@@ -29,6 +30,10 @@ interface DialogueState {
   /** Prompt/ack/error messages to clean up on the next input. */
   messages: number[];
   collected?: Collected;
+  /** Options chosen so far in a `multiChoice` step. */
+  selected?: string[];
+  /** What a `number` / `date` widget shows now (the number, the month), kept when the prompt is sent again. */
+  view?: string;
   /** The last prompt put buttons on the reply keyboard; they must be replaced when moving on. */
   replyKeyboard?: boolean;
   /** Last activity (ms), for timeouts. */
@@ -44,7 +49,7 @@ function usesReplyKeyboard(step: DialogueStep<any, any>) {
 }
 
 /** Control button kinds, carried as `k` in the callback params. */
-const Kind = { Choice: 'c', Action: 'a', Back: 'b', Cancel: 'x', Done: 'd' } as const;
+const Kind = { Choice: 'c', Action: 'a', Back: 'b', Cancel: 'x', Done: 'd', Toggle: 't', Set: 'n', Page: 'p', Pick: 'y', Noop: 'o' } as const;
 type Kind = (typeof Kind)[keyof typeof Kind];
 
 export function extractFile(message: Message): DialogueFile | undefined {
@@ -183,6 +188,18 @@ export class DialogueRunner<C extends Context> {
         return this.reject(ctx, session, def, state, texts.expectLocation);
       case 'webApp':
         return this.reject(ctx, session, def, state, texts.expectWebApp);
+      case 'multiChoice':
+        return this.reject(ctx, session, def, state, texts.expectChoice);
+      case 'number': {
+        const value = text === undefined ? NaN : Number(text.trim().replace(',', '.'));
+        if (text === undefined || !text.trim() || !numberInRange(value, step)) return this.reject(ctx, session, def, state, texts.expectNumber!(step));
+        return this.submit(ctx, session, def, state, step, value);
+      }
+      case 'date': {
+        const date = text === undefined ? undefined : parseIsoDate(text);
+        if (!date || !inRange(date, resolveDate(step.min), resolveDate(step.max))) return this.reject(ctx, session, def, state, texts.expectDate!);
+        return this.submit(ctx, session, def, state, step, date);
+      }
     }
   }
 
@@ -220,7 +237,55 @@ export class DialogueRunner<C extends Context> {
       case Kind.Cancel:
         await this.cancel(ctx, { render: true, keepMessageId: ctx.callbackQuery?.message?.message_id });
         return true;
+      case Kind.Toggle: {
+        if (step.type !== 'multiChoice' || !step.options.some((o) => o.value === params.v)) return false;
+        const selected = this.selection(state, step);
+        if (selected.includes(params.v!)) state.selected = selected.filter((v) => v !== params.v);
+        else if (step.max !== undefined && selected.length >= step.max) {
+          await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtMost!(step.max), show_alert: true });
+          return true;
+        } else state.selected = [...selected, params.v!];
+        this.save(session, state);
+        await this.refresh(ctx, session, def, state, step);
+        return true;
+      }
+      case Kind.Set: {
+        const value = Number(params.v);
+        if (step.type !== 'number' || !numberInRange(value, step)) return false;
+        await this.refresh(ctx, session, def, state, step, params.v);
+        return true;
+      }
+      case Kind.Page: {
+        if (step.type !== 'date' || !validMonth(params.v ?? '', resolveDate(step.min), resolveDate(step.max))) return false;
+        await this.refresh(ctx, session, def, state, step, params.v);
+        return true;
+      }
+      case Kind.Pick: {
+        const date = step.type === 'date' ? parseIsoDate(params.v ?? '') : undefined;
+        if (step.type !== 'date' || !date || !inRange(date, resolveDate(step.min), resolveDate(step.max))) return false;
+        await this.submit(ctx, session, def, state, step, date);
+        return true;
+      }
+      case Kind.Noop:
+        return true;
       case Kind.Done: {
+        if (step.type === 'multiChoice') {
+          const selected = this.selection(state, step);
+          const min = step.min ?? 1;
+          if (selected.length < min) {
+            await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtLeast!(min), show_alert: true });
+            return true;
+          }
+          // In the order of the options, whatever order they were pressed in.
+          await this.submit(ctx, session, def, state, step, step.options.map((o) => o.value).filter((v) => selected.includes(v)));
+          return true;
+        }
+        if (step.type === 'number') {
+          const value = Number(params.v);
+          if (!numberInRange(value, step)) return false;
+          await this.submit(ctx, session, def, state, step, value);
+          return true;
+        }
         if (step.type !== 'collect') return false;
         const items = state.collected ?? { texts: [], files: [] };
         const min = step.min ?? 1;
@@ -252,6 +317,7 @@ export class DialogueRunner<C extends Context> {
     await this.clear(ctx, state, options.keepMessageId);
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).cancelled);
     await this.app.emit('dialogueCancel', { ctx, dialogue: def.id, params: state.params, answers: state.answers, reason: options.reason ?? (options.render ? 'user' : 'command') });
+    this.app.setFlowSource(ctx, def.id);
     const result = def.cancelFn ? await def.cancelFn(this.endArgs(ctx, session, state)) : undefined;
 
     if (options.render) {
@@ -268,6 +334,8 @@ export class DialogueRunner<C extends Context> {
     state.step -= 1;
     if (previous) delete state.answers[previous.id];
     delete state.collected;
+    delete state.selected;
+    delete state.view;
     this.save(session, state);
     await this.show(ctx, session, def, state);
   }
@@ -331,7 +399,14 @@ export class DialogueRunner<C extends Context> {
     if (!steps.some((step) => step.when)) return steps;
     const helpers = this.helpers(ctx, undefined as never, state);
     const asked: AnyStep<C>[] = [];
-    for (const step of steps) if (!step.when || (await step.when(helpers))) asked.push(step);
+    for (const step of steps) {
+      // `when` is asked once the dialogue gets there: every step before it is
+      // answered, so it can rely on those answers. Steps further ahead are
+      // counted as asked for now (only the steps up to the current one matter).
+      const reached = asked.every((s) => s.id in state.answers);
+      if (step.when && reached && !(await step.when(helpers))) continue;
+      asked.push(step);
+    }
     return asked;
   }
 
@@ -370,11 +445,57 @@ export class DialogueRunner<C extends Context> {
       await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     }
 
+    const keyboard = this.inlineKeyboard(ctx, def, state, step);
+    await this.sendTracked(ctx, session, state, { text, ...media, keyboard });
+  }
+
+  /** The prompt's inline buttons. `view`: what a widget shows now (a number, a calendar month). */
+  private inlineKeyboard(ctx: C, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>, view = state.view): InlineKeyboardButton[][] {
     const keyboard: InlineKeyboardButton[][] = [];
-    if (step.type === 'choice') {
-      const columns = Math.max(1, step.columns ?? 1);
-      for (let i = 0; i < step.options.length; i += columns) {
-        keyboard.push(step.options.slice(i, i + columns).map((o) => this.button(ctx, state, step, o.text, Kind.Choice, o.value)));
+    const texts = this.app.textsFor(ctx);
+    const grid = (options: readonly { text: string; value: string }[], columns: number | undefined, label: (o: { text: string; value: string }) => string, kind: Kind) => {
+      const perRow = Math.max(1, columns ?? 1);
+      for (let i = 0; i < options.length; i += perRow) {
+        keyboard.push(options.slice(i, i + perRow).map((o) => this.button(ctx, state, step, label(o), kind, o.value)));
+      }
+    };
+    if (step.type === 'choice') grid(step.options, step.columns, (o) => o.text, Kind.Choice);
+    if (step.type === 'multiChoice') {
+      const selected = this.selection(state, step);
+      grid(step.options, step.columns, (o) => (selected.includes(o.value) ? `✅ ${o.text}` : o.text), Kind.Toggle);
+      keyboard.push([this.button(ctx, state, step, texts.done, Kind.Done)]);
+    }
+    if (step.type === 'number') {
+      const start = step.initial ?? step.min ?? 0;
+      const value = view !== undefined ? Number(view) : Math.min(step.max ?? Infinity, Math.max(step.min ?? -Infinity, start));
+      const move = (label: string, delta: number | undefined) => {
+        if (!delta) return [];
+        const next = addStep(value, delta);
+        return [numberInRange(next, step) ? this.button(ctx, state, step, label, Kind.Set, String(next)) : this.button(ctx, state, step, ' ', Kind.Noop)];
+      };
+      keyboard.push([
+        ...move('⏪', step.bigStep && -step.bigStep),
+        ...move('➖', -(step.step ?? 1)),
+        this.button(ctx, state, step, step.format ? step.format(value) : String(value), Kind.Noop),
+        ...move('➕', step.step ?? 1),
+        ...move('⏩', step.bigStep),
+      ]);
+      keyboard.push([this.button(ctx, state, step, texts.done, Kind.Done, String(value))]);
+    }
+    if (step.type === 'date') {
+      const min = resolveDate(step.min);
+      const max = resolveDate(step.max);
+      const month = view ?? startMonth(resolveDate(step.initial), min, max);
+      const cal = calendar(month, { min, max, weekStartsOn: step.weekStartsOn, locale: this.app.localeOf(ctx) });
+      const noop = (label: string) => this.button(ctx, state, step, label, Kind.Noop);
+      keyboard.push([
+        cal.previous ? this.button(ctx, state, step, '‹', Kind.Page, cal.previous) : noop(' '),
+        noop(cal.title),
+        cal.next ? this.button(ctx, state, step, '›', Kind.Page, cal.next) : noop(' '),
+      ]);
+      keyboard.push(cal.weekdays.map(noop));
+      for (const week of cal.weeks) {
+        keyboard.push(week.map((day) => (!day ? noop(' ') : day.enabled ? this.button(ctx, state, step, String(day.day), Kind.Pick, day.iso) : noop('·'))));
       }
     }
     if (step.actions?.length) {
@@ -382,9 +503,26 @@ export class DialogueRunner<C extends Context> {
     }
     // A collect step shown again (after an error) keeps its Done button for what was sent so far.
     const collected = step.type === 'collect' && state.collected ? state.collected.texts.length + state.collected.files.length : 0;
-    if (collected > 0) keyboard.push([this.button(ctx, state, step, this.app.textsFor(ctx).done, Kind.Done)]);
+    if (collected > 0) keyboard.push([this.button(ctx, state, step, texts.done, Kind.Done)]);
     keyboard.push(this.controls(ctx, def, state, step));
-    await this.sendTracked(ctx, session, state, { text, ...media, keyboard });
+    return keyboard;
+  }
+
+  /** The options chosen so far in a `multiChoice` step (its `initial` ones at first). */
+  private selection(state: DialogueState, step: Extract<AnyStep<C>, { type: 'multiChoice' }>): string[] {
+    return (state.selected ??= step.initial ? step.options.map((o) => o.value).filter((v) => step.initial!.includes(v)) : []);
+  }
+
+  /** Redraw the pressed prompt's buttons in place (a toggle, a number, another month). */
+  private async refresh(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>, view?: string) {
+    if (view !== undefined) state.view = view;
+    const inline_keyboard = this.inlineKeyboard(ctx, def, state, step);
+    this.save(session, state);
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard } });
+    } catch (error) {
+      if (!String(error).includes('message is not modified')) throw error;
+    }
   }
 
   private replyKeyboard(ctx: C, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>): ReplyKeyboardMarkup {
@@ -468,6 +606,8 @@ export class DialogueRunner<C extends Context> {
     state.answers[step.id] = answer;
     state.step += 1;
     delete state.collected;
+    delete state.selected;
+    delete state.view;
     this.save(session, state);
     await this.show(ctx, session, def, state);
     return true;
@@ -512,6 +652,7 @@ export class DialogueRunner<C extends Context> {
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
     await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, params: state.params, answers: state.answers });
+    this.app.setFlowSource(ctx, def.id);
     const finish = () => def.finishFn!(this.endArgs(ctx, session, state));
     // The prompt was just cleared: the placeholder is always a new message.
     const result = def.loadingOptions ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();

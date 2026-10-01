@@ -61,10 +61,24 @@ function toRequest(url: string, init: Record<string, any> = {}): Request {
   if (signal?.aborted) controller.abort();
   signal?.addEventListener?.('abort', () => controller.abort());
   let body = init.body as unknown;
-  if (body && typeof body === 'object' && Symbol.asyncIterator in body && !(body instanceof ReadableStream)) {
-    body = (ReadableStream as unknown as { from(iterable: unknown): ReadableStream }).from(body);
-  }
+  if (body && typeof body === 'object' && Symbol.asyncIterator in body && !(body instanceof ReadableStream)) body = streamOf(body as AsyncIterable<Uint8Array>);
   return new Request(url, { method: init.method ?? 'GET', headers: init.headers, body: body as BodyInit, signal: controller.signal, duplex: 'half' } as RequestInit);
+}
+
+/** A web stream of an async iterable (Node's streams are); `ReadableStream.from` needs Node 20.6. */
+function streamOf(iterable: AsyncIterable<Uint8Array | string>): ReadableStream<Uint8Array> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    async pull(controller) {
+      const { value, done } = await iterator.next();
+      if (done) controller.close();
+      else controller.enqueue(typeof value === 'string' ? encoder.encode(value) : value);
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
 }
 
 /**

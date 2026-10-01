@@ -19,19 +19,24 @@ jobs:
       - run: bun run build
 
   node:
-    # The built package must also load on Node.js.
+    # The built package must also load and work on Node.js.
     runs-on: ubuntu-latest
     needs: check
+    strategy:
+      matrix:
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: node --input-type=module -e "import('./dist/index.js').then((m) => { if (!m.EasyTG || !m.page) process.exit(1); console.log('ok'); })"
       - run: node --input-type=module -e "import('./dist/simulator/index.js').then((m) => { if (!m.TelegramSimulator) process.exit(1); console.log('ok'); })"
+      # loadBot on Node: grammY uses the real node-fetch there, which interceptBotApi replaces.
+      - run: node scripts/node-smoke.mjs
 
   docs:
     # The docs site, with the playgrounds, must build (dead links fail it).

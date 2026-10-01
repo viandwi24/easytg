@@ -56,6 +56,8 @@ test('two matches chat anonymously through the bot, until /end', async () => {
   expect(screen().text).toStartWith("🎉 It's a match with Alice!");
   await sim.tap('💬 Chat anonymously');
   expect(screen(alice).text).toBe('💬 Viandwi started a chat with you. Messages you send go to them. /end to stop.');
+  expect(sim.chat(alice)!.replyKeyboard).toBeNull(); // no ❤️ 💌 👎 💤 while chatting
+  expect(sim.chat(sim.user.id)!.replyKeyboard).toBeNull();
 
   await sim.send('hi Alice!');
   expect(screen(alice).text).toBe('hi Alice!');

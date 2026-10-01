@@ -5,6 +5,20 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Added
+
+- **Dialogue steps** `multiChoice` (toggle options with ✅, then Done; `min`, `max`, `initial`), `number` (➖ / ➕ around the value, `bigStep`, `format`, or typed) and `date` (an inline calendar in the user's language, `min` / `max` as dates, strings or functions, or typed as `YYYY-MM-DD`). Answers are typed (`string[]` of the option values, `number`, `string`), and forged button values are refused. New built-in texts `chooseAtLeast`, `chooseAtMost`, `expectNumber`, `expectDate` are optional in `EasyTGTexts`, so existing translations keep compiling. See [docs/dialogues.md](docs/dialogues.md).
+- **Relays carry replies and edits:** a reply to a relayed message replies to its counterpart on the other side, and editing a message edits its copy. Service messages (Mini App data, payments) go on to their handlers instead of being relayed.
+- **Flow map:** `app.flowchart({ direction, observed })` draws the bot as a Mermaid diagram (pages, dialogues, commands, menu buttons, and the buttons, redirects and dialogue starts seen while it ran), marking targets that were never registered; `mermaidLiveUrl(chart)`. See [docs/flowchart.md](docs/flowchart.md).
+- Simulator: `rateLimits` answers floods with Telegram's `429 Too Many Requests` (`true` for Telegram's advised limits, or your own rules), to try `app.throttle` and `autoRetry`.
+- Preview: a **Flow** tab with the bot's map, **Two chats** side by side as two users, a phone layout, and the bot's process stops with the preview even when it is killed.
+- CI runs `loadBot` on Node.js 20 and 22 (`scripts/node-smoke.mjs`).
+- Examples: `booking.ts` (calendar, number and multiChoice steps), `support.ts` (a support desk on `app.relay`), `flowchart.ts`.
+
+### Fixed
+
+- A step's `when` ran for steps the dialogue hadn't reached yet, before their earlier answers existed (so `answers.x.includes(…)` threw). It now runs once the dialogue gets to that step.
+
 ## 0.3.1 (2026-09-30)
 
 ### Breaking

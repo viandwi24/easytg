@@ -114,6 +114,32 @@ Bun.serve({ port: 8080, fetch: webhookCallback(bot, 'bun', { secretToken: proces
 await bot.api.setWebhook('https://bot.example.com', { secret_token: process.env.WEBHOOK_SECRET });
 ```
 
+### Try it
+
+Telegram's rate limits are on in this simulator. Pick the group at the top of
+the chat and send /start there, then /burst: without a throttle, messages
+after the 20th of the minute get `429 Too Many Requests` (see the API calls
+tab). Uncomment the `app.throttle` line and press Run: they are spaced out
+instead.
+
+```ts playground group limits
+import { Bot } from 'grammy';
+import { EasyTG } from 'easytg';
+
+const bot = new Bot(process.env.BOT_TOKEN!);
+const app = new EasyTG();
+// bot.api.config.use(app.throttle({ groupChat: { limit: 5, perMs: 10_000 } }));
+bot.use(app);
+
+bot.command('burst', async (ctx) => {
+  const results = await Promise.allSettled(Array.from({ length: 25 }, (_, i) => ctx.reply(`Message ${i + 1}`)));
+  const failed = results.filter((r) => r.status === 'rejected').length;
+  console.log(`${25 - failed} sent, ${failed} refused with 429`);
+});
+bot.command('start', (ctx) => ctx.reply('Send /burst.'));
+bot.start();
+```
+
 On serverless and edge platforms (Cloudflare Workers, Deno Deploy, Vercel),
 see [Serverless and edge](serverless.md).
 

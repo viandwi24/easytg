@@ -35,6 +35,15 @@ export interface EasyTGTexts {
   /** `done` is the label of the Done button (`texts.done`). */
   collectReceived: (count: { total: number; texts: number; files: number; done: string }) => string;
   collectLimit: (limit: { max: number; done: string }) => string;
+  // Added in 0.4, optional so full translations written for 0.3 keep compiling (English is used when missing).
+  /** `multiChoice`: Done pressed with fewer than `min` options chosen. */
+  chooseAtLeast?: (min: number) => string;
+  /** `multiChoice`: an option pressed when `max` are chosen already. */
+  chooseAtMost?: (max: number) => string;
+  /** `number`: the typed text isn't a number in range. */
+  expectNumber?: (range: { min?: number; max?: number }) => string;
+  /** `date`: the typed text isn't a date in range. */
+  expectDate?: string;
 }
 
 export const defaultTexts: EasyTGTexts = {
@@ -68,4 +77,9 @@ export const defaultTexts: EasyTGTexts = {
   collectMin: (min) => (min <= 1 ? "You haven't sent anything yet." : `Please send at least ${min} items.`),
   collectReceived: ({ total, done }) => `Received ${total} item(s). Send more, or press ${done}.`,
   collectLimit: ({ max, done }) => `You can send at most ${max} items. Press ${done} to continue.`,
+  chooseAtLeast: (min) => (min <= 1 ? 'Please choose at least one option.' : `Please choose at least ${min} options.`),
+  chooseAtMost: (max) => `You can choose at most ${max}.`,
+  expectNumber: ({ min, max }) =>
+    min !== undefined && max !== undefined ? `Please send a number from ${min} to ${max}.` : min !== undefined ? `Please send a number of at least ${min}.` : max !== undefined ? `Please send a number up to ${max}.` : 'Please send a number.',
+  expectDate: 'Please pick a date, or send one like 2026-12-31.',
 };

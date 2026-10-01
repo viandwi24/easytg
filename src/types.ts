@@ -372,6 +372,51 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       validate?: (data: unknown, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     })
   | (StepBase<P, C> & {
+      /** Answer: the chosen options' `value`s (in the order of `options`), picked with toggle buttons and Done. */
+      type: 'multiChoice';
+      options: readonly { text: string; value: string }[];
+      /** Buttons per row. Default 1. */
+      columns?: number;
+      /** Default 1. */
+      min?: number;
+      /** Default: all. */
+      max?: number;
+      /** Chosen when the step is shown. */
+      initial?: readonly string[];
+      validate?: (values: string[], helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
+    })
+  | (StepBase<P, C> & {
+      /** Answer: a number, set with ➖ / ➕ buttons (then Done) or typed. */
+      type: 'number';
+      min?: number;
+      max?: number;
+      /** What ➖ / ➕ change. Default 1. */
+      step?: number;
+      /** Adds ⏪ / ⏩ buttons that change the number by this much. */
+      bigStep?: number;
+      /** Shown first. Default: `min`, or 0. */
+      initial?: number;
+      /** How the number is shown on its button, e.g. `(n) => \`${n} guests\``. */
+      format?: (value: number) => string;
+      validate?: (value: number, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
+    })
+  | (StepBase<P, C> & {
+      /**
+       * Answer: a date as `YYYY-MM-DD`, picked on an inline calendar (month and
+       * day names in the user's language) or typed like that.
+       */
+      type: 'date';
+      /** Earliest date: a `Date`, `YYYY-MM-DD`, or a function (evaluated each time, e.g. `() => new Date()` for "from today"). */
+      min?: DateInput;
+      /** Latest date, like `min`. */
+      max?: DateInput;
+      /** The month shown first (a date in it). Default: today, moved into `min`–`max`. */
+      initial?: DateInput;
+      /** First day of the week: 0 Sunday, 1 Monday (default). */
+      weekStartsOn?: 0 | 1;
+      validate?: (date: string, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
+    })
+  | (StepBase<P, C> & {
       /** Answer: `{ texts, files }`, collected until the user presses Done. */
       type: 'collect';
       /** Accepted kinds. Default: text and all files. */
@@ -382,6 +427,9 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       max?: number;
       validate?: (items: Collected, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     });
+
+/** A date for `date` steps: a `Date`, a `YYYY-MM-DD` string, or a function returning one. */
+export type DateInput = Date | string | (() => Date | string);
 
 /**
  * Why a dialogue ended without finishing: `user` pressed Cancel, `command` a

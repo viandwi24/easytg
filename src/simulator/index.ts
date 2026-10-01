@@ -135,7 +135,29 @@ export interface SimulatorOptions {
    * Default: an object URL (in browsers). `easytg preview` serves them itself.
    */
   storeFile?: (data: Blob, name?: string) => string | undefined;
+  /**
+   * Answer too many messages with Telegram's `429 Too Many Requests: retry
+   * after N`, to try `app.throttle` and `autoRetry`. `true`: Telegram's
+   * advised limits (30 per second overall, 20 per minute per group); or your
+   * own. Counts sending, copying, forwarding and editing, an album as one per
+   * item. Default: no limits.
+   */
+  rateLimits?: boolean | SimRateLimits;
 }
+
+export interface SimRateLimit {
+  limit: number;
+  perMs: number;
+}
+
+export interface SimRateLimits {
+  global?: SimRateLimit | false;
+  groupChat?: SimRateLimit | false;
+  privateChat?: SimRateLimit | false;
+}
+
+const TELEGRAM_LIMITS: SimRateLimits = { global: { limit: 30, perMs: 1000 }, groupChat: { limit: 20, perMs: 60_000 }, privateChat: false };
+const RATE_LIMITED = /^(send(?!ChatAction)|copyMessage|forwardMessage|editMessage)/;
 
 export interface SendOptions {
   /** The user sending; default: the first user. */
@@ -195,6 +217,9 @@ export class TelegramSimulator {
   private readonly mediaData = new WeakMap<SimMedia, Blob>();
   private readonly storeFile?: (data: Blob, name?: string) => string | undefined;
   private polled = false;
+  private readonly rateLimits?: SimRateLimits;
+  /** Calls counted per rate-limit key in its current window, for `rateLimits`. */
+  private readonly sendLog = new Map<string, { window: number; count: number }>();
   private pollWaiters: (() => void)[] = [];
   private nextNotice = 1;
   private readonly messageIds = new Map<number, number>();
@@ -224,6 +249,7 @@ export class TelegramSimulator {
     this.latencyMs = options.latencyMs ?? 0;
     this.callLimit = options.callLog ?? 200;
     this.storeFile = options.storeFile;
+    this.rateLimits = options.rateLimits === true ? TELEGRAM_LIMITS : options.rateLimits || undefined;
     this.addUser({ id: 1001, first_name: 'You', language_code: 'en', ...options.user });
   }
 
@@ -718,6 +744,7 @@ export class TelegramSimulator {
     try {
       const handler = (this.methods as Record<string, ((p: Record<string, any>, signal?: AbortSignal) => unknown) | undefined>)[method];
       if (!handler) throw new ApiError(404, `Not Found: the simulator doesn't support the method "${method}"`);
+      this.checkRate(method, payload);
       const result = await handler.call(this, payload, signal);
       entry.result = result;
       if (method !== 'getUpdates') this.log(entry);
@@ -728,6 +755,32 @@ export class TelegramSimulator {
       this.log(entry);
       return { ok: false, error_code: error.code, description: error.message, ...(error.parameters ? { parameters: error.parameters } : {}) };
     }
+  }
+
+  /** Telegram's flood control: throws 429 with `retry_after` when a limit is used up, else counts the call. */
+  private checkRate(method: string, payload: Record<string, any>) {
+    const limits = this.rateLimits;
+    if (!limits || !RATE_LIMITED.test(method)) return;
+    const cost = method === 'sendMediaGroup' && Array.isArray(payload.media) ? payload.media.length : 1;
+    const chat = payload.chat_id === undefined ? undefined : this.chats.get(Number(payload.chat_id));
+    const rules: [string, SimRateLimit | false | undefined][] = [['global', limits.global]];
+    if (chat) rules.push([`chat:${chat.id}`, chat.type === 'private' ? limits.privateChat : limits.groupChat]);
+    const now = Date.now();
+    const active = rules.filter((r): r is [string, SimRateLimit] => !!r[1]);
+    // Fixed windows, like app.throttle (Telegram doesn't document its own).
+    const counters = active.map(([key, rule]) => {
+      const window = Math.floor(now / rule.perMs);
+      const counter = this.sendLog.get(key);
+      return { key, rule, window, count: counter?.window === window ? counter.count : 0 };
+    });
+    for (const { rule, window, count } of counters) {
+      // An album bigger than the limit fits an empty window.
+      if (count + Math.min(cost, rule.limit) > rule.limit) {
+        const retryAfter = Math.max(1, Math.ceil(((window + 1) * rule.perMs - now) / 1000));
+        throw new ApiError(429, `Too Many Requests: retry after ${retryAfter}`, { retry_after: retryAfter });
+      }
+    }
+    for (const { key, window, count } of counters) this.sendLog.set(key, { window, count: count + cost });
   }
 
   private log(entry: SimApiCall) {

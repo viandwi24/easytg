@@ -1,6 +1,6 @@
 # Migrating
 
-## 0.3 → 0.4
+## 0.3.0 → 0.3.1
 
 Two small breaking changes, both from easytg dropping Node-only APIs so it
 also runs in browsers.
@@ -9,8 +9,8 @@ also runs in browsers.
   Ed25519 signature with Web Crypto, which is async: add `await`.
 
   ```ts
-  const init = verifyInitDataSignature(initData, botId);        // 0.3
-  const init = await verifyInitDataSignature(initData, botId);  // 0.4
+  const init = verifyInitDataSignature(initData, botId);        // 0.3.0
+  const init = await verifyInitDataSignature(initData, botId);  // 0.3.1
   ```
 
   TypeScript points you to every call whose result is used directly.

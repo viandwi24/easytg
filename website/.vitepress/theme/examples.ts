@@ -11,6 +11,8 @@ interface Example {
   group?: boolean;
   /** Needs more users (switch between them at the top of the chat). */
   users?: boolean;
+  /** Telegram's rate limits (429) in the simulator. */
+  rateLimits?: boolean;
 }
 
 const LIST: Example[] = [
@@ -24,6 +26,10 @@ const LIST: Example[] = [
   { file: 'inline', title: 'Inline mode', description: 'Type "@demo_bot tea" in the message field to share pages into a chat.', start: '' },
   { file: 'sessions', title: 'Sessions', description: 'Per-chat, per-user and chat-wide state. Switch between the private chat and the group at the top of the chat.', group: true },
   { file: 'group', title: 'Group bot', description: 'Admin-only settings, a live scoreboard and a quiz. Pick the group (and who is typing) at the top of the chat.', group: true, start: '' },
+  { file: 'booking', title: 'Booking (calendar)', description: 'A dialogue with a calendar (date), a number picker and several options at once (multiChoice).', start: '/book' },
+  { file: 'support', title: 'Support desk', description: 'An anonymous support chat through the bot (relay). You are the agent: switch to Alice at the top of the chat to open a ticket as a customer.', users: true },
+  { file: 'throttle', title: 'Rate limits', description: "Telegram's rate limits are on here. Pick the group at the top of the chat, send /start and /burst there: app.throttle spaces the messages, so none gets a 429.", group: true, rateLimits: true },
+  { file: 'flowchart', title: 'Flow map', description: 'Click around (catalog, a product, an order), then send /flow: the bot draws its own map with app.flowchart().' },
   { file: 'queue', title: 'Queues', description: 'Slow jobs behind a queue, with the place in line.' },
   { file: 'captcha', title: 'Captcha', description: 'A button captcha and a typed captcha.' },
   { file: 'broadcast', title: 'Broadcast', description: 'Subscribe, then /broadcast as the admin (you are the admin here).' },

@@ -15,8 +15,9 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [Pages](pages.md) | pages, `nav`, delivery modes, keeping messages, `app.edit`, params validation (functions or zod/valibot), long messages, middlewares, Back, `refreshEveryMs` |
 | [Media](media.md) | photos, videos, documents, audio, albums, copies from a channel, `protectContent`, file id cache |
 | [Main menu](menu.md) | a reply-keyboard menu with `replyMenu` |
+| [Flow map](flowchart.md) | `app.flowchart()`: the bot as a Mermaid diagram of pages, dialogues, commands and buttons |
 | [Commands](commands.md) | `app.command`: `/commands` for pages and dialogues, and Telegram's command menu (`syncCommands`) |
-| [Dialogues](dialogues.md) | multi-step forms: text, files, choices, contacts, locations, Mini Apps; typed answers, schemas, `when`, timeouts |
+| [Dialogues](dialogues.md) | multi-step forms: text, files, choices, several options, numbers, dates (calendar), contacts, locations, Mini Apps; typed answers, schemas, `when`, timeouts |
 | [Text input](text-input.md) | `page.onText`: search boxes and other typed input on a page |
 | [Text formatting](formatting.md) | Markdown, HTML, safe `md` / `html` templates |
 | [Languages](i18n.md) | your messages with `t()` (placeholders, plurals), `setLocale`, built-in texts |
@@ -83,6 +84,9 @@ Runnable bots (`BOT_TOKEN=… bun run examples/<file>`) that show features in co
 | [`production.ts`](../examples/production.ts) | `RedisStorage` / `SqliteStorage`, `cluster`, webhooks, the scheduler, `autoRetry` |
 | [`broadcast.ts`](../examples/broadcast.ts) | `broadcast` in the background with progress, `broadcastLater`, dialogue middlewares, `pageView`/`spam` events |
 | [`match.ts`](../examples/match.ts) | a reply-keyboard menu acting on the card on screen, `showMenu` / `hideMenu` in renders, a dialogue with `when` and a photo, `sendTo` for likes and matches, `app.relay` chats, `app.command` + `syncCommands` |
+| [`booking.ts`](../examples/booking.ts) | `date` (calendar), `number` and `multiChoice` steps, `when` |
+| [`support.ts`](../examples/support.ts) | a support desk with `app.relay`: tickets, `relay.filter`, replies and edits carried over, `relayEnd`, rating |
+| [`flowchart.ts`](../examples/flowchart.ts) | `app.flowchart()` and `mermaidLiveUrl`: a bot that sends its own map |
 | [`cloudflare-worker.ts`](../examples/cloudflare-worker.ts) | a Cloudflare Worker: webhook, Redis over HTTP, cron for scheduled tasks |
 | [`captcha.ts`](../examples/captcha.ts) | server-side answers, per-key session TTL, dialogues |
 | [`notify.ts`](../examples/notify.ts) | SQLite storage, `stored` buttons, `sendLater` |

@@ -20,6 +20,8 @@ export interface RunOptions {
   group?: boolean;
   /** Add two more users, without a group. */
   users?: boolean;
+  /** Answer floods with 429, like Telegram. */
+  rateLimits?: boolean;
   latencyMs?: number;
 }
 
@@ -37,7 +39,7 @@ export function compile(code: string): string {
 }
 
 export function runBot(code: string, options: RunOptions): Run {
-  const sim = new TelegramSimulator({ latencyMs: options.latencyMs ?? 40 });
+  const sim = new TelegramSimulator({ latencyMs: options.latencyMs ?? 40, rateLimits: options.rateLimits });
   if (options.group || options.users) {
     sim.addUser({ first_name: 'Alice', language_code: 'en' });
     sim.addUser({ first_name: 'Bob', language_code: 'en' });

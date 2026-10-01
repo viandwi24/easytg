@@ -56,6 +56,11 @@ export class Commands<T> {
     return this.entries.size;
   }
 
+  /** Every command, by name. */
+  list(): CommandEntry<T>[] {
+    return [...this.entries.values()];
+  }
+
   /** The command a message starts with, if it is one of ours (and for this bot and chat type). */
   match(message: Message | undefined, botUsername: string | undefined): { entry: CommandEntry<T>; args: string } | undefined {
     const text = message?.text;

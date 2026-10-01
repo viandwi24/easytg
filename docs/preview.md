@@ -21,7 +21,12 @@ bunx easytg preview src/bot.ts
 - The bot runs in its own process and restarts when a file in its folder
   changes (`--no-watch` turns that off); the chat keeps its messages and
   shows "🔄 Restarted". Anything your bot keeps in memory starts over.
-- The page shows the bot's output and every Bot API call next to the chat.
+- The page shows the bot's output, every Bot API call, and the bot's
+  [flow map](flowchart.md) (the **Flow** tab) next to the chat.
+- **Two chats** puts a second chat window beside the first, as another user
+  (added when there is none): try likes, relays and support chats from both
+  sides at once. On a phone, the windows stack.
+- The bot's process stops with the preview, even when the preview is killed.
   Photos and files the bot sends are shown; you can send photos, files,
   your location and contact from 📎.
 - It needs [Bun](https://bun.sh), also for Node projects: `bunx` runs it

@@ -40,6 +40,12 @@ export type AnswerOf<S> = S extends { type: 'text'; schema: infer Sc extends Sta
             ? DialogueLocation
             : S extends { type: 'collect' }
               ? Collected
+              : S extends { type: 'multiChoice'; options: readonly (infer O)[] }
+                ? (O extends { value: infer V } ? V : never)[]
+              : S extends { type: 'number' }
+                ? number
+              : S extends { type: 'date' }
+                ? string
               : S extends { type: 'webApp'; schema: infer Sc extends StandardSchemaV1 }
                 ? SchemaOutput<Sc>
                 : S extends { type: 'webApp' }

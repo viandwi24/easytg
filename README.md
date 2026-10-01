@@ -70,7 +70,7 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - ⌨️ **Both keyboards.** Inline buttons on pages, plus a main menu on the reply keyboard (`replyMenu`) with its own close button.
 - 🖼 **Media.** Photos, videos, GIFs, documents, audio, albums and copies of existing messages, with optional `protectContent`.
 - 🔒 **Type-safe links.** `nav.button('Open', order, { id })` fails to compile if a param is missing or misspelled, even when pages link to each other in cycles.
-- 📝 **Dialogues.** Multi-step forms with answers typed from the steps, validation (or zod/valibot schemas), choices, file uploads, phone number, location and Mini App input, conditional steps, Back/Cancel and timeouts.
+- 📝 **Dialogues.** Multi-step forms with answers typed from the steps, validation (or zod/valibot schemas), choices, several options at once, number pickers, an inline calendar, file uploads, phone number, location and Mini App input, conditional steps, Back/Cancel and timeouts.
 - 📱 **Mini Apps.** Buttons that open them, `initData` checks, acting for the user from your server, answering into the chat and sharing.
 - 🔎 **Text input on pages.** `page.onText` turns a page into a search box or any other typed input.
 - 🛡️ **Secure by default.** Escaping `md`/`html` templates, signed or stored tamper-proof button params, params validation with `.params(parse)` or any Standard Schema, owner-only group menus (or `allowedUsers`), admin-only pages, and anti-spam with events.
@@ -85,7 +85,8 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
 - 💬 **Telegram simulator.** `easytg/simulator` is an in-memory Telegram with users, groups, buttons, inline mode and payments, plus a chat window for the browser. The [docs site](https://viandwi24.github.io/easytg) uses it for live playgrounds.
 - 👀 **Preview without a token.** `bunx easytg preview bot.ts` runs your bot file in a simulated Telegram in the browser, restarts it on save, and turns what you click into a `bun test` file.
-- ⌘ **Commands and relays.** `app.command` binds `/commands` to pages and dialogues and syncs Telegram's command menu; `app.relay` lets two users talk through the bot.
+- ⌘ **Commands and relays.** `app.command` binds `/commands` to pages and dialogues and syncs Telegram's command menu; `app.relay` lets two users talk through the bot, replies and edits included.
+- 🗺 **Flow map.** `app.flowchart()` draws your bot as a Mermaid diagram of pages, dialogues, commands and the buttons between them.
 - ☁️ **Serverless and edge.** Webhooks on Cloudflare Workers, Deno Deploy or Vercel, with Redis over HTTP and cron-driven tasks.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first; works on Node ≥ 20, Deno and in browsers.
 
@@ -179,6 +180,9 @@ const signup = dialogue('signup')
 | [`production.ts`](examples/production.ts) | Redis or SQLite, several processes with `cluster`, webhooks |
 | [`broadcast.ts`](examples/broadcast.ts) | Newsletter: subscriptions, admin-only compose dialogue, a background broadcast with live progress, `broadcastLater`, events |
 | [`match.ts`](examples/match.ts) | A swipe-style "meet people" bot: profile cards with ❤️ 💌 👎 💤 on the reply keyboard, sign-up dialogue, likes, matches and anonymous chats (relay), `app.command` |
+| [`booking.ts`](examples/booking.ts) | Table reservations: an inline calendar (`date`), a guest counter (`number`) and extras (`multiChoice`) |
+| [`support.ts`](examples/support.ts) | A support desk: tickets, an agent and a customer talking through the bot (`app.relay`), a link filter, ratings |
+| [`flowchart.ts`](examples/flowchart.ts) | A bot that sends its own map (`app.flowchart()`) |
 | [`cloudflare-worker.ts`](examples/cloudflare-worker.ts) | A Cloudflare Worker: webhook, Redis over HTTP, a Cron Trigger for scheduled tasks |
 | [`captcha.ts`](examples/captcha.ts) | Button and typed captchas, server-side answers, per-key TTL |
 | [`notify.ts`](examples/notify.ts) | SQLite storage, tamper-proof buttons, `sendLater` notifications that survive restarts |
@@ -194,7 +198,7 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 - **[Docs site](https://viandwi24.github.io/easytg)**: these docs with live playgrounds, and every example running [in your browser](https://viandwi24.github.io/easytg/playground).
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Documentation](docs/README.md)**: one page per feature.
-  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Commands](docs/commands.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
+  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Commands](docs/commands.md) · [Flow map](docs/flowchart.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
   - Data: [Sessions](docs/sessions.md) · [Storage](docs/storage.md) · [Button params](docs/button-params.md) · [Deep links](docs/deep-links.md)
   - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Relays](docs/relay.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
   - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Serverless and edge](docs/serverless.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md) · [Preview](docs/preview.md) · [Simulator](docs/simulator.md)
