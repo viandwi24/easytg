@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.4.0 (2026-10-03)
+
 ### Added
 
 - **Ephemeral messages in groups** (Bot API 10.2): `nav.button(…, { mode: 'ephemeral' })` and `app.open(…, { mode: 'ephemeral' })` open a page or start a dialogue for the presser only, in place of the shared menu on their screen while the others keep seeing it. Its buttons edit that copy, Back and Close work on it, and a dialogue's questions are removed with `deleteEphemeralMessage` like any prompt. `app.command(…, { ephemeral: true })` lists the command with `is_ephemeral`, and anything received ephemerally is answered ephemerally (as a reply, which a bot that isn't an admin may send too). See [docs/groups.md](docs/groups.md#only-for-one-member-ephemeral).
