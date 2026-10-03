@@ -21,6 +21,8 @@ export class Formatted {
     readonly html: string,
     /** Markdown source, set for `md` fragments so they can be nested in other `md` templates. */
     readonly markdown?: string,
+    /** The same as Rich Markdown, values escaped for it: what a `rich` page sends. */
+    readonly rich?: string,
   ) {}
 
   toString() {
@@ -50,6 +52,15 @@ export function escapeMarkdownV2(text: string): string {
   return String(text).replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
 }
 
+/**
+ * Escape text for Rich Markdown (`rich` content, Bot API 10.3): a backslash
+ * before every ASCII punctuation character, as Markdown allows, so nothing a
+ * user typed becomes a heading, list, table, formula or link.
+ */
+export function escapeRichMarkdown(text: string): string {
+  return String(text).replace(/[!-/:-@[-`{-~]/g, '\\$&');
+}
+
 /** Escape text for the `html` parse mode. */
 export function escapeHTML(text: string): string {
   return String(text)
@@ -65,13 +76,22 @@ export function escapeHTML(text: string): string {
 /** Markdown template; interpolated values are escaped (nested `md` fragments are kept). */
 export function md(strings: TemplateStringsArray, ...values: unknown[]): Formatted {
   let source = strings[0]!;
+  let rich = source;
   values.forEach((value, i) => {
-    if (value instanceof Formatted && value.markdown !== undefined) source += value.markdown;
-    // Inside code only `\\` and `\`` are escapes, so values keep every other character as typed.
-    else source += insideCode(source) ? escapeCode(stringify(value)) : escapeMarkdown(stringify(value));
+    if (value instanceof Formatted && value.markdown !== undefined) {
+      source += value.markdown;
+      rich += value.rich ?? value.markdown;
+    } else {
+      // Inside code only `\\` and `\`` are escapes, so values keep every other character as typed.
+      const code = insideCode(source);
+      source += code ? escapeCode(stringify(value)) : escapeMarkdown(stringify(value));
+      // In Rich Markdown code is literal (no escapes): a backtick would end it, so it becomes a look-alike.
+      rich += code ? stringify(value).replace(/`/g, '\u02cb') : escapeRichMarkdown(stringify(value));
+    }
     source += strings[i + 1];
+    rich += strings[i + 1];
   });
-  return new Formatted(markdownToHtml(source), source);
+  return new Formatted(markdownToHtml(source), source, rich);
 }
 
 const FENCE = /^```\s*([\w#+.-]*)\s*$/;

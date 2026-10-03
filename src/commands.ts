@@ -21,6 +21,13 @@ export interface CommandOptions {
   chats?: CommandChats;
   /** Params for the page or dialogue from the text after the command: `/find tea` gives `'tea'`. */
   params?: (args: string) => ParamsInput;
+  /**
+   * In groups, the command is sent ephemerally (only the bot sees it, Bot API
+   * 10.2) and its page or dialogue answers ephemerally, to the sender only:
+   * settings, a personal list, help. Listed with `is_ephemeral` by
+   * `syncCommands`.
+   */
+  ephemeral?: boolean;
 }
 
 export interface CommandEntry<T> {
@@ -93,7 +100,11 @@ export class Commands<T> {
         .filter((e) => e.options.description !== undefined && chats.includes(e.options.chats ?? 'all'))
         .map((e) => {
           const d = e.options.description!;
-          return { command: e.name, description: (typeof d === 'function' ? d(locale, t) : d).slice(0, 256) || e.name };
+          return {
+            command: e.name,
+            description: (typeof d === 'function' ? d(locale, t) : d).slice(0, 256) || e.name,
+            ...(e.options.ephemeral ? { is_ephemeral: true } : {}),
+          };
         });
     const has = (chats: CommandChats) => [...this.entries.values()].some((e) => e.options.description !== undefined && (e.options.chats ?? 'all') === chats);
     return [

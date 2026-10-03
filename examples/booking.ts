@@ -15,10 +15,16 @@ import { EasyTG, dialogue, md, page } from '../src';
 /** Stands in for your database. */
 const bookings: Array<{ userId: number; day: string; time: string; guests: number; extras: string[]; note?: string }> = [];
 
+/** The restaurant's time zone: "today" and the calendar follow it, wherever the server runs. */
+const TIME_ZONE = 'Asia/Jakarta';
+
 const inDays = (days: number) => new Date(Date.now() + days * 86_400_000);
-const weekend = (day: string) => [0, 6].includes(new Date(`${day}T12:00:00`).getDay());
+// A date answer is a plain day ('2026-10-01'). Read it as midnight UTC and format it in UTC,
+// so the server's own time zone can never move it to the day before or after.
+const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
+const weekend = (day: string) => [0, 6].includes(asDay(day).getUTCDay());
 const prettyDate = (day: string, locale?: string) =>
-  new Intl.DateTimeFormat(locale ?? 'en', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${day}T12:00:00`));
+  new Intl.DateTimeFormat(locale ?? 'en', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(asDay(day));
 
 const book = dialogue('book')
   .steps([
@@ -85,7 +91,7 @@ if (!token) {
 }
 
 const bot = new Bot(token);
-const app = new EasyTG()
+const app = new EasyTG({ dialogues: { timeZone: TIME_ZONE } })
   .command('start', home, { description: 'Main menu' })
   .command('book', book, { description: 'Book a table' })
   .command('bookings', mine, { description: 'My bookings' });

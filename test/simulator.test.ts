@@ -213,3 +213,22 @@ describe('formatting', () => {
     expect(() => parseMarkdownV2('*open')).toThrow();
   });
 });
+
+test('a text message can be edited into a photo (Bot API 10), not the other way round', async () => {
+  const { sim, bot, app } = setup();
+  const photo = page('photo').render(({ nav }) => ({ photo: 'https://example.com/a.jpg', text: 'A photo', keyboard: [[nav.button('Text', text)]] }));
+  const text = page('text').render(({ nav }) => ({ text: 'Just text', keyboard: [[nav.button('Photo', photo)]] }));
+  app.register(photo, text);
+  bot.command('start', (ctx) => app.open(ctx, text));
+  await sim.send('/start');
+  const id = sim.last()!.message.message_id;
+  await sim.tap('Photo');
+  expect(sim.last()!.message.message_id).toBe(id); // edited in place, not deleted and sent again
+  expect(sim.last()!.message.text).toBeUndefined();
+  expect(sim.last()!.message.caption).toBe('A photo');
+  expect(sim.last()!.media).toMatchObject({ kind: 'photo', url: 'https://example.com/a.jpg' });
+  await sim.tap('Text'); // media → text still can't be edited: a new message
+  expect(sim.last()!.message.text).toBe('Just text');
+  expect(sim.last()!.message.message_id).not.toBe(id);
+  await expect(bot.api.editMessageCaption(sim.user.id, sim.last()!.message.message_id, { caption: 'x' })).rejects.toThrow('there is no caption in the message to edit');
+});

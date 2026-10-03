@@ -22,18 +22,27 @@ export interface FlowchartOptions {
   observed?: boolean;
 }
 
-/** Edges seen while the bot ran, deduplicated. */
+/** Labels kept per edge: enough to read the diagram, bounded for labels with counters or names in them. */
+const LABELS_PER_EDGE = 3;
+
+/**
+ * Edges seen while the bot ran. One per screen pair and kind, so memory is
+ * bounded by the registered pages and dialogues, however many different
+ * labels the buttons have ("Page 3/10", "Pressed 5 times", product names).
+ */
 export class FlowRecorder {
-  private readonly edges = new Map<string, FlowEdge>();
+  private readonly edges = new Map<string, { edge: FlowEdge; labels: string[] }>();
 
   record(edge: FlowEdge) {
     if (edge.from === edge.to) return; // nav.self, pagination: the same screen
-    const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}\u0000${edge.label ?? ''}`;
-    if (!this.edges.has(key)) this.edges.set(key, edge);
+    const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}`;
+    let entry = this.edges.get(key);
+    if (!entry) this.edges.set(key, (entry = { edge: { from: edge.from, to: edge.to, kind: edge.kind }, labels: [] }));
+    if (edge.label && entry.labels.length < LABELS_PER_EDGE && !entry.labels.includes(edge.label)) entry.labels.push(edge.label);
   }
 
   get all(): FlowEdge[] {
-    return [...this.edges.values()];
+    return [...this.edges.values()].map(({ edge, labels }) => (labels.length ? { ...edge, label: labels.join(' · ') } : edge));
   }
 }
 

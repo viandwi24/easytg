@@ -1,5 +1,5 @@
 import type { Api, Context, InlineKeyboard, InputFile } from 'grammy';
-import type { InlineKeyboardButton, LabeledPrice } from 'grammy/types';
+import type { InlineKeyboardButton, InputRichMessage, LabeledPrice } from 'grammy/types';
 import type { ParamValue, ParamsInput } from './callback';
 import type { Dialogue, Page } from './define';
 import type { EasyTG } from './engine';
@@ -31,9 +31,11 @@ export interface ButtonOptions {
   /**
    * How the target page is shown when pressed: `edit` (default) replaces the
    * pressed message, `send` leaves it untouched and sends a new message — e.g.
-   * for buttons under a video or document the user should keep.
+   * for buttons under a video or document the user should keep. `ephemeral`:
+   * in groups, the page opens for the presser only, in place of the pressed
+   * message on their screen; the others keep seeing the message as it was.
    */
-  mode?: 'edit' | 'send';
+  mode?: 'edit' | 'send' | 'ephemeral';
 }
 
 /** Params are optional when the target declares none (or only optional ones). */
@@ -103,8 +105,23 @@ export type KeyboardRow = ReadonlyArray<InlineKeyboardButton | false | null | un
 /** Rows of buttons; falsy rows/buttons are dropped, so `isAdmin && nav.button(...)` works. */
 export type KeyboardInput = ReadonlyArray<KeyboardRow | false | null | undefined> | InlineKeyboard;
 
+/**
+ * A rich message: Rich Markdown (a string, `md` fragments, an array of them
+ * joined with newlines), one `html` fragment (Rich HTML), or the Bot API's
+ * `InputRichMessage` (`{ markdown }`, `{ html }` or `{ blocks }`, with `media`).
+ */
+export type RichInput = TextInput | InputRichMessage;
+
 export interface PageContent extends MediaFields {
   text?: TextInput;
+  /**
+   * A rich message (Bot API 10.3) instead of `text`: headings, lists, tables,
+   * quotes, collapsible details, formulas and media in one message, up to
+   * 32768 characters. A string is Telegram's Rich Markdown (GitHub-style;
+   * `md` fragments escape their values for it). `keyboard` works as usual.
+   * See docs/rich-messages.md.
+   */
+  rich?: RichInput;
   /**
    * 2–10 photos/videos (or documents, or audios) sent as one album. Albums
    * can't carry buttons: with a `keyboard`, `text` and the keyboard follow in
@@ -237,7 +254,12 @@ export type Middleware<C extends Context = Context> = (
  * - `edit`  — edit the pressed message; falls back to `send` if it can't
  * - `auto`  — `edit` for button presses, `reply` otherwise
  */
-export type DeliveryMode = 'send' | 'reply' | 'edit' | 'auto';
+/**
+ * - `ephemeral`: in groups, a message only the user who pressed (or sent the
+ *   ephemeral command) sees, shown in place of the pressed message on their
+ *   screen; a pressed ephemeral message is edited. Elsewhere like `auto`.
+ */
+export type DeliveryMode = 'send' | 'reply' | 'edit' | 'auto' | 'ephemeral';
 
 // ---- dialogues --------------------------------------------------------------
 
@@ -406,7 +428,10 @@ export type DialogueStep<P = Params, C extends Context = Context> =
        * day names in the user's language) or typed like that.
        */
       type: 'date';
-      /** Earliest date: a `Date`, `YYYY-MM-DD`, or a function (evaluated each time, e.g. `() => new Date()` for "from today"). */
+      /**
+       * Earliest day: `YYYY-MM-DD`, a `Date` (the day it is in `timeZone`), or a
+       * function returning one, evaluated each time (`() => new Date()`: from today).
+       */
       min?: DateInput;
       /** Latest date, like `min`. */
       max?: DateInput;
@@ -414,6 +439,13 @@ export type DialogueStep<P = Params, C extends Context = Context> =
       initial?: DateInput;
       /** First day of the week: 0 Sunday, 1 Monday (default). */
       weekStartsOn?: 0 | 1;
+      /**
+       * Where "today" is, and which day a `Date` falls on: an IANA time zone
+       * such as `Asia/Jakarta`, or a function (e.g. the user's zone from the
+       * session). Default: `dialogues.timeZone`, else the server's time zone.
+       * The answer itself is a plain day, `YYYY-MM-DD`.
+       */
+      timeZone?: string | ((helpers: StepHelpers<P, C>) => string | undefined);
       validate?: (date: string, helpers: StepHelpers<P, C>) => Awaitable<ValidateResult>;
     })
   | (StepBase<P, C> & {

@@ -180,6 +180,10 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
       sim.clearHistory(chatId);
       record(`sim.clearHistory(${chatId})`, chatId);
     },
+    stopGeneration: async (chatId: number) => {
+      await sim.stopGeneration(chatId);
+      record(`await sim.stopGeneration(${chatId})`, chatId);
+    },
     restart: () => restart(),
     reset: async () => {
       sim.reset();

@@ -87,6 +87,9 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - 👀 **Preview without a token.** `bunx easytg preview bot.ts` runs your bot file in a simulated Telegram in the browser, restarts it on save, and turns what you click into a `bun test` file.
 - ⌘ **Commands and relays.** `app.command` binds `/commands` to pages and dialogues and syncs Telegram's command menu; `app.relay` lets two users talk through the bot, replies and edits included.
 - 🗺 **Flow map.** `app.flowchart()` draws your bot as a Mermaid diagram of pages, dialogues, commands and the buttons between them.
+- 👁 **Only for you, in groups.** `mode: 'ephemeral'` opens a page or a dialogue from a shared group menu for the presser only (Bot API 10.2 ephemeral messages); ephemeral commands; disabled buttons with `nav.disabled`.
+- ✍️ **Streaming.** `app.stream` shows an AI answer as it is written (Telegram drafts in private chats, with a stop button), then sends it as a formatted message.
+- 📰 **Rich messages.** `rich` instead of `text`: headings, tables, task lists, collapsible details, formulas, pictures and buttons in one message (Bot API 10.3), with `md` escaping user input for it.
 - ☁️ **Serverless and edge.** Webhooks on Cloudflare Workers, Deno Deploy or Vercel, with Redis over HTTP and cron-driven tasks.
 - 🪶 **Zero dependencies.** grammY is the only peer dependency. Bun first; works on Node ≥ 20, Deno and in browsers.
 
@@ -182,6 +185,9 @@ const signup = dialogue('signup')
 | [`match.ts`](examples/match.ts) | A swipe-style "meet people" bot: profile cards with ❤️ 💌 👎 💤 on the reply keyboard, sign-up dialogue, likes, matches and anonymous chats (relay), `app.command` |
 | [`booking.ts`](examples/booking.ts) | Table reservations: an inline calendar (`date`), a guest counter (`number`) and extras (`multiChoice`) |
 | [`support.ts`](examples/support.ts) | A support desk: tickets, an agent and a customer talking through the bot (`app.relay`), a link filter, ratings |
+| [`team.ts`](examples/team.ts) | A group board where settings and votes open for the presser only (ephemeral pages, dialogue and commands), `nav.disabled` |
+| [`ai-chat.ts`](examples/ai-chat.ts) | An AI chat whose answers stream in as a rich draft with ⏹ Stop (`app.stream`), with a fake model |
+| [`rich.ts`](examples/rich.ts) | A handbook of rich messages: a pricing table, collapsible FAQ with a button inside the text, release notes from blocks |
 | [`flowchart.ts`](examples/flowchart.ts) | A bot that sends its own map (`app.flowchart()`) |
 | [`cloudflare-worker.ts`](examples/cloudflare-worker.ts) | A Cloudflare Worker: webhook, Redis over HTTP, a Cron Trigger for scheduled tasks |
 | [`captcha.ts`](examples/captcha.ts) | Button and typed captchas, server-side answers, per-key TTL |
@@ -198,7 +204,7 @@ BOT_TOKEN=123:abc bun run examples/captcha.ts
 - **[Docs site](https://viandwi24.github.io/easytg)**: these docs with live playgrounds, and every example running [in your browser](https://viandwi24.github.io/easytg/playground).
 - **[Getting started](docs/getting-started.md)**: a hands-on tutorial.
 - **[Documentation](docs/README.md)**: one page per feature.
-  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Commands](docs/commands.md) · [Flow map](docs/flowchart.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md)
+  - UI: [Pages](docs/pages.md) · [Media](docs/media.md) · [Main menu](docs/menu.md) · [Commands](docs/commands.md) · [Flow map](docs/flowchart.md) · [Dialogues](docs/dialogues.md) · [Text input](docs/text-input.md) · [Text formatting](docs/formatting.md) · [Rich messages](docs/rich-messages.md) · [Languages](docs/i18n.md) · [Inline mode](docs/inline-mode.md) · [Mini Apps](docs/mini-apps.md) · [Groups](docs/groups.md) · [Streaming](docs/streaming.md)
   - Data: [Sessions](docs/sessions.md) · [Storage](docs/storage.md) · [Button params](docs/button-params.md) · [Deep links](docs/deep-links.md)
   - Beyond one update: [Notifications & broadcast](docs/proactive.md) · [Relays](docs/relay.md) · [Scheduled tasks](docs/scheduler.md) · [Queues](docs/queues.md) · [Payments](docs/payments.md)
   - Production: [Anti-spam](docs/anti-spam.md) · [Scaling](docs/scaling.md) · [Serverless and edge](docs/serverless.md) · [Security](docs/security.md) · [Events](docs/events.md) · [Error helpers](docs/errors.md) · [All options](docs/options.md) · [Testing](docs/testing.md) · [Preview](docs/preview.md) · [Simulator](docs/simulator.md)

@@ -20,10 +20,12 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [Dialogues](dialogues.md) | multi-step forms: text, files, choices, several options, numbers, dates (calendar), contacts, locations, Mini Apps; typed answers, schemas, `when`, timeouts |
 | [Text input](text-input.md) | `page.onText`: search boxes and other typed input on a page |
 | [Text formatting](formatting.md) | Markdown, HTML, safe `md` / `html` templates |
+| [Rich messages](rich-messages.md) | `rich`: headings, tables, task lists, details, formulas, pictures and buttons in one message (Bot API 10.3) |
 | [Languages](i18n.md) | your messages with `t()` (placeholders, plurals), `setLocale`, built-in texts |
 | [Inline mode](inline-mode.md) | pages as `@yourbot query` results |
 | [Mini Apps](mini-apps.md) | opening Mini Apps, checking `initData`, answering, sharing, `sendData` |
-| [Groups](groups.md) | menu ownership, admin-only pages, chat-wide state, privacy mode |
+| [Groups](groups.md) | menu ownership, pages for one member only (ephemeral), admin-only pages, chat-wide state, privacy mode |
+| [Streaming](streaming.md) | `app.stream`: an AI answer appearing as it is written (drafts, rich or plain), with a stop button |
 
 ## State and data
 
@@ -86,6 +88,9 @@ Runnable bots (`BOT_TOKEN=… bun run examples/<file>`) that show features in co
 | [`match.ts`](../examples/match.ts) | a reply-keyboard menu acting on the card on screen, `showMenu` / `hideMenu` in renders, a dialogue with `when` and a photo, `sendTo` for likes and matches, `app.relay` chats, `app.command` + `syncCommands` |
 | [`booking.ts`](../examples/booking.ts) | `date` (calendar), `number` and `multiChoice` steps, `when` |
 | [`support.ts`](../examples/support.ts) | a support desk with `app.relay`: tickets, `relay.filter`, replies and edits carried over, `relayEnd`, rating |
+| [`team.ts`](../examples/team.ts) | a group board: ephemeral pages and a dialogue (`mode: 'ephemeral'`), ephemeral commands, `nav.disabled` |
+| [`ai-chat.ts`](../examples/ai-chat.ts) | `app.stream` with `rich`: an answer streamed as a rich draft with ⏹ Stop, then a rich message |
+| [`rich.ts`](../examples/rich.ts) | `rich` pages: Rich Markdown with a table from data (`md`), Rich HTML with details and a button inside the text, blocks with a photo |
 | [`flowchart.ts`](../examples/flowchart.ts) | `app.flowchart()` and `mermaidLiveUrl`: a bot that sends its own map |
 | [`cloudflare-worker.ts`](../examples/cloudflare-worker.ts) | a Cloudflare Worker: webhook, Redis over HTTP, cron for scheduled tasks |
 | [`captcha.ts`](../examples/captcha.ts) | server-side answers, per-key session TTL, dialogues |

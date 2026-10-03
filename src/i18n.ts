@@ -1,4 +1,4 @@
-import { escapeHTML, escapeMarkdown, Formatted, markdownToHtml } from './format';
+import { escapeHTML, escapeMarkdown, escapeRichMarkdown, Formatted, markdownToHtml } from './format';
 
 /** Plural forms, chosen by `vars.count` with the language's rules (`Intl.PluralRules`). */
 export interface PluralMessage {
@@ -113,7 +113,7 @@ export class Translator {
     const t = ((key: string, vars?: TranslateVars) => format(key, vars, (v) => v)) as Translate;
     t.md = (key, vars) => {
       const source = format(key, vars, escapeMarkdown);
-      return new Formatted(markdownToHtml(source), source);
+      return new Formatted(markdownToHtml(source), source, format(key, vars, escapeRichMarkdown));
     };
     t.html = (key, vars) => new Formatted(format(key, vars, escapeHTML));
     t.has = (key) => find(key) !== undefined;

@@ -59,6 +59,14 @@ export class Nav<C extends Context = Context> {
     return this.app.canGoBack(this.ctx) ? { text, callback_data: `p|${BACK_ID}` } : false;
   }
 
+  /**
+   * A button that is shown but does nothing (greyed out by Telegram): a label
+   * in a grid, an option that isn't available right now.
+   */
+  disabled(text: string): InlineKeyboardButton {
+    return { text, disabled: {} };
+  }
+
   /** Button that deletes the message. */
   close(text = this.app.textsFor(this.ctx).close): InlineKeyboardButton {
     return { text, callback_data: `p|${EXIT_ID}` };

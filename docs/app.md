@@ -13,6 +13,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `withContext<C>()` | `{ page, dialogue, task }` bound to your context type |
 | `replyMenu(rows, options)` | a main menu on the reply keyboard — [Main menu](menu.md) |
 | `md`, `html`, `escapeMarkdown`, `escapeHTML`, `escapeMarkdownV2` | [Text formatting](formatting.md) |
+| `escapeRichMarkdown`, `RichInput` | `rich` content — [Rich messages](rich-messages.md) |
 | `defaultTexts` | the built-in English texts — [Languages](i18n.md#built-in-texts) |
 | `paginate(args, { total, perPage })` | page numbers for list pages |
 | `requireChatAdmin(options)` | middleware: chat admins only — [Groups](groups.md) |
@@ -25,7 +26,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `isChatUnreachable`, `isMessageNotFound`, `isTransient`, `retryAfterMs` | [Error helpers](errors.md) |
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
 | `easytg/testing` | `createTestBot`, `telegramError`, `verifyStorageAdapter`, `verifyTaskStore` — [Testing](testing.md) |
-| `easytg/simulator` | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2` — [Simulator](simulator.md) |
+| `easytg/simulator` | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2`, `messageText`, `richPlainText`, `richButtons`, `richHtml` — [Simulator](simulator.md) |
 | `easytg/simulator/load` | `loadBot`, `interceptBotApi`, `trackBots`: your bot file against a simulator (Bun, Node) — [Preview and recorded tests](preview.md) |
 | `easytg preview <file>` (CLI) | your bot file in a simulated Telegram, in the browser — [Preview](preview.md) |
 | `easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |
@@ -38,7 +39,7 @@ in [Options](options.md). All durations are in milliseconds.
 |---|---|
 | `new EasyTG(options)` | [Options](options.md) |
 | `app.register(...items)` | pages, dialogues and tasks |
-| `app.command(names, target, { description, chats, params })` | a `/command` that opens a page or starts a dialogue — [Commands](commands.md) |
+| `app.command(names, target, { description, chats, params, ephemeral })` | a `/command` that opens a page or starts a dialogue — [Commands](commands.md) |
 | `app.syncCommands(bot)` | Telegram's command menu from the commands with a description |
 | `app.flowchart({ direction, observed })` | the bot's pages, dialogues, commands and the buttons seen, as a Mermaid diagram — [Flow map](flowchart.md) |
 | `bot.use(app)` | handle updates; register before your own handlers |
@@ -59,6 +60,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `app.showMenu(ctx, text)` / `app.hideMenu(ctx, text)` | show or remove the main menu |
 | `app.relay.start(ctx \| bot, userA, userB, options)` / `app.relay.end(…, userId)` / `app.relay.peer(…, userId)` | two users talking through the bot — [Relays](relay.md) |
 | `app.answer(ctx, toast?)` | answer a button press now (e.g. before slow work) |
+| `app.stream(ctx, source, { finish, stoppable, intervalMs, rich })` | text shown while it is generated (a draft in private chats, a growing message in groups), then sent as a message — [Streaming](streaming.md) |
 | `app.withLoading(ctx, job, options)` | run slow work with "typing…", a placeholder or a toast — [Pages](pages.md#slow-pages) |
 | `app.throttle(options)` | API transformer keeping sends within Telegram's limits — [Scaling](scaling.md#staying-within-telegrams-limits) |
 | `app.nav(ctx)` | a `nav` outside renders |

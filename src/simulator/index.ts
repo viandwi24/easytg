@@ -32,13 +32,25 @@ import type {
   Message,
   MessageEntity,
   ReplyKeyboardMarkup,
+  RichBlock,
+  RichMessage,
+  RichMessageButton,
   Update,
   User,
   UserFromGetMe,
 } from 'grammy/types';
 import { ParseError, parseFormatted } from './entities';
+import { parseRichMessage, plainOf, RichMessageError, richButtons, richPlainText, type RichMediaKind } from './rich';
+import { visibleTo } from './visibility';
 
 export { parseFormatted, parseHtml, parseMarkdownV2, ParseError } from './entities';
+export { richButtons, richHtml, richPlainText, type RichHtmlOptions } from './rich';
+export { visibleTo } from './visibility';
+
+/** What a message says as plain text: its text, its caption, or a rich message's text. */
+export function messageText(message: Message): string | undefined {
+  return message.text ?? message.caption ?? (message.rich_message ? richPlainText(message.rich_message) : undefined);
+}
 
 export type SimUser = User;
 
@@ -62,6 +74,12 @@ export interface SimMessage {
   inlineMessageId?: string;
   /** A note shown in the chat that isn't a Telegram message ("Bot restarted"); the bot never sees it. */
   notice?: string;
+  /** An ephemeral message (Bot API 10.2): only this user sees it (and the bot). */
+  receiver?: number;
+  /** Users who see an ephemeral message in this message's place. */
+  hiddenFor?: number[];
+  /** For an ephemeral message shown in place of another: that message's id. */
+  replaced?: number;
 }
 
 export interface SimMember {
@@ -92,6 +110,11 @@ export interface SimChat {
   started: boolean;
   /** Private chats: the user blocked the bot. */
   blocked: boolean;
+  /**
+   * A message being generated (`sendMessageDraft`, Bot API 10): shown until
+   * the bot sends a message or 30 s pass. `canStop`: with a stop button.
+   */
+  draft: { id: number; text: string; canStop: boolean; until: number; rich?: RichMessage } | null;
 }
 
 export interface SimCallbackAnswer {
@@ -157,7 +180,24 @@ export interface SimRateLimits {
 }
 
 const TELEGRAM_LIMITS: SimRateLimits = { global: { limit: 30, perMs: 1000 }, groupChat: { limit: 20, perMs: 60_000 }, privateChat: false };
-const RATE_LIMITED = /^(send(?!ChatAction)|copyMessage|forwardMessage|editMessage)/;
+const RATE_LIMITED = /^(send(?!ChatAction|MessageDraft|RichMessageDraft)|copyMessage|forwardMessage|editMessage)/;
+/** The methods that take `ephemeral_message_parameters` (Bot API 10.3). */
+const EPHEMERAL_METHODS = new Set([
+  'sendMessage',
+  'sendAnimation',
+  'sendAudio',
+  'sendDocument',
+  'sendLivePhoto',
+  'sendPhoto',
+  'sendSticker',
+  'sendVideo',
+  'sendVideoNote',
+  'sendVoice',
+  'sendContact',
+  'sendLocation',
+  'sendVenue',
+  'sendRichMessage',
+]);
 
 export interface SendOptions {
   /** The user sending; default: the first user. */
@@ -166,6 +206,11 @@ export interface SendOptions {
   chat?: number;
   /** Reply to this message id. */
   replyTo?: number;
+  /**
+   * In a group, send it ephemerally: only the bot sees it (Bot API 10.2).
+   * A command the bot lists with `is_ephemeral` is sent like that by itself.
+   */
+  ephemeral?: boolean;
 }
 
 type Listener<T> = (event: T) => void;
@@ -223,7 +268,10 @@ export class TelegramSimulator {
   private pollWaiters: (() => void)[] = [];
   private nextNotice = 1;
   private readonly messageIds = new Map<number, number>();
-  private readonly callbackQueries = new Map<string, { answer?: SimCallbackAnswer; chatId?: number; userId: number }>();
+  private readonly callbackQueries = new Map<string, { answer?: SimCallbackAnswer; chatId?: number; userId: number; at: number; message?: SimMessage }>();
+  /** Ephemeral messages users sent (ephemeral commands), which the bot may answer ephemerally for 15 s. */
+  private readonly incomingEphemeral = new Map<string, { userId: number; at: number }>();
+  private readonly ephemeralIds = new Map<number, number>();
   private readonly inlineQueries = new Map<string, (results: InlineQueryResult[] | null) => void>();
   private readonly preCheckouts = new Map<string, (answer: { ok: boolean; error?: string }) => void>();
   private readonly queue: Update[] = [];
@@ -283,7 +331,7 @@ export class TelegramSimulator {
   }
 
   /** A group (a supergroup, like most groups today) with these members; the first user creates it and the bot is an admin. */
-  createGroup(options: { title: string; members?: number[]; admins?: number[]; id?: number; type?: 'group' | 'supergroup' }): SimChat {
+  createGroup(options: { title: string; members?: number[]; admins?: number[]; id?: number; type?: 'group' | 'supergroup'; /** The bot is an admin (default true). */ botAdmin?: boolean }): SimChat {
     const id = options.id ?? -(1_000_000_000_000 + this.nextGroup++);
     const members = options.members ?? [this.user.id];
     const chat = this.newChat(id, options.type ?? 'supergroup', { title: options.title });
@@ -291,7 +339,7 @@ export class TelegramSimulator {
       const status = index === 0 ? 'creator' : options.admins?.includes(userId) ? 'administrator' : 'member';
       chat.members.set(userId, { user: this.userOf(userId), status, rights: {} });
     });
-    chat.members.set(this.botInfo.id, { user: this.botUser(), status: 'administrator', rights: {} });
+    chat.members.set(this.botInfo.id, { user: this.botUser(), status: options.botAdmin === false ? 'member' : 'administrator', rights: {} });
     this.emit('change', { chatId: id });
     return chat;
   }
@@ -311,13 +359,13 @@ export class TelegramSimulator {
   }
 
   /** The messages of a chat, oldest first (default: the first user's private chat). */
-  messages(chatId = this.user.id): SimMessage[] {
-    return this.chats.get(chatId)?.messages ?? [];
+  messages(chatId = this.user.id, as?: number): SimMessage[] {
+    return visibleTo(this.chats.get(chatId)?.messages ?? [], as);
   }
 
-  /** The last message in a chat. */
-  last(chatId = this.user.id): SimMessage | undefined {
-    return this.messages(chatId).at(-1);
+  /** The last message in a chat; with `as`, the last one that user sees (ephemeral messages are per user). */
+  last(chatId = this.user.id, as?: number): SimMessage | undefined {
+    return this.messages(chatId, as).at(-1);
   }
 
   /** The commands of the default list (all chats, no language). */
@@ -411,9 +459,11 @@ export class TelegramSimulator {
   async tap(label: string, options: SendOptions = {}): Promise<SimCallbackAnswer | SimMessage | undefined> {
     const userId = options.user ?? this.user.id;
     const chat = this.chatFor(options.chat ?? userId);
-    for (const item of [...chat.messages].reverse()) {
+    for (const item of [...visibleTo(chat.messages, userId)].reverse()) {
       const rows = item.message.reply_markup?.inline_keyboard ?? [];
-      const button = rows.flat().find((b) => b.text === label);
+      const rich = richButtons(item.message.rich_message).map((b) => ({ ...b, text: plainOf(b.text) }) as InlineKeyboardButton);
+      // A greyed-out button with the same label (a day out of range) is never the one meant.
+      const button = [...rows.flat(), ...rich].find((b) => b.text === label && !('disabled' in b && b.disabled));
       if (button) return this.press(item.message.message_id, button, { user: userId, chat: chat.id, inlineMessageId: item.inlineMessageId });
     }
     const reply = chat.replyKeyboard?.keyboard.flat().find((b) => (typeof b === 'string' ? b : b.text) === label);
@@ -456,6 +506,14 @@ export class TelegramSimulator {
   async send(text: string, options: SendOptions = {}): Promise<SimMessage> {
     if (!text) throw new Error('Empty message');
     const formatted = parseFormatted(text, undefined, undefined);
+    // A command the bot declared ephemeral goes out ephemerally in groups, as Telegram apps send it.
+    const chat = options.chat === undefined ? undefined : this.chats.get(options.chat);
+    if (options.ephemeral === undefined && chat && chat.type !== 'private' && formatted.entities[0]?.type === 'bot_command' && formatted.entities[0].offset === 0) {
+      const name = text.slice(1, formatted.entities[0].length).split('@')[0];
+      if (this.commandsFor(chat.id, options.user ?? this.user.id).some((c) => c.command === name && (c as BotCommand & { is_ephemeral?: boolean }).is_ephemeral)) {
+        options = { ...options, ephemeral: true };
+      }
+    }
     return this.userMessage({ text, entities: formatted.entities.length ? formatted.entities : undefined }, options);
   }
 
@@ -493,22 +551,25 @@ export class TelegramSimulator {
    */
   async press(
     messageId: number,
-    button: string | [number, number] | InlineKeyboardButton,
+    button: string | [number, number] | InlineKeyboardButton | RichMessageButton,
     options: { user?: number; chat?: number; inlineMessageId?: string } = {},
   ): Promise<SimCallbackAnswer> {
     const userId = options.user ?? this.user.id;
     const found = options.inlineMessageId ? this.findInline(options.inlineMessageId) : this.findMessage(options.chat ?? userId, messageId);
     if (!found) throw new Error(`No message ${messageId} in chat ${options.chat ?? userId}`);
     const rows = (found.message.reply_markup as InlineKeyboardMarkup | undefined)?.inline_keyboard ?? [];
-    const target =
+    // Buttons of a rich message (inside its text) can be pressed too; their label is rich text.
+    const rich = richButtons(found.message.rich_message).map((b) => ({ ...b, text: plainOf(b.text) }) as InlineKeyboardButton);
+    const target: InlineKeyboardButton | undefined =
       typeof button === 'object' && !Array.isArray(button)
-        ? button
+        ? ({ ...button, text: plainOf(button.text) } as InlineKeyboardButton)
         : Array.isArray(button)
           ? rows[button[0]]?.[button[1]]
-          : rows.flat().find((b) => ('callback_data' in b && b.callback_data === button) || b.text === button);
+          : [...rows.flat(), ...rich].find((b) => ('callback_data' in b && b.callback_data === button) || b.text === button);
     if (!target) throw new Error(`No button ${JSON.stringify(button)} on message ${messageId}`);
     const chatId = found.message.chat.id;
 
+    if ('disabled' in target && target.disabled) return {}; // greyed out: Telegram sends nothing
     if ('url' in target && target.url) return this.open(target.url, 'url', chatId, userId);
     if ('web_app' in target && target.web_app) return this.open(target.web_app.url, 'webApp', chatId, userId);
     if ('login_url' in target && target.login_url) return this.open(target.login_url.url, 'login', chatId, userId);
@@ -517,7 +578,8 @@ export class TelegramSimulator {
     if (!('callback_data' in target) || target.callback_data === undefined) return {};
 
     const id = String(this.nextQuery++);
-    const query = { chatId, userId, answer: undefined as SimCallbackAnswer | undefined };
+    if (!visibleTo([found], userId).length) throw new Error(`User ${userId} doesn't see message ${messageId}`);
+    const query = { chatId, userId, answer: undefined as SimCallbackAnswer | undefined, at: Date.now(), message: found };
     this.callbackQueries.set(id, query);
     const inline = found.inlineMessageId && options.inlineMessageId;
     await this.deliver({
@@ -588,6 +650,8 @@ export class TelegramSimulator {
     if (content?.message_text !== undefined) {
       const formatted = this.format(content.message_text, content.parse_mode, content.entities, MESSAGE_LIMIT, 'message is too long');
       fields = { text: formatted.text, entities: formatted.entities.length ? formatted.entities : undefined };
+    } else if (content?.rich_message !== undefined) {
+      fields = { rich_message: this.rich(content.rich_message) } as Partial<Message>;
     } else {
       const kind = (['photo', 'video', 'gif', 'mpeg4_gif', 'document', 'audio', 'voice', 'sticker'] as const).find((k) => r.type === k) ?? 'photo';
       const simKind: SimMediaKind = kind === 'gif' || kind === 'mpeg4_gif' ? 'animation' : kind;
@@ -640,6 +704,16 @@ export class TelegramSimulator {
     return answer;
   }
 
+  /** The user presses stop under a draft the bot is streaming (`stopped_message_generation`). */
+  async stopGeneration(chatId = this.user.id): Promise<void> {
+    const chat = this.chatFor(chatId);
+    const draft = chat.draft;
+    if (!draft?.canStop) throw new Error('No draft with a stop button in this chat');
+    chat.draft = null;
+    this.emit('change', { chatId: chat.id });
+    await this.deliver({ stopped_message_generation: { chat: this.chatObject(chat), draft_id: draft.id } } as unknown as Omit<Update, 'update_id'>);
+  }
+
   /** A user joins a group. */
   async join(chatId: number, userId: number) {
     const chat = this.chatFor(chatId);
@@ -690,12 +764,19 @@ export class TelegramSimulator {
       throw new Error(`User ${userId} can't send messages in ${chat.title ?? chat.id}`);
     }
     if (chat.type === 'private') chat.started = true;
+    if (options.ephemeral) {
+      if (chat.type === 'private') throw new Error('Ephemeral messages are for groups and supergroups');
+      const ephemeralId = this.nextEphemeralId(chat);
+      fields = { ...fields, ephemeral_message_id: ephemeralId } as Partial<Message>;
+      this.incomingEphemeral.set(`${chat.id}:${ephemeralId}`, { userId, at: Date.now() });
+    }
     if (options.replyTo !== undefined) {
       const replied = this.findMessage(chat.id, options.replyTo);
       if (replied) fields = { ...fields, reply_to_message: replied.message as never };
     }
     if (chat.forceReply) chat.forceReply = null;
     const message = this.push(chat, this.userOf(userId), fields, false, media);
+    if (options.ephemeral) message.receiver = userId; // nobody else in the group sees it
     await this.deliver({ message: message.message } as Omit<Update, 'update_id'>);
     return message;
   }
@@ -744,6 +825,7 @@ export class TelegramSimulator {
     try {
       const handler = (this.methods as Record<string, ((p: Record<string, any>, signal?: AbortSignal) => unknown) | undefined>)[method];
       if (!handler) throw new ApiError(404, `Not Found: the simulator doesn't support the method "${method}"`);
+      if (payload.ephemeral_message_parameters && !EPHEMERAL_METHODS.has(method)) throw badRequest(`${method} can't send ephemeral messages`);
       this.checkRate(method, payload);
       const result = await handler.call(this, payload, signal);
       entry.result = result;
@@ -827,6 +909,11 @@ export class TelegramSimulator {
       return this.botMessage(chat, p, { text: formatted.text, entities: formatted.entities.length ? formatted.entities : undefined }).message;
     },
 
+    sendRichMessage: (p: Record<string, any>) => {
+      const chat = this.target(p.chat_id);
+      return this.botMessage(chat, p, { rich_message: this.rich(p.rich_message) } as Partial<Message>).message;
+    },
+
     ...Object.fromEntries(
       MEDIA_KINDS.map((kind) => [
         `send${kind === 'video_note' ? 'VideoNote' : kind[0]!.toUpperCase() + kind.slice(1)}`,
@@ -887,6 +974,27 @@ export class TelegramSimulator {
       return sent.message;
     },
 
+    sendRichMessageDraft: (p: Record<string, any>) => this.methods.sendMessageDraft(p),
+
+    sendMessageDraft: (p: Record<string, any>) => {
+      const chat = this.target(p.chat_id);
+      if (chat.type !== 'private') throw badRequest('message drafts can be sent only to private chats');
+      if (!Number.isInteger(p.draft_id) || p.draft_id === 0) throw badRequest('draft_id must be a non-zero integer');
+      const rich = p.rich_message === undefined ? undefined : this.rich(p.rich_message);
+      const text = rich ? richPlainText(rich) : String(p.text ?? '');
+      if (!rich && text.length > 4096) throw badRequest('message is too long');
+      const until = Date.now() + 30_000;
+      chat.draft = { id: p.draft_id, text, canStop: !!p.can_stop, until, ...(rich ? { rich } : {}) };
+      setTimeout(() => {
+        if (chat.draft?.until === until) {
+          chat.draft = null;
+          this.emit('change', { chatId: chat.id });
+        }
+      }, 30_000).unref?.();
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+
     sendChatAction: (p: Record<string, any>) => {
       const chat = this.target(p.chat_id);
       chat.action = { action: p.action, until: Date.now() + 5000 };
@@ -906,11 +1014,16 @@ export class TelegramSimulator {
 
     editMessageText: (p: Record<string, any>) => {
       const found = this.editable(p);
-      if (found.message.text === undefined) throw badRequest('there is no text in the message to edit');
+      // Text and rich messages edit into each other; media messages have no text to edit.
+      if (found.message.text === undefined && found.message.rich_message === undefined) throw badRequest('there is no text in the message to edit');
+      if (p.rich_message !== undefined) {
+        const rich_message = this.rich(p.rich_message);
+        return this.applyEdit(found, p, { rich_message, text: undefined, entities: undefined, link_preview_options: undefined } as Partial<Message>, () => same(found.message.rich_message, rich_message));
+      }
       const formatted = this.format(String(p.text ?? ''), p.parse_mode, p.entities, MESSAGE_LIMIT, 'message is too long');
       if (!formatted.text.trim()) throw badRequest('message text is empty');
       const entities = formatted.entities.length ? formatted.entities : undefined;
-      return this.applyEdit(found, p, { text: formatted.text, entities }, () => found.message.text === formatted.text && same(found.message.entities, entities));
+      return this.applyEdit(found, p, { text: formatted.text, entities, rich_message: undefined } as Partial<Message>, () => found.message.text === formatted.text && same(found.message.entities, entities));
     },
 
     editMessageCaption: (p: Record<string, any>) => {
@@ -922,11 +1035,12 @@ export class TelegramSimulator {
 
     editMessageMedia: (p: Record<string, any>) => {
       const found = this.editable(p);
-      if (!found.media) throw badRequest('there is no media in the message to edit');
+      // Since Bot API 10.x a text message can be turned into a media message too.
+      if (!found.media && found.message.text === undefined) throw badRequest('there is no media in the message to edit');
       const item = p.media as Record<string, any>;
       const kind = item.type as SimMediaKind;
       const media = this.mediaFrom(kind, item.media, item.media?.filename);
-      const cleared = Object.fromEntries(MEDIA_KINDS.map((k) => [k, undefined]));
+      const cleared = { ...Object.fromEntries(MEDIA_KINDS.map((k) => [k, undefined])), text: undefined, entities: undefined, link_preview_options: undefined, rich_message: undefined };
       found.media = media;
       return this.applyEdit(found, p, { ...cleared, ...this.mediaFields(kind, media), ...this.caption(item) }, () => false);
     },
@@ -934,6 +1048,22 @@ export class TelegramSimulator {
     editMessageReplyMarkup: (p: Record<string, any>) => {
       const found = this.editable(p);
       return this.applyEdit(found, p, {}, () => true);
+    },
+
+    // Ephemeral messages are edited and deleted by chat, receiver and ephemeral id; edits answer true.
+    editEphemeralMessageText: (p: Record<string, any>) => (this.methods.editMessageText(p), true),
+    editEphemeralMessageCaption: (p: Record<string, any>) => (this.methods.editMessageCaption(p), true),
+    editEphemeralMessageMedia: (p: Record<string, any>) => (this.methods.editMessageMedia(p), true),
+    editEphemeralMessageReplyMarkup: (p: Record<string, any>) => (this.methods.editMessageReplyMarkup(p), true),
+    deleteEphemeralMessage: (p: Record<string, any>) => {
+      const found = this.editable(p);
+      const chat = this.chats.get(found.message.chat.id)!;
+      chat.messages = chat.messages.filter((m) => m !== found);
+      // The message it replaced shows again on the receiver's screen.
+      const original = found.replaced === undefined ? undefined : chat.messages.find((m) => m.message.message_id === found.replaced && m.receiver === undefined);
+      if (original?.hiddenFor) original.hiddenFor = original.hiddenFor.filter((u) => u !== p.receiver_user_id);
+      this.emit('change', { chatId: chat.id });
+      return true;
     },
 
     deleteMessage: (p: Record<string, any>) => {
@@ -1101,6 +1231,7 @@ export class TelegramSimulator {
       pinned: [],
       started: type !== 'private',
       blocked: false,
+      draft: null,
     };
     this.chats.set(id, chat);
     return chat;
@@ -1204,7 +1335,7 @@ export class TelegramSimulator {
     for (const button of rows.flat()) {
       if (!button.text) throw badRequest('text buttons are unallowed in the inline keyboard');
       if ('callback_data' in button && new TextEncoder().encode(button.callback_data).length > 64) throw badRequest('BUTTON_DATA_INVALID');
-      const kinds = ['callback_data', 'url', 'web_app', 'login_url', 'switch_inline_query', 'switch_inline_query_current_chat', 'switch_inline_query_chosen_chat', 'copy_text', 'callback_game', 'pay'];
+      const kinds = ['callback_data', 'url', 'web_app', 'login_url', 'switch_inline_query', 'switch_inline_query_current_chat', 'switch_inline_query_chosen_chat', 'copy_text', 'callback_game', 'pay', 'disabled'];
       if (!kinds.some((k) => k in button)) throw badRequest('text buttons are unallowed in the inline keyboard');
     }
   }
@@ -1267,9 +1398,39 @@ export class TelegramSimulator {
     }
   }
 
+  /** A rich message's content as Telegram stores it; media blocks register their files. */
+  private rich(input: unknown): RichMessage {
+    if (!input || typeof input !== 'object') throw badRequest('rich_message must be an object');
+    try {
+      return parseRichMessage(input as Record<string, any>, (kind, source, extra) => this.richMedia(kind, source, extra));
+    } catch (error) {
+      if (error instanceof RichMessageError) throw badRequest(error.message);
+      throw error;
+    }
+  }
+
+  private richMedia(kind: RichMediaKind, source: unknown, extra: { caption?: unknown; spoiler?: boolean }): RichBlock {
+    const simKind: SimMediaKind = kind === 'voice_note' ? 'voice' : kind;
+    const media = this.mediaFrom(simKind, source);
+    const fields = this.mediaFields(simKind, media) as Record<string, unknown>;
+    const caption = extra.caption ? { caption: extra.caption } : {};
+    const spoiler = extra.spoiler && ['photo', 'video', 'animation'].includes(kind) ? { has_spoiler: true } : {};
+    return { type: kind, [kind]: fields[simKind], ...caption, ...spoiler } as unknown as RichBlock;
+  }
+
+  /** A URL a browser can show for a file the bot sent (photos, videos… also inside rich messages). */
+  fileUrl(fileId: string): string | undefined {
+    return this.files.get(fileId)?.url;
+  }
+
   private botMessage(chat: SimChat, p: Record<string, any>, fields: Partial<Message>, media?: SimMedia): SimMessage {
     const markup = p.reply_markup as Record<string, any> | undefined;
     this.checkMarkup(markup);
+    const ephemeral = p.ephemeral_message_parameters ? this.authorizeEphemeral(chat, p) : undefined;
+    if (ephemeral) {
+      if (markup && !markup.inline_keyboard) throw badRequest('only inline keyboards can be used in ephemeral messages');
+      fields = { ...fields, ephemeral_message_id: this.nextEphemeralId(chat), receiver_user: this.userOf(ephemeral.receiver) } as Partial<Message>;
+    }
     const replyTo = p.reply_parameters?.message_id ?? p.reply_to_message_id;
     if (replyTo !== undefined) {
       const replied = this.findMessage(chat.id, replyTo);
@@ -1283,8 +1444,62 @@ export class TelegramSimulator {
     } else if (markup?.remove_keyboard) chat.replyKeyboard = null;
     else if (markup?.force_reply) chat.forceReply = markup as ForceReply;
     chat.action = null;
+    chat.draft = null; // a message from the bot ends the draft
     const inline = markup?.inline_keyboard ? { reply_markup: markup as InlineKeyboardMarkup } : {};
-    return this.push(chat, this.botUser(), { ...fields, ...inline, ...(p.protect_content ? { has_protected_content: true } : {}) } as Partial<Message>, true, media);
+    const sent = this.push(chat, this.botUser(), { ...fields, ...inline, ...(p.protect_content ? { has_protected_content: true } : {}) } as Partial<Message>, true, media);
+    if (ephemeral) {
+      sent.receiver = ephemeral.receiver;
+      // Shown in place of the pressed message, on the receiver's screen only.
+      if (ephemeral.replaces) {
+        ephemeral.replaces.hiddenFor = [...(ephemeral.replaces.hiddenFor ?? []), ephemeral.receiver];
+        sent.replaced = ephemeral.replaces.message.message_id;
+      }
+      this.emit('change', { chatId: chat.id });
+    }
+    return sent;
+  }
+
+  private nextEphemeralId(chat: SimChat): number {
+    const id = (this.ephemeralIds.get(chat.id) ?? 0) + 1;
+    this.ephemeralIds.set(chat.id, id);
+    return id;
+  }
+
+  /**
+   * Telegram's rules for ephemeral messages: groups only, to a member; a bot
+   * that isn't an admin answers within 15 s of a button press
+   * (`callback_query_id`) or an ephemeral command (replying to it).
+   */
+  private authorizeEphemeral(chat: SimChat, p: Record<string, any>): { receiver: number; replaces?: SimMessage } {
+    const e = p.ephemeral_message_parameters as { receiver_user_id: number; callback_query_id?: string; replace_callback_query_message?: boolean };
+    if (chat.type !== 'group' && chat.type !== 'supergroup') throw badRequest('ephemeral messages can be sent only to groups and supergroups');
+    const member = chat.members.get(e.receiver_user_id);
+    if (!member || ['left', 'kicked'].includes(member.status) || member.user.is_bot) throw badRequest('user not found');
+    const status = chat.members.get(this.botInfo.id)?.status;
+    const admin = status === 'administrator' || status === 'creator';
+    const now = Date.now();
+
+    const query = e.callback_query_id === undefined ? undefined : this.callbackQueries.get(String(e.callback_query_id));
+    if (e.callback_query_id !== undefined && (!query || query.userId !== e.receiver_user_id || query.chatId !== chat.id)) {
+      throw badRequest('query is too old and response timeout expired or query ID is invalid');
+    }
+    const freshQuery = !!query && now - query.at <= 15_000;
+    const replyTo = p.reply_parameters?.ephemeral_message_id;
+    const incoming = replyTo === undefined ? undefined : this.incomingEphemeral.get(`${chat.id}:${replyTo}`);
+    if (replyTo !== undefined && (!incoming || incoming.userId !== e.receiver_user_id)) throw badRequest('message to be replied not found');
+    const freshReply = !!incoming && now - incoming.at <= 15_000;
+    if (!admin && !freshQuery && !freshReply) {
+      // The simulator's wording: Telegram refuses, but its exact text isn't documented.
+      throw new ApiError(403, 'Forbidden: a bot that is not an admin can send an ephemeral message only within 15 seconds of a button press or an ephemeral command');
+    }
+
+    let replaces: SimMessage | undefined;
+    if (e.replace_callback_query_message) {
+      if (!query?.message) throw badRequest('replace_callback_query_message needs callback_query_id');
+      if (query.message.receiver !== undefined) throw badRequest('replace_callback_query_message must be False for callback queries from ephemeral messages');
+      replaces = query.message;
+    }
+    return { receiver: e.receiver_user_id, replaces };
   }
 
   private push(chat: SimChat, from: User, fields: Partial<Message>, fromBot: boolean, media?: SimMedia): SimMessage {
@@ -1311,6 +1526,12 @@ export class TelegramSimulator {
   }
 
   private editable(p: Record<string, any>): SimMessage {
+    if (p.ephemeral_message_id !== undefined) {
+      const chat = this.target(p.chat_id, true);
+      const found = chat.messages.find((m) => m.message.ephemeral_message_id === p.ephemeral_message_id && m.receiver === p.receiver_user_id && m.fromBot);
+      if (!found) throw badRequest('message to edit not found');
+      return found;
+    }
     if (p.inline_message_id !== undefined) {
       const found = this.findInline(p.inline_message_id);
       if (!found) throw badRequest('message to edit not found');

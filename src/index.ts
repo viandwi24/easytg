@@ -22,6 +22,9 @@ export {
   type PaymentArgs,
   type RelayApi,
   type RelayOptions,
+  type StreamOptions,
+  type StreamResult,
+  type StreamSource,
 } from './engine';
 export {
   page,
@@ -46,6 +49,7 @@ export {
   html,
   escapeMarkdown,
   escapeMarkdownV2,
+  escapeRichMarkdown,
   escapeHTML,
   type Formatted,
   type ParseMode,
@@ -111,6 +115,7 @@ export type {
   Middleware,
   MiddlewareArgs,
   PageContent,
+  RichInput,
   Params,
   ParamsShape,
   RenderArgs,

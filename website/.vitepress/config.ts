@@ -55,10 +55,12 @@ export default defineConfig({
           { text: 'Dialogues', link: '/docs/dialogues' },
           { text: 'Text input', link: '/docs/text-input' },
           { text: 'Text formatting', link: '/docs/formatting' },
+          { text: 'Rich messages', link: '/docs/rich-messages' },
           { text: 'Languages', link: '/docs/i18n' },
           { text: 'Inline mode', link: '/docs/inline-mode' },
           { text: 'Mini Apps', link: '/docs/mini-apps' },
           { text: 'Groups', link: '/docs/groups' },
+          { text: 'Streaming', link: '/docs/streaming' },
         ],
       },
       {

@@ -67,6 +67,9 @@ class ProactiveContext extends Context {
   override replyWithAudio(...[file, other, signal]: Parameters<Context['replyWithAudio']>) {
     return super.replyWithAudio(file, this.thread(other), signal);
   }
+  override replyWithRichMessage(...[rich, other, signal]: Parameters<Context['replyWithRichMessage']>) {
+    return super.replyWithRichMessage(rich, this.thread(other), signal);
+  }
   override replyWithMediaGroup(...[media, other, signal]: Parameters<Context['replyWithMediaGroup']>) {
     return super.replyWithMediaGroup(media, this.thread(other), signal);
   }

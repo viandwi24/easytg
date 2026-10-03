@@ -21,7 +21,9 @@ const order = page<{ id: string; tab?: string }>('order')
 A render returns one of:
 - **content**: `{ text, keyboard, toast, linkPreview, parseMode, protectContent, deleteAfterMs, refreshEveryMs }`
   plus at most one of `photo`, `video`, `animation`, `document`, `audio`, `album`, `copy`
-  (see [Media](media.md)) or `invoice` (see [Payments](payments.md)).
+  (see [Media](media.md)) or `invoice` (see [Payments](payments.md)). Or
+  `rich` instead of `text` and media: headings, tables, lists and pictures in
+  one message (see [Rich messages](rich-messages.md)).
   `deleteAfterMs` and `refreshEveryMs` are [scheduled tasks](scheduler.md#built-in-helpers):
   they need `app.startScheduler(bot)`.
 - **`nav.redirect(page, params)`**: show another page instead
@@ -64,13 +66,14 @@ bot.start();
 
 | | |
 |---|---|
-| `nav.button(text, pageOrDialogue, params?, { store?, mode? })` | open a page or start a dialogue; `store`: params kept server-side, `mode: 'send'`: keep the pressed message |
+| `nav.button(text, pageOrDialogue, params?, { store?, mode? })` | open a page or start a dialogue; `store`: params kept server-side, `mode: 'send'`: keep the pressed message, `mode: 'ephemeral'`: for the presser only, in groups ([Groups](groups.md#only-for-one-member-ephemeral)) |
 | `nav.self(text, params)` | re-open the current page with params merged |
 | `nav.back(text?)` | the page this message showed before, with its params; `false` (hidden) when there is none |
 | `nav.home(text?)` / `nav.close(text?)` | home page / delete the message |
 | `nav.pay(text)` | the Pay button of an [invoice](payments.md) |
 | `nav.url(text, url)` / `nav.webApp(text, url)` | links: `http(s)://` or `tg://` only (Telegram rejects `mailto:`, `tel:`); Mini Apps need `https://` |
 | `nav.deepLink(pageOrDialogue, params?, { store? })` | `https://t.me/<bot>?start=…` URL (see [Deep links](deep-links.md)) |
+| `nav.disabled(text)` | a button that is shown but can't be pressed (greyed out, Bot API 10): a locked feature, a sold-out item, a label |
 | `nav.data(target, params?)` | raw callback data for hand-built keyboards |
 | `nav.redirect(...)` / `nav.startDialogue(...)` | render results |
 
@@ -86,6 +89,7 @@ Outside a render (e.g. in `bot.command`), get one with `app.nav(ctx)`.
 | `send` | new message |
 | `reply` | new message replying to the triggering message |
 | `edit` | edit the pressed message; falls back to `send` when it can't |
+| `ephemeral` | in groups, for the user who pressed only ([Groups](groups.md#only-for-one-member-ephemeral)); elsewhere `auto` |
 
 Text ↔ photo transitions are handled for you: edit media, edit caption, or
 delete and resend. `message is not modified` is ignored.

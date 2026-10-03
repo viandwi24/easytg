@@ -50,14 +50,42 @@ sim.messages(group.id);                                   // what the group show
 sim.chat(alice.id)?.replyKeyboard;                        // the reply keyboard the bot shows Alice
 ```
 
-The first member creates a group and the bot is one of its admins. Groups
-see every message (as with privacy mode off).
+The first member creates a group and the bot is one of its admins
+(`botAdmin: false` for a bot that isn't). Groups see every message (as with
+privacy mode off).
+
+## Ephemeral messages and drafts
+
+Each user sees their own screen: `sim.messages(chatId, userId)` and
+`sim.last(chatId, userId)` are what that user sees, with the
+[ephemeral messages](groups.md#only-for-one-member-ephemeral) sent to them and
+without those sent to others; a message an ephemeral one replaced is hidden
+for its receiver until it is deleted. Without a user, every message is
+listed. `press` and `tap` only find what the user sees, and the chat window
+shows each user's own view ("👁 Only you can see this").
+
+```ts
+await sim.tap('⚙️ My settings', { chat: group.id, user: bob.id });
+sim.last(group.id, bob.id)?.receiver;          // bob.id: only Bob sees it
+sim.messages(group.id, alice.id);              // Alice still sees the menu
+await sim.send('/mytasks', { chat: group.id, ephemeral: true }); // an ephemeral command
+```
+
+Ephemeral messages are checked like Telegram does: groups only, to a member,
+and from a bot that isn't an admin only within 15 seconds of a press or in
+reply to an ephemeral message (else `403 Forbidden`). A command listed with
+`is_ephemeral` is sent ephemerally by `send`.
+
+`sim.chat(userId).draft` is the [streamed draft](streaming.md) on screen
+(`{ id, text, canStop }`, gone after 30 seconds or when the bot sends a
+message), and `sim.stopGeneration(chatId?)` presses its ⏹ Stop. Disabled
+buttons are greyed out; pressing one does nothing.
 
 ## What users can do
 
 | | |
 |---|---|
-| `send(text, { user?, chat?, replyTo? })` | a text message; `/commands`, links and mentions get their entities |
+| `send(text, { user?, chat?, replyTo?, ephemeral? })` | a text message; `/commands`, links and mentions get their entities; `ephemeral`: for the bot only (groups) |
 | `press(messageId, button, { user?, chat?, inlineMessageId? })` | an inline button; resolves with the answer: `{ text, alert, url }` |
 | `pressReply(button, options?)` | a reply-keyboard button: text, `request_contact`, `request_location` |
 | `sendMedia(kind, { url?, name?, caption? }, options?)` | a photo, document, video… |
@@ -69,8 +97,31 @@ see every message (as with privacy mode off).
 | `pay(messageId, options?)` | pay an invoice: pre-checkout, then `successful_payment` |
 | `join(chatId, userId)` / `leave(chatId, userId)` | join or leave a group |
 | `block(userId?, blocked?)` | block the bot: sending to them fails with 403 |
+| `stopGeneration(chatId?)` | press ⏹ Stop on a streamed draft |
 | `tap(label, options?)` | the newest button with this label: inline, else on the reply keyboard |
 | `update(raw)` | any other update |
+
+## Rich messages
+
+[Rich messages](rich-messages.md) are kept as Telegram returns them: Rich
+Markdown, Rich HTML and blocks become `message.rich_message.blocks`, media in
+them gets file ids, and the chat window draws them (tables, details, lists,
+formulas as text, buttons). Buttons inside the text press like inline
+buttons (`press`, `tap`). For tests:
+
+```ts
+import { messageText, richButtons } from 'easytg/simulator';
+
+messageText(sim.last()!.message);                    // text, caption, or a rich message as plain text
+richButtons(sim.last()!.message.rich_message);       // its buttons, in order
+sim.fileUrl(fileId);                                 // where a file the bot sent can be seen
+```
+
+Unsupported HTML tags, media that isn't an http(s) URL or a `tg://…?id=`
+reference to `media`, and content in more than one of `markdown` / `html` /
+`blocks` are refused with a 400. The parser follows Telegram's description,
+not its code: test unusual constructs on Telegram. Plain URLs, mentions and
+commands in rich text aren't detected.
 
 ## Answers and errors like Telegram's
 
@@ -177,5 +228,5 @@ queue again waits for a free slot instead of running right away.
 
 Mini App pages themselves (their buttons open a dialog where you can send
 `sendData`), file downloads, channels, forum topics, business connections,
-poll votes, privacy mode and Telegram's rate limits (use
-[`app.throttle()`](scaling.md) to pace messages anyway).
+poll votes and privacy mode. Telegram's rate limits only with `rateLimits`
+(see [Watching](#watching)).

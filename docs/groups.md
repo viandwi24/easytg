@@ -16,6 +16,43 @@ await app.sendTo(bot, { chatId: groupId, allowedUsers: adminIds }, reviewCard, {
 `buttons: { ownerOnly: false }` lets anyone press any menu (check rights in
 middlewares then).
 
+## Only for one member (ephemeral)
+
+Telegram (Bot API 10.2) can show a message in a group to one member only: an
+ephemeral message, marked "Only you can see this". Open a page or start a
+dialogue from a shared menu with `mode: 'ephemeral'`:
+
+```ts
+const board = page('board').render(({ nav }) => ({
+  text: '📋 Team board',
+  keyboard: [
+    [nav.button('⚙️ My settings', settings, {}, { mode: 'ephemeral' })], // for the presser only
+    [nav.button('📊 Results', results)],                                 // for everyone
+  ],
+}));
+```
+
+- The page takes the menu's place **on the presser's screen**; the others
+  keep seeing the menu, and can open their own copy at the same time. Use
+  `buttons: { ownerOnly: false }` (or `allowedUsers`) so others may press the
+  shared menu.
+- The buttons of an ephemeral page edit that copy (`editEphemeralMessage…`),
+  Back goes back through it to the menu, and Close removes it, which shows
+  the menu again.
+- A dialogue started this way asks the presser only; its questions are
+  removed like any dialogue's, and the menu stays for everyone.
+- Something sent from an ephemeral page (a button with `mode: 'send'`, a
+  long text's next part) is ephemeral too. Albums, copies and invoices can't
+  be ephemeral: they throw.
+- In private chats `ephemeral` is just `edit`.
+- An admin bot may send ephemeral messages at any time. A bot that isn't an
+  admin only within 15 seconds of the press (easytg answers right away, so
+  this matters only for slow pages), or in reply to an
+  [ephemeral command](commands.md#ephemeral-commands).
+
+`app.open(ctx, page, params, { mode: 'ephemeral' })` does the same from a
+button press of your own.
+
 ## Admin-only pages and dialogues
 
 ```ts
@@ -56,3 +93,5 @@ In forum groups, pages stay in the topic they were opened in; `sendTo` takes a
 
 [`examples/group.ts`](../examples/group.ts) is a group bot with admin-only
 settings, a live scoreboard and a quiz.
+[`examples/team.ts`](../examples/team.ts) is a team board with ephemeral
+settings, an ephemeral vote, ephemeral commands and a disabled button.

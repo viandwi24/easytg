@@ -34,6 +34,11 @@ show as text).
 `escapeMarkdown`, `escapeHTML` and `escapeMarkdownV2` are also available for
 manual escaping.
 
+For headings, tables, task lists, formulas and pictures in one message, see
+[Rich messages](rich-messages.md): `rich` instead of `text`, in Telegram's
+Rich Markdown (GitHub-style, so `__x__` is bold there). `md` fragments work
+there too, escaping their values for it (`escapeRichMarkdown`).
+
 ## Try it
 
 A whole bot. On the [docs site](https://viandwi24.github.io/easytg/) it runs next to the code, in a Telegram simulator.

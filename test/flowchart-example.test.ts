@@ -14,7 +14,7 @@ test('examples/flowchart.ts: /flow shows the map of what was used', async () => 
   const text = sim.last()!.message.text!;
   expect(text).toStartWith('🗺 This bot, so far\nflowchart LR');
   expect(text).toContain('-->|"🛍 Catalog"|');
-  expect(text).toContain('-->|"Green tea"|');
+  expect(text).toContain('-->|"Green tea · Black tea"|'); // both catalog buttons lead to the product page
   expect(text).toContain('-.->|redirect|'); // order → thanks
   const entities = sim.last()!.message.entities!;
   expect(entities.some((e) => e.type === 'pre')).toBe(true);

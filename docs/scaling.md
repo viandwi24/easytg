@@ -96,6 +96,9 @@ bot.api.config.use(app.throttle({
   button presses and everything else are never delayed.
 - `chat(chatId)` returns your own rule for a chat, `false` for no limit, or
   `undefined` for the defaults.
+- Messages to a chat keep their order: calls that wait are served first come,
+  first served (within a process; with `cluster`, processes take turns
+  through the shared counters).
 - The counters live where rate limits do: in this process, or shared by all
   processes with `cluster`. Several bots on one shared storage need their own
   `id` (e.g. the bot's username).

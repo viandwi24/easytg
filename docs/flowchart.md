@@ -45,8 +45,11 @@ run your tests, click through [`easytg preview`](preview.md) (its **Flow**
 tab shows the diagram as you go), or let real users use the bot. A page
 that nobody opened yet shows up alone.
 
-- Each edge is recorded once, in memory, per process; `nav.self` and other
-  links from a page to itself are left out.
+- Edges are kept in memory, per process: one per pair of screens and kind,
+  with up to three of its button labels (`"Green tea · Black tea"`). So the
+  map stays small however many different labels buttons have (counters,
+  names), and recording is safe to leave on in production. `nav.self` and
+  other links from a page to itself are left out.
 - `{ observed: false }` keeps only commands and menu buttons;
   `{ direction: 'TD' }` draws top-down.
 

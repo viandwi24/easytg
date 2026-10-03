@@ -15,6 +15,8 @@
  */
 import type { InlineKeyboardButton, InlineQueryResult, KeyboardButton, Message, MessageEntity } from 'grammy/types';
 import type { SimChat, SimMessage, TelegramSimulator } from './index';
+import { plainOf, richButtons, richHtml, richPlainText } from './rich';
+import { visibleTo } from './visibility';
 
 const STYLE = /* css */ `
 :host {
@@ -93,6 +95,10 @@ header .icon-btn { width: 34px; height: 34px; font-size: 18px; }
 .meta { float: right; font-size: 11.5px; color: var(--tg-muted); margin: 6px 0 -4px 10px; line-height: 1.6; user-select: none; }
 .out .meta { color: var(--tg-out-muted); }
 .via { font-size: 13px; color: var(--tg-accent); font-weight: 500; }
+.only-you { font-size: 12px; color: var(--tg-muted); margin-bottom: 2px; }
+.draft .text::after { content: '▍'; animation: blink 1s steps(2) infinite; margin-left: 1px; color: var(--tg-accent); }
+.draft .thinking { color: var(--tg-muted); font-style: italic; }
+@keyframes blink { to { opacity: 0; } }
 .quote { border-left: 3px solid var(--tg-accent); background: var(--tg-quote); border-radius: 4px; padding: 2px 8px; margin: 2px 0 4px; font-size: 13.5px; }
 .quote b { color: var(--tg-accent); display: block; font-size: 13px; }
 .quote span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; opacity: 0.85; }
@@ -120,10 +126,49 @@ blockquote { margin: 4px 0; border-left: 3px solid var(--tg-accent); background:
 .dice { font-size: 56px; line-height: 1.1; }
 .keyboard { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; width: 100%; min-width: 220px; }
 .krow { display: flex; gap: 3px; }
+.rich { min-width: 200px; }
+.rich > :first-child { margin-top: 0; }
+.rich p { margin: 0 0 6px; white-space: pre-wrap; }
+.rich .rich-h { font-weight: 700; margin: 8px 0 4px; line-height: 1.25; }
+.rich .rich-h1 { font-size: 21px; } .rich .rich-h2 { font-size: 18.5px; } .rich .rich-h3 { font-size: 16.5px; }
+.rich .rich-h4, .rich .rich-h5, .rich .rich-h6 { font-size: 15px; }
+.rich hr { border: none; border-top: 1px solid var(--tg-border); margin: 8px 0; }
+.rich .rich-list { list-style: none; padding: 0; margin: 0 0 6px; }
+.rich .rich-list li { display: flex; gap: 6px; }
+.rich .rich-list li > div { flex: 1; min-width: 0; }
+.rich .rich-list li p { margin: 0; }
+.rich .rich-label { color: var(--tg-muted); min-width: 1em; text-align: right; flex: none; }
+.rich blockquote p:last-child { margin-bottom: 0; }
+.rich blockquote cite { display: block; font-size: 13px; color: var(--tg-muted); font-style: normal; margin-top: 2px; }
+.rich .rich-pull { border-left: none; text-align: center; font-style: italic; background: none; }
+.rich .rich-expandable { max-height: 4.2em; overflow: hidden; }
+.rich details { margin: 0 0 6px; border-radius: 6px; background: var(--tg-code); padding: 4px 8px; }
+.rich summary { cursor: pointer; font-weight: 600; }
+.rich .rich-table-wrap { overflow-x: auto; margin: 0 0 6px; }
+.rich .rich-table { border-collapse: collapse; font-size: 14px; }
+.rich .rich-table td, .rich .rich-table th { padding: 3px 8px; border-bottom: 1px solid var(--tg-border); }
+.rich .rich-table.bordered td, .rich .rich-table.bordered th { border: 1px solid var(--tg-border); }
+.rich .rich-table.striped tr:nth-child(even) td { background: var(--tg-code); }
+.rich .rich-caption { font-size: 13px; color: var(--tg-muted); margin: 2px 0 6px; }
+.rich .rich-math { font-family: 'Times New Roman', serif; font-style: italic; }
+.rich .rich-math.block { text-align: center; margin: 4px 0 8px; font-size: 17px; }
+.rich .rich-footer { font-size: 13px; color: var(--tg-muted); }
+.rich .rich-thinking { color: var(--tg-muted); font-style: italic; }
+.rich .rich-spoiler { background: var(--tg-muted); color: transparent; border-radius: 4px; }
+.rich .rich-spoiler:hover { background: transparent; color: inherit; }
+.rich .rich-blur { filter: blur(14px); }
+.rich .rich-collage, .rich .rich-slideshow { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; }
+.rich .img { margin: 2px 0 6px; }
+.rich mark { background: rgba(255, 213, 79, .55); color: inherit; border-radius: 3px; }
+.rich .rich-buttons { margin: 4px 0 6px; flex-wrap: wrap; }
+.rich .kbtn { flex: 0 1 auto; }
+.rich .kbtn.rich-success { color: #2e9d4f; } .rich .kbtn.rich-danger { color: #d64545; } .rich .kbtn.rich-primary { background: var(--tg-accent); color: #fff; }
+.rich .kbtn.rich-link { background: none; box-shadow: none; padding: 0 2px; text-decoration: underline; }
 .kbtn { flex: 1 1 0; min-width: 0; font: inherit; font-size: 14px; font-weight: 500; color: var(--tg-button-text); background: var(--tg-button); border: none; border-radius: 8px; padding: 7px 8px; cursor: pointer; position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: var(--tg-shadow); backdrop-filter: blur(8px); transition: background .12s; }
 .kbtn:hover { background: var(--tg-button-hover); }
+.kbtn.off, .kbtn.off:hover { opacity: .45; cursor: default; background: var(--tg-button); }
 .kbtn .corner { position: absolute; top: 2px; right: 5px; font-size: 10px; opacity: .8; }
-.kbtn.busy::after { content: ''; position: absolute; top: 5px; right: 6px; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+.kbtn.busy::after, .kbtn[data-busy]::after { content: ''; position: absolute; top: 5px; right: 6px; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .service { align-self: center; background: var(--tg-service); color: #fff; font-size: 13px; padding: 3px 10px; border-radius: 12px; margin: 4px 0; max-width: 85%; text-align: center; }
 .banner { background: #e5484d; color: #fff; font-size: 13px; padding: 6px 10px; display: flex; gap: 8px; align-items: flex-start; }
@@ -342,7 +387,15 @@ export class EasyTGChatElement extends HTMLElement {
       ${this.switchers()}`,
     );
     this.patch(shell.banners, this.errors.map((e, i) => `<div class="banner"><span>⚠️</span><pre>${esc(e)}</pre><button data-act="dismiss" data-i="${i}" title="Dismiss">×</button></div>`).join(''));
-    this.reconcile(list, chat?.messages.length ? this.messages(chat) : [{ key: 'empty', html: this.empty() }]);
+    const items = chat?.messages.length ? this.messages(chat) : chat?.draft ? [] : [{ key: 'empty', html: this.empty() }];
+    // A message being generated (app.stream): grows at the end of the chat, with a stop button when allowed.
+    if (chat?.draft) {
+      const d = chat.draft;
+      const body = d.rich ? `${richHtml(d.rich, { fileUrl: (id) => sim.fileUrl(id) })}<div class="text"></div>` : d.text ? `<div class="text">${esc(d.text)}</div>` : '<div class="thinking">Thinking…</div>';
+      const stop = d.canStop ? '<div class="keyboard"><div class="krow"><button class="kbtn" data-act="stop">⏹ Stop</button></div></div>' : '';
+      items.push({ key: 'draft', html: `<div class="row draft"><div class="bubble">${body}</div>${stop}</div>` });
+    }
+    this.reconcile(list, items);
     if (this.patch(shell.dock, this.dock(chat))) {
       const input = shell.dock.querySelector('input[data-focus="text"]') as HTMLInputElement | null;
       if (input) {
@@ -389,8 +442,12 @@ export class EasyTGChatElement extends HTMLElement {
 
   private switchers() {
     const sim = this.sim!;
-    const chats = [...sim.chats.values()].filter((c) => c.type !== 'private' || c.started || c.id === this.chatId);
     const users = [...sim.users.values()];
+    const chats: { id: number; type: string; title?: string; user?: { first_name: string } }[] = [...sim.chats.values()].filter(
+      (c) => c.type !== 'private' || c.started || c.id === this.chatId,
+    );
+    // The typing user's private chat may not exist yet (nothing sent there): it is still one to switch to.
+    if (!chats.some((c) => c.id === this.userId) && sim.users.has(this.userId)) chats.unshift({ id: this.userId, type: 'private', user: sim.users.get(this.userId) });
     const chatSelect =
       chats.length > 1
         ? `<select data-act="chat" title="Chat">${chats.map((c) => `<option value="${c.id}"${c.id === this.chatId ? ' selected' : ''}>${esc(c.type === 'private' ? `💬 ${c.user?.first_name}` : `👥 ${c.title}`)}</option>`).join('')}</select>`
@@ -409,7 +466,8 @@ export class EasyTGChatElement extends HTMLElement {
 
   private messages(chat: SimChat): { key: string; html: string }[] {
     const out: { key: string; html: string }[] = [];
-    const items = chat.messages;
+    // What this user sees: ephemeral messages are for their receiver only.
+    const items = visibleTo(chat.messages, this.userId);
     for (let i = 0; i < items.length; i++) {
       const item = items[i]!;
       const group = item.message.media_group_id;
@@ -445,13 +503,22 @@ export class EasyTGChatElement extends HTMLElement {
     const key = `${chat.id}:${m.message_id}`;
     const media = this.mediaBlock(item);
     const sender = !item.fromBot && chat.type !== 'private' ? `<div class="sender">${esc(m.from?.first_name ?? '')}</div>` : '';
-    const via = m.via_bot ? `<div class="via">via @${esc(m.via_bot.username ?? '')}</div>` : '';
+    const via =
+      (m.ephemeral_message_id !== undefined ? '<div class="only-you">👁 Only you can see this</div>' : '') +
+      (m.via_bot ? `<div class="via">via @${esc(m.via_bot.username ?? '')}</div>` : '');
     const reply = m.reply_to_message
-      ? `<div class="quote"><b>${esc(m.reply_to_message.from?.first_name ?? '')}</b><span>${esc(m.reply_to_message.text ?? m.reply_to_message.caption ?? '📎 Media')}</span></div>`
+      ? `<div class="quote"><b>${esc(m.reply_to_message.from?.first_name ?? '')}</b><span>${esc(m.reply_to_message.text ?? m.reply_to_message.caption ?? (m.reply_to_message.rich_message ? richPlainText(m.reply_to_message.rich_message) : '📎 Media'))}</span></div>`
       : '';
     const text = m.text ?? m.caption;
     const entities = m.text !== undefined ? m.entities : m.caption_entities;
-    const body = text ? `<div class="text">${this.formatted(text, entities ?? [], key)}</div>` : '';
+    const body = m.rich_message
+      ? richHtml(m.rich_message, {
+          fileUrl: (id) => this.sim?.fileUrl(id),
+          button: (i) => `data-act="rich-press" data-msg="${m.message_id}" data-i="${i}"${this.busy.has(`${key}:rich:${i}`) ? ' data-busy' : ''}`,
+        })
+      : text
+        ? `<div class="text">${this.formatted(text, entities ?? [], key)}</div>`
+        : '';
     const extra = this.extra(m);
     const meta = `<span class="meta">${m.edit_date ? 'edited ' : ''}${time(m.date)}${item.fromBot ? '' : ' ✓✓'}</span>`;
     const keyboard = this.inlineKeyboard(item);
@@ -515,6 +582,7 @@ export class EasyTGChatElement extends HTMLElement {
           `<div class="krow">${row
             .map((button, c) => {
               const id = `${item.message.message_id}:${r}:${c}`;
+              if ('disabled' in button && button.disabled) return `<button class="kbtn off" disabled aria-disabled="true">${esc(button.text) || '&nbsp;'}</button>`;
               return `<button class="kbtn${this.busy.has(`${item.message.chat.id}:${id}`) ? ' busy' : ''}" data-act="press" data-msg="${item.message.message_id}" data-r="${r}" data-c="${c}">${esc(button.text)}${corner(button)}</button>`;
             })
             .join('')}</div>`,
@@ -744,6 +812,31 @@ export class EasyTGChatElement extends HTMLElement {
         );
         break;
       }
+      case 'rich-press': {
+        const messageId = Number(target.dataset.msg);
+        const index = Number(target.dataset.i);
+        const item = chat?.messages.find((m) => m.message.message_id === messageId);
+        const button = richButtons(item?.message.rich_message)[index];
+        if (!item || !button) return;
+        const label = plainOf(button.text);
+        if ('switch_inline_query_current_chat' in button) return this.setDraft(`@${sim.botInfo.username} ${button.switch_inline_query_current_chat}`);
+        if ('switch_inline_query' in button) return this.setDraft(`@${sim.botInfo.username} ${button.switch_inline_query}`);
+        if ('copy_text' in button) {
+          void navigator.clipboard?.writeText(button.copy_text.text).catch(() => undefined);
+          this.toast('Copied to clipboard');
+          return;
+        }
+        const busy = `${this.chatId}:${messageId}:rich:${index}`;
+        this.busy.add(busy);
+        this.schedule();
+        this.run(() =>
+          sim.press(messageId, { ...button, text: label } as InlineKeyboardButton, { ...this.options(), inlineMessageId: item.inlineMessageId }).finally(() => {
+            this.busy.delete(busy);
+            this.schedule();
+          }),
+        );
+        break;
+      }
       case 'reply': {
         const button = chat?.replyKeyboard?.keyboard[Number(target.dataset.r)]?.[Number(target.dataset.c)];
         if (!button) return;
@@ -811,6 +904,9 @@ export class EasyTGChatElement extends HTMLElement {
         this.schedule();
         break;
       }
+      case 'stop':
+        this.run(() => sim.stopGeneration(this.chatId));
+        break;
       case 'more':
         this.modal = { kind: 'more' };
         this.schedule();
@@ -909,7 +1005,7 @@ export class EasyTGChatElement extends HTMLElement {
     if (act === 'user') {
       this.userId = Number(target.value);
       const chat = sim.chat(this.chatId);
-      if (chat?.type === 'private') this.chatId = this.userId;
+      if (!chat || chat.type === 'private') this.chatId = this.userId; // their own private chat (maybe not started yet)
     }
     if (act === 'file-photo' || act === 'file-document') {
       const file = (target as HTMLInputElement).files?.[0];

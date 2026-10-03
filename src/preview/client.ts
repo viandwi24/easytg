@@ -117,6 +117,7 @@ class RemoteSimulator {
   inlineQuery = (...args: unknown[]) => this.call('inlineQuery', ...args);
   chooseInlineResult = (...args: unknown[]) => this.call('chooseInlineResult', ...args);
   join = (...args: unknown[]) => this.call('join', ...args);
+  stopGeneration = (...args: unknown[]) => this.call('stopGeneration', ...args);
 
   /** Files picked in the browser are uploaded first: the server keeps them. */
   async sendMedia(kind: string, source: { url?: string; name?: string; caption?: string }, options: unknown) {

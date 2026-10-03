@@ -66,10 +66,26 @@ dialogue('booking').steps([
 - Values from buttons are checked like typed ones (options offered, number
   and date in range), so forged callback data gets "This button is no longer
   active".
-- `date`: month and weekday names follow the user's language (`Intl`);
-  `min` / `max` / `initial` take a `Date`, a `YYYY-MM-DD` string or a
-  function returning one. Days out of range show as `·`. Dates are calendar
-  days in the server's time zone.
+- `date`: the answer is a plain day, `'2026-10-01'`, with no time and no
+  time zone. Month and weekday names follow the user's language (`Intl`);
+  days out of range keep their number but are disabled (greyed out, as are
+  the weekday names and the month title). In `number`, the value and the
+  arrow at a limit are disabled the same way.
+- `min` / `max` / `initial` take a `YYYY-MM-DD` string (a fixed day), a
+  `Date` (the day that moment is in the step's time zone), or a function
+  returning either, evaluated each time (`() => new Date()`: from today).
+  A string that isn't a real day, or `min` after `max`, is an error, never a
+  silently missing limit.
+- **Set the time zone.** "Today" depends on where your users are: at 20:00
+  UTC it is already tomorrow in Jakarta. Set `dialogues: { timeZone:
+  'Asia/Jakarta' }` (an IANA name) for the whole app, or `timeZone` on a step,
+  which may be a function of the step helpers, e.g. a zone the user picked
+  and you keep in the session. Without one, the server's time zone is used,
+  which on most hosting is UTC. The calendar itself doesn't depend on any
+  time zone, daylight saving included.
+- To show an answer, read it as midnight UTC and format it in UTC:
+  `new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeZone: 'UTC' }).format(new Date(day + 'T00:00:00Z'))`.
+  Formatting it in another zone can show the day before.
 - `number`: a typed number in range is accepted too (`4`, `2.5`); `format`
   only changes how the value is shown.
 - New built-in texts (`chooseAtLeast`, `chooseAtMost`, `expectNumber`,

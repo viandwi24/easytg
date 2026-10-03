@@ -30,8 +30,7 @@ test('flowchart: commands, menu, and the buttons, redirects and dialogues seen',
   await sim.tap('Old "link"');
 
   const chart = app.flowchart();
-  expect(chart).toContain('n2 -->|"🛍 Tea"| n0');
-  expect(chart).toContain('n2 -->|"Old #quot;link#quot;"| n0');
+  expect(chart).toContain('n2 -->|"🛍 Tea · Old #quot;link#quot;"| n0'); // two buttons, one arrow
   expect(chart).toContain('n0 -->|"🛒 Order"| n3');
   expect(chart).toContain('n3 -.->|redirect| n1'); // the dialogue's onFinish
   expect(chart).toContain('n0 -.->|redirect| n2');
@@ -43,4 +42,17 @@ test('flowchart marks targets that were never registered', () => {
   const lost = page('lost').render(() => ({ text: 'lost' }));
   const app = new EasyTG({ logger: false, menu: replyMenu([[replyMenu.button('Lost', lost)]]) });
   expect(app.flowchart()).toBe(['flowchart LR', '  n0>"Lost"]', '  n1["⚠️ lost (not registered)"]:::missing', '  n0 --> n1', '  classDef missing stroke:#e5484d,stroke-width:2px,stroke-dasharray:4'].join('\n'));
+});
+
+test('flowchart stays small with labels that change (counters, names)', async () => {
+  const sim = new TelegramSimulator();
+  const bot = sim.createBot();
+  let n = 0;
+  const counter = page('counter').render(({ nav }) => ({ text: 'Count', keyboard: [[nav.button(`Pressed ${n++} times`, other)]] }));
+  const other = page('other').render(({ nav }) => ({ text: 'Other', keyboard: [[nav.button('Back', counter)]] }));
+  const app = new EasyTG({ logger: false, buttons: { doubleTapMs: 0 } }).register(other).command('start', counter);
+  bot.use(app);
+  for (let i = 0; i < 50; i++) await sim.send('/start');
+  const chart = app.flowchart();
+  expect(chart.split('\n').filter((l) => l.includes('-->|'))).toEqual(['  n1 -->|"Pressed 0 times · Pressed 1 times · Pressed 2 times"| n0']);
 });

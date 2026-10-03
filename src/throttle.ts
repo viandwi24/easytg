@@ -34,7 +34,8 @@ export interface ThrottleOptions {
   id?: string;
 }
 
-const LIMITED = /^(send(?!ChatAction)|copyMessage|forwardMessage|editMessage)/;
+// Drafts (app.stream previews) are a preview, not messages: not limited.
+const LIMITED = /^(send(?!ChatAction|MessageDraft|RichMessageDraft)|copyMessage|forwardMessage|editMessage)/;
 
 /** grammY's AbortSignal type (from its own polyfill), as far as we need it. */
 interface Signal {
@@ -64,6 +65,7 @@ export function createThrottle(storage: AtomicStorage, options: ThrottleOptions 
   /** Take one slot of `rule` (counted `cost` times), waiting for the next window when it is full. */
   const take = async (name: string, rule: ThrottleRule, cost: number, deadline: number, signal?: Signal) => {
     for (;;) {
+      if (signal?.aborted) return; // cancelled while waiting: don't use up a slot
       const window = Math.floor(Date.now() / rule.perMs);
       // An album bigger than the limit still fits in an empty window, instead of waiting forever.
       const count = await storage.increment(`throttle:${id}:${name}:${window}`, Math.min(cost, rule.limit), rule.perMs * 2);
@@ -71,6 +73,24 @@ export function createThrottle(storage: AtomicStorage, options: ThrottleOptions 
       const wait = (window + 1) * rule.perMs - Date.now() + Math.random() * 20; // a little jitter
       await sleep(Math.min(wait, deadline - Date.now()), signal);
     }
+  };
+
+  // Calls of one process wait their turn per counter, first come first served,
+  // so a burst to one chat arrives in the order it was sent. (Woken by timers
+  // alone, they would race for each new window and arrive shuffled.)
+  const turns = new Map<string, Promise<void>>();
+  const takeInTurn = (name: string, rule: ThrottleRule, cost: number, deadline: number, signal?: Signal) => {
+    const previous = turns.get(name) ?? Promise.resolve();
+    const mine = previous.then(() => take(name, rule, cost, deadline, signal));
+    const settled = mine.then(
+      () => undefined,
+      () => undefined,
+    );
+    turns.set(name, settled);
+    void settled.then(() => {
+      if (turns.get(name) === settled) turns.delete(name);
+    });
+    return mine;
   };
 
   return async (prev, method, payload, signal) => {
@@ -83,9 +103,9 @@ export function createThrottle(storage: AtomicStorage, options: ThrottleOptions 
     if (chatId !== undefined) {
       const own = options.chat?.(chatId);
       const rule = own !== undefined ? own : typeof chatId === 'number' && chatId > 0 ? privateChat : group;
-      if (rule) await take(`chat:${chatId}`, rule, cost, deadline, signal);
+      if (rule) await takeInTurn(`chat:${chatId}`, rule, cost, deadline, signal);
     }
-    if (global) await take('global', global, cost, deadline, signal);
+    if (global) await takeInTurn('global', global, cost, deadline, signal);
     return prev(method, payload, signal);
   };
 }

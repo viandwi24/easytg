@@ -71,12 +71,14 @@ describe('number', () => {
       });
     app.command('start', d);
     await sim.send('/start');
-    expect(labels(sim)[0]).toEqual([' ', ' ', '1 👤', '➕', '⏩']);
+    expect(labels(sim)[0]).toEqual(['⏪', '➖', '1 👤', '➕', '⏩']);
+    expect(sim.last()!.message.reply_markup!.inline_keyboard[0]!.map((b) => 'disabled' in b)).toEqual([true, true, true, false, false]); // at the limit: greyed out
     await sim.tap('⏩');
     await sim.tap('➕');
     expect(labels(sim)[0]).toEqual(['⏪', '➖', '7 👤', '➕', '⏩']);
     await sim.tap('⏩');
-    expect(labels(sim)[0]).toEqual(['⏪', '➖', '12 👤', ' ', ' ']);
+    expect(labels(sim)[0]).toEqual(['⏪', '➖', '12 👤', '➕', '⏩']);
+    expect(sim.last()!.message.reply_markup!.inline_keyboard[0]!.map((b) => 'disabled' in b)).toEqual([false, false, true, true, true]);
     await sim.send('99');
     expect(sim.messages().some((m) => m.message.text === 'Please send a number from 1 to 12.')).toBe(true);
     await sim.send('4');
@@ -118,8 +120,11 @@ describe('date', () => {
     let rows = labels(sim);
     expect(rows[0]).toEqual([' ', 'September 2026', '›']); // nothing before min's month
     expect(rows[1]).toEqual(['M', 'T', 'W', 'T', 'F', 'S', 'S']);
-    expect(rows[2]).toEqual([' ', '·', '·', '·', '·', '·', '·']); // Sept 1 is a Tuesday; before min: disabled
-    expect(rows[4]).toEqual(['·', '15', '16', '17', '18', '19', '20']);
+    expect(rows[2]).toEqual([' ', '1', '2', '3', '4', '5', '6']); // Sept 1 is a Tuesday
+    expect(rows[4]).toEqual(['14', '15', '16', '17', '18', '19', '20']);
+    const fourth = sim.last()!.message.reply_markup!.inline_keyboard[4]!;
+    expect(fourth.map((b) => 'disabled' in b)).toEqual([true, false, false, false, false, false, false]); // before min: greyed out
+    expect(sim.last()!.message.reply_markup!.inline_keyboard[1]!.every((b) => 'disabled' in b)).toBe(true); // weekday names
     await sim.tap('›');
     await sim.tap('›');
     rows = labels(sim);
@@ -158,4 +163,46 @@ test('`when` runs only once the dialogue gets to its step, so it can rely on ear
   expect(sim.last()!.message.text).toBe('Last?'); // "Why A?" skipped
   await sim.send('done');
   expect(got).toEqual({ tags: ['b'], end: 'done' });
+});
+
+test('long step ids and option values: buttons stay short when they can, and work when they can not', async () => {
+  const { sim, app } = setup();
+  let got: unknown;
+  const d = dialogue('long')
+    .steps([
+      { id: 'preferredDeliveryDateForTheOrder', type: 'date', text: 'When?', min: '2026-10-01', max: '2026-10-31' },
+      {
+        id: 'giftWrappingPreferences',
+        type: 'multiChoice',
+        text: 'Wrapping?',
+        min: 0,
+        options: [{ text: 'Ribbon', value: 'a-very-long-option-value-that-does-not-fit-into-callback-data-with-everything-else' }],
+      },
+    ])
+    .onFinish(({ answers }) => ((got = answers), { text: 'ok' }));
+  app.command('start', d);
+  await sim.send('/start');
+  const data = sim
+    .last()!
+    .message.reply_markup!.inline_keyboard.flat()
+    .flatMap((b) => ('callback_data' in b ? [b.callback_data] : []));
+  expect(data.every((x) => x.startsWith('p|') && new TextEncoder().encode(x).length <= 64)).toBe(true); // inline: no storage needed
+  await sim.tap('15');
+  const ribbon = sim.last()!.message.reply_markup!.inline_keyboard[0]![0] as { callback_data: string };
+  expect(ribbon.callback_data.startsWith('s|')).toBe(true); // too long: stored server-side, automatically
+  await sim.tap('Ribbon');
+  await sim.tap('✅ Done');
+  expect(got).toEqual({ preferredDeliveryDateForTheOrder: '2026-10-15', giftWrappingPreferences: ['a-very-long-option-value-that-does-not-fit-into-callback-data-with-everything-else'] });
+});
+
+test('buttons with the whole step id (sent before the upgrade) still work', async () => {
+  const { sim, app } = setup();
+  let got: unknown;
+  app.command('start', dialogue('old').steps([{ id: 'favouriteColour', type: 'choice', text: 'Colour?', options: [{ text: 'Red', value: 'red' }] }]).onFinish(({ answers }) => ((got = answers.favouriteColour), { text: 'ok' })));
+  await sim.send('/start');
+  const button = sim.last()!.message.reply_markup!.inline_keyboard[0]![0] as { text: string; callback_data: string };
+  const old = { ...button, callback_data: button.callback_data.replace(/s=[^&]+/, 's=favouriteColour') };
+  expect(old.callback_data).not.toBe(button.callback_data);
+  await sim.press(sim.last()!.message.message_id, old);
+  expect(got).toBe('red');
 });

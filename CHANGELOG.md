@@ -5,6 +5,26 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Added
+
+- **Ephemeral messages in groups** (Bot API 10.2): `nav.button(…, { mode: 'ephemeral' })` and `app.open(…, { mode: 'ephemeral' })` open a page or start a dialogue for the presser only, in place of the shared menu on their screen while the others keep seeing it. Its buttons edit that copy, Back and Close work on it, and a dialogue's questions are removed with `deleteEphemeralMessage` like any prompt. `app.command(…, { ephemeral: true })` lists the command with `is_ephemeral`, and anything received ephemerally is answered ephemerally (as a reply, which a bot that isn't an admin may send too). See [docs/groups.md](docs/groups.md#only-for-one-member-ephemeral).
+- **Disabled buttons** (Bot API 10): `nav.disabled(text)` shows a button that can't be pressed. Calendars disable the month title, weekday names and days out of range (their numbers stay visible instead of `·`), and `number` steps the value and an arrow at its limit.
+- **Rich messages** (Bot API 10.3): a page returns `rich` instead of `text`, and gets headings, tables, task lists, collapsible details, formulas, footnotes, pictures and buttons in one message. A string (or an array) is Telegram's Rich Markdown, one `html` fragment is Rich HTML, and `{ markdown | html | blocks }` goes as it is. `md` fragments (and `t.md`) escape their values for Rich Markdown too, and `escapeRichMarkdown` is exported. Rich and text pages edit into each other in place; ephemeral pages, `sendTo`, `app.edit` and inline results can be rich. See [docs/rich-messages.md](docs/rich-messages.md).
+- **`app.stream(ctx, source, { finish, stoppable, intervalMs, rich })`:** text shown while it is generated, as a Telegram draft in private chats ("Thinking…", then the growing text, optionally with ⏹ Stop that aborts the source's `AbortSignal`) and as a growing message in groups, then sent as a formatted message. With `rich`, the previews are rich drafts and the answer a rich message. See [docs/streaming.md](docs/streaming.md).
+- **Time zones for `date` steps:** `dialogues.timeZone` and a step's `timeZone` (a name or a function, e.g. per user) decide where "today" is and which day a `Date` falls on. The calendar now works on plain days with UTC arithmetic, so neither the server's time zone nor daylight saving time can shift a day, and years below 100 stay as they are. A `min` / `max` / `initial` that isn't a real day, `min` after `max`, or an unknown time zone are clear errors instead of silently ignored limits.
+- Dialogue buttons carry a short hash of long step ids, so a calendar fits Telegram's 64 bytes without storing its buttons; buttons with the whole id (sent before an upgrade) keep working.
+- Simulator: rich messages (`sendRichMessage`, `sendRichMessageDraft`, rich edits and inline results) parsed into Telegram's blocks and drawn in the chat window, buttons inside them pressable; `messageText`, `richPlainText`, `richButtons`, `richHtml` and `sim.fileUrl` for tests.
+- Simulator: ephemeral messages with Telegram's rules (groups only, members only, 15 seconds for a bot that isn't an admin, `createGroup({ botAdmin })`); `messages(chatId, userId)` / `last(chatId, userId)` are what one user sees, and the chat window shows each user's own view. Drafts (`chat.draft`, `stopGeneration`), disabled buttons, `send(…, { ephemeral })`.
+- Examples: `team.ts` (ephemeral pages, a dialogue and commands, `nav.disabled`), `ai-chat.ts` (`app.stream` with rich drafts and a stop button) and `rich.ts` (rich pages in all three forms), all in the playground.
+
+### Fixed
+
+- `app.throttle` delivered a burst to one chat out of order (waiting calls raced for each new window); waiting calls are now served first come, first served, and a call cancelled while waiting no longer uses up a slot.
+- Simulator: `editMessageMedia` refused to turn a text message into a media message, which Telegram allows since Bot API 10 (so text → photo pages now edit in place there too, as on Telegram).
+- `app.flowchart()` recorded one edge per button label, so labels with counters or names grew its memory without limit; it now keeps one edge per pair of screens with up to three labels.
+- Chat window: in group examples the chat picker was missing until something was sent in the private chat, and switching the typing user could show another user's private chat. The typing user's own private chat is now always listed and switched to.
+- `date` steps in 0.3.2 took "today" and `Date` limits from the server's time zone, and could show the wrong month or day when that zone or daylight saving shifted midnight; see the time zone entry above. Update if you use them.
+
 ## 0.3.2 (2026-10-01)
 
 ### Added

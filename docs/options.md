@@ -26,7 +26,7 @@ new EasyTG<MyContext>({
   session:   { storage, ttlMs: undefined, refreshOnActivity: true, version: undefined, migrate: undefined },
   buttons:   { storage, params: 'auto', secret, ttlMs: 30 days, doubleTapMs: 700, ownerOnly: true, mediaToText: 'replace' },
   deepLinks: { ttlMs: 365 days },
-  dialogues: { cancelOnCommand: true, timeoutMs: undefined },
+  dialogues: { cancelOnCommand: true, timeoutMs: undefined, timeZone: undefined }, // timeZone: 'Asia/Jakarta' for date steps
   media:     { cacheFileIds: false, cacheTtlMs: 30 days },
   antiSpam:  { limit: 20, windowMs: 10_000, cooldownMs: 30_000, warn: true, exempt, filter }, // or false
   i18n:      { messages: {}, fallbackLocale: 'en', texts: {}, locales: {}, locale: (ctx, session) => ctx.from?.language_code },

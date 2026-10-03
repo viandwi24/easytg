@@ -1,19 +1,21 @@
 import type { Context } from 'grammy';
 import type {
+  EphemeralMessageParameters,
   ForceReply,
   InlineKeyboardButton,
   InlineKeyboardMarkup,
   LinkPreviewOptions,
+  InputRichMessage,
   Message,
   ReplyKeyboardMarkup,
   ReplyKeyboardRemove,
 } from 'grammy/types';
 import { EasyTGError, isMessageUnavailable, isNotModified } from './errors';
-import { resolveText, type ParseMode } from './format';
+import { Formatted, resolveText, type ParseMode } from './format';
 import type { Logger } from './logger';
 import { threadIdOf } from './proactive';
 import { CAPTION_LIMIT, MESSAGE_LIMIT, splitText, visibleLength } from './split';
-import type { AlbumItem, CopySource, DeliveryMode, InvoiceContent, KeyboardInput, KeyboardRow, MediaSource, MediaType, PageContent } from './types';
+import type { AlbumItem, CopySource, DeliveryMode, InvoiceContent, KeyboardInput, KeyboardRow, MediaSource, MediaType, PageContent, RichInput } from './types';
 
 const MEDIA_TYPES: MediaType[] = ['photo', 'video', 'animation', 'document', 'audio'];
 
@@ -27,6 +29,8 @@ export interface PreparedContent {
   albumCaption?: boolean;
   copy?: CopySource;
   invoice?: InvoiceContent;
+  /** A rich message (Bot API 10.3): one message, `chunks` is `['']`. */
+  rich?: InputRichMessage;
   reply_markup: InlineKeyboardMarkup;
   /** Replaces the inline keyboard on new messages (reply keyboards can't be edited in). */
   sendMarkup?: ReplyKeyboardMarkup | ReplyKeyboardRemove | ForceReply;
@@ -41,6 +45,15 @@ export interface EditTarget {
   inlineMessageId?: string;
   /** The message as Telegram sent it with the button press; unknown for `app.edit`. */
   message?: Message;
+  /** An ephemeral message (seen by one user in a group): edited and deleted with the `…EphemeralMessage…` methods. */
+  ephemeral?: { receiverUserId: number; id: number };
+}
+
+/** How new messages go out as ephemeral messages (Bot API 10.2): only `receiver_user_id` sees them. */
+export interface EphemeralSend {
+  params: EphemeralMessageParameters;
+  /** The incoming ephemeral message (an ephemeral command) to answer: lets a bot that isn't an admin reply. */
+  replyTo?: number;
 }
 
 /** What a sent message is known by. Copies only return their id and chat. */
@@ -57,6 +70,11 @@ export interface DeliveryHost {
   onSent(ctx: Context, messages: SentMessage[]): Promise<void>;
   /** Ids of extra messages sent together with `messageId`, removed from tracking. */
   takeGroup(ctx: Context, chatId: number, messageId: number): Promise<number[]>;
+  /**
+   * Whether new messages of this update go out as ephemeral messages (and
+   * how). `requested`: the delivery mode is `ephemeral`. Undefined: normal.
+   */
+  ephemeral?(ctx: Context, requested: boolean): EphemeralSend | undefined;
 }
 
 export type DeliveryResult = Message | true;
@@ -65,6 +83,10 @@ export interface Delivery {
   result: DeliveryResult;
   /** Ids of new messages sent. */
   sent: number[];
+  /** Ephemeral: not tracked (no continuation messages, `deleteAfterMs` or `refreshEveryMs`). */
+  ephemeral?: boolean;
+  /** New ephemeral messages sent, for whoever cleans up after them (dialogue prompts). */
+  ephemeralSent?: { chatId: number; receiverUserId: number; id: number }[];
 }
 
 export function normalizeKeyboard(input: KeyboardInput | false | null | undefined): InlineKeyboardButton[][] {
@@ -77,8 +99,39 @@ export function normalizeKeyboard(input: KeyboardInput | false | null | undefine
     .filter((row) => row.length > 0);
 }
 
+/**
+ * `rich` content as the Bot API takes it. Strings and `md` fragments are Rich
+ * Markdown (arrays joined with newlines); one `html` fragment is Rich HTML.
+ */
+export function resolveRich(input: RichInput): InputRichMessage {
+  if (typeof input === 'object' && !Array.isArray(input) && !(input instanceof Formatted)) {
+    const given = (['markdown', 'html', 'blocks'] as const).filter((k) => input[k] !== undefined);
+    if (given.length !== 1) throw new EasyTGError('rich needs exactly one of markdown, html or blocks');
+    return input;
+  }
+  const parts = Array.isArray(input) ? input : [input];
+  const html = parts.filter((p): p is Formatted => p instanceof Formatted && p.markdown === undefined);
+  if (html.length) {
+    if (parts.length === 1) return { html: html[0]!.html };
+    throw new EasyTGError("rich: an html`` fragment can't be mixed with Markdown; use one html`` fragment, or md`` fragments and strings");
+  }
+  return { markdown: parts.map((p) => (p instanceof Formatted ? (p.rich ?? p.markdown!) : p)).join('\n') };
+}
+
 export function prepareContent(content: PageContent, defaultMode: ParseMode, protect = false): PreparedContent | null {
   const keyboard = normalizeKeyboard(content.keyboard);
+  if (content.rich !== undefined) {
+    const other = [...(content.text !== undefined ? ['text'] : []), ...MEDIA_TYPES.filter((type) => content[type] !== undefined), ...(['album', 'copy', 'invoice'] as const).filter((k) => content[k])];
+    if (other.length) throw new EasyTGError(`rich content can't be combined with ${other.join(', ')}: a rich message carries its media in itself`);
+    const rich = resolveRich(content.rich);
+    if (rich.markdown !== undefined && !rich.markdown.trim()) throw new EasyTGError('rich content is empty');
+    return {
+      chunks: [''],
+      rich,
+      reply_markup: { inline_keyboard: keyboard },
+      protect_content: content.protectContent ?? protect ? true : undefined,
+    };
+  }
   const resolved = resolveText(content.text, content.parseMode ?? defaultMode);
 
   const kinds = [
@@ -134,7 +187,9 @@ export function pressedMessage(ctx: Context): EditTarget | undefined {
   // `date === 0` marks an inaccessible (too old) message.
   if (!query.message || query.message.date === 0) return undefined;
   const message = query.message as Message;
-  return { chatId: message.chat.id, messageId: message.message_id, message };
+  const ephemeralId = message.ephemeral_message_id;
+  const ephemeral = ephemeralId === undefined ? undefined : { receiverUserId: message.receiver_user?.id ?? query.from.id, id: ephemeralId };
+  return { chatId: message.chat.id, messageId: message.message_id, message, ...(ephemeral ? { ephemeral } : {}) };
 }
 
 /**
@@ -150,16 +205,25 @@ export async function deliver(
   target?: EditTarget,
   options: { fallbackToSend?: boolean } = {},
 ): Promise<Delivery | undefined> {
-  const resolved = mode === 'auto' ? (ctx.callbackQuery ? 'edit' : 'reply') : mode;
+  // Ephemeral (groups only, see host.ephemeral): reply keyboards can't come with one, so those messages stay normal.
+  const ephemeral = content.sendMarkup ? undefined : host.ephemeral?.(ctx, mode === 'ephemeral');
+  let resolved: DeliveryMode = mode === 'ephemeral' ? 'auto' : mode;
+  if (resolved === 'auto') resolved = ctx.callbackQuery ? 'edit' : 'reply';
+  if (ephemeral && resolved === 'edit') {
+    // Never edit the message everyone sees: a pressed ephemeral message is edited, any
+    // other one is replaced on the presser's screen only, by a new ephemeral message.
+    const pressed = target ?? pressedMessage(ctx);
+    if (!pressed?.ephemeral) resolved = 'send';
+  }
   if (resolved === 'edit') {
     const editTarget = target ?? pressedMessage(ctx);
     if (editTarget) {
       const edited = await tryEdit(host, ctx, content, editTarget, options.fallbackToSend !== false);
-      if (edited) return { result: edited, sent: [] };
+      if (edited) return { result: edited, sent: [], ...(editTarget.ephemeral ? { ephemeral: true } : {}) };
     }
     if (options.fallbackToSend === false) return undefined;
   }
-  return send(host, ctx, content, resolved === 'reply');
+  return send(host, ctx, content, resolved === 'reply', ephemeral);
 }
 
 /** Messages that went out before a delivery failed half-way, by error. */
@@ -174,9 +238,10 @@ export function sentBeforeError(error: unknown): number[] | undefined {
   return typeof error === 'object' && error !== null ? partialSends.get(error) : undefined;
 }
 
-async function send(host: DeliveryHost, ctx: Context, content: PreparedContent, asReply: boolean): Promise<Delivery> {
+async function send(host: DeliveryHost, ctx: Context, content: PreparedContent, asReply: boolean, ephemeral?: EphemeralSend): Promise<Delivery> {
   const messages: SentMessage[] = [];
   try {
+    if (ephemeral) return await sendEphemeral(ctx, content, ephemeral);
     return await sendAll(host, ctx, content, asReply, messages);
   } catch (error) {
     if (messages.length && typeof error === 'object' && error !== null) partialSends.set(error, messages.map((m) => m.message_id));
@@ -202,10 +267,16 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
     await host.onSent(ctx, [message]);
     return { result: message, sent: [message.message_id] };
   }
+  let replyTo = asReply && ctx.message ? { message_id: ctx.message.message_id, allow_sending_without_reply: true } : undefined;
+  if (content.rich) {
+    const message = await ctx.replyWithRichMessage(content.rich, { reply_markup: content.sendMarkup ?? content.reply_markup, reply_parameters: replyTo, protect_content });
+    messages.push(message);
+    await host.onSent(ctx, messages);
+    return { result: message, sent: [message.message_id] };
+  }
   if (!chunks[0] && !media && !album && !copy) {
     throw new EasyTGError('Cannot send a new message with only a keyboard: add `text` or media');
   }
-  let replyTo = asReply && ctx.message ? { message_id: ctx.message.message_id, allow_sending_without_reply: true } : undefined;
 
   let textChunks = chunks;
 
@@ -260,6 +331,49 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
   return { result: messages.at(-1)! as Message, sent: messages.map((m) => m.message_id) };
 }
 
+/**
+ * New ephemeral messages: text (split as usual) or one media message, with
+ * the inline keyboard on the last. The first one replaces the pressed message
+ * for its presser when asked. Not tracked: they belong to one user's screen.
+ */
+async function sendEphemeral(ctx: Context, content: PreparedContent, ephemeral: EphemeralSend): Promise<Delivery> {
+  const { chunks, media, parse_mode, link_preview_options, protect_content } = content;
+  if (content.album || content.copy || content.invoice) {
+    throw new EasyTGError(`${content.album ? 'Albums' : content.copy ? 'Copies' : 'Invoices'} can't be sent as ephemeral messages`);
+  }
+  if (!chunks[0] && !media && !content.rich) throw new EasyTGError('Cannot send a new message with only a keyboard: add `text` or media');
+  const sent: Message[] = [];
+  if (content.rich) {
+    sent.push(
+      await ctx.replyWithRichMessage(content.rich, {
+        ephemeral_message_parameters: ephemeral.params,
+        reply_parameters: ephemeral.replyTo !== undefined ? ({ ephemeral_message_id: ephemeral.replyTo } as never) : undefined,
+        reply_markup: content.reply_markup.inline_keyboard.length ? content.reply_markup : undefined,
+        protect_content,
+      }),
+    );
+  }
+  for (const [i, chunk] of (content.rich ? [] : chunks).entries()) {
+    const ephemeral_message_parameters = i === 0 ? ephemeral.params : { ...ephemeral.params, replace_callback_query_message: undefined };
+    const other = {
+      ephemeral_message_parameters,
+      // Answering an ephemeral command is what allows a bot that isn't an admin to send one.
+      reply_parameters: ephemeral.replyTo !== undefined ? ({ ephemeral_message_id: ephemeral.replyTo } as never) : undefined,
+      reply_markup: i === chunks.length - 1 && content.reply_markup.inline_keyboard.length ? content.reply_markup : undefined,
+      protect_content,
+    };
+    sent.push(
+      i === 0 && media
+        ? ((await sendMedia(ctx, media.type, media.source, { ...other, caption: chunk || undefined, parse_mode: chunk ? parse_mode : undefined })) as Message)
+        : await ctx.reply(chunk, { ...other, parse_mode, link_preview_options }),
+    );
+  }
+  const ephemeralSent = sent.flatMap((m) =>
+    m.ephemeral_message_id === undefined ? [] : [{ chatId: m.chat.id, receiverUserId: ephemeral.params.receiver_user_id, id: m.ephemeral_message_id }],
+  );
+  return { result: sent.at(-1)!, sent: [], ephemeral: true, ephemeralSent };
+}
+
 type MediaOptions = Parameters<Context['replyWithPhoto']>[1];
 
 function sendMedia(ctx: Context, type: MediaType, source: MediaSource, options: MediaOptions) {
@@ -296,8 +410,17 @@ function editor(ctx: Context, target: EditTarget) {
   type Media = Parameters<typeof api.editMessageMedia>[2];
   type MediaOther = Parameters<typeof api.editMessageMedia>[3];
   type MarkupOther = Parameters<typeof api.editMessageReplyMarkup>[2];
+  const e = target.ephemeral;
+  if (e) {
+    return {
+      text: (text: string | InputRichMessage, other: TextOther) => api.editEphemeralMessageText(chatId, e.receiverUserId, e.id, text, other as never),
+      caption: ({ caption, ...other }: NonNullable<CaptionOther>) => api.editEphemeralMessageCaption(chatId, e.receiverUserId, e.id, caption ?? '', other as never),
+      media: (media: Media, other: MediaOther) => api.editEphemeralMessageMedia(chatId, e.receiverUserId, e.id, media, other as never),
+      markup: (other: MarkupOther) => api.editEphemeralMessageReplyMarkup(chatId, e.receiverUserId, e.id, other as never),
+    };
+  }
   return {
-    text: (text: string, other: TextOther) =>
+    text: (text: string | InputRichMessage, other: TextOther) =>
       inline ? api.editMessageTextInline(inline, text, other) : api.editMessageText(chatId, messageId, text, other),
     caption: (other: CaptionOther) =>
       inline ? api.editMessageCaptionInline(inline, other) : api.editMessageCaption(chatId, messageId, other),
@@ -343,15 +466,25 @@ async function tryEdit(
 
   const edit = editor(ctx, target);
   const text = content.chunks[0]!;
-  const { reply_markup, parse_mode, media } = content;
-  // Unknown for `app.edit`: then text edits fall back to caption edits.
-  const isTextMessage = message ? message.text !== undefined : undefined;
+  const { reply_markup, parse_mode, media, rich } = content;
+  // Unknown for `app.edit`: then text edits fall back to caption edits. Text and rich messages edit into each other.
+  const isTextMessage = message ? message.text !== undefined || message.rich_message !== undefined : undefined;
+  // Media can't be edited into a rich message, nor the other way round (only text can become media): replace it.
+  if ((rich && isTextMessage === false) || (media && message?.rich_message !== undefined)) return giveUp();
 
   let result: DeliveryResult;
   // Only the buttons change: the text (and any continuation messages before it) stays.
-  const markupOnly = !text && !media;
+  const markupOnly = !text && !media && !rich;
   try {
-    if (markupOnly) {
+    if (rich) {
+      try {
+        result = await edit.text(rich, { reply_markup });
+      } catch (error) {
+        // `app.edit` on a media message: it can't become a rich message.
+        if (isTextMessage !== undefined || !String(error).includes('no text in the message')) throw error;
+        return giveUp();
+      }
+    } else if (markupOnly) {
       result = await edit.markup({ reply_markup });
     } else if (media) {
       // Same file already shown: only the caption and buttons change.
@@ -388,7 +521,7 @@ async function tryEdit(
   }
 
   // The page fits in one message now: drop continuation messages of an earlier long render.
-  if (!inline && !markupOnly) await deleteMessages(host, ctx, target.chatId!, await host.takeGroup(ctx, target.chatId!, target.messageId!));
+  if (!inline && !target.ephemeral && !markupOnly) await deleteMessages(host, ctx, target.chatId!, await host.takeGroup(ctx, target.chatId!, target.messageId!));
   return result;
 }
 
@@ -398,7 +531,15 @@ async function tryEdit(
  */
 async function replacePressed(host: DeliveryHost, ctx: Context, target: EditTarget) {
   if (target.chatId === undefined || target.messageId === undefined) return;
-  const isMedia = !!target.message && target.message.text === undefined;
+  if (target.ephemeral) {
+    try {
+      await ctx.api.deleteEphemeralMessage(target.chatId, target.ephemeral.receiverUserId, target.ephemeral.id);
+    } catch (error) {
+      host.logger.debug('Failed to delete an ephemeral message', error);
+    }
+    return;
+  }
+  const isMedia = !!target.message && target.message.text === undefined && target.message.rich_message === undefined;
   if (isMedia && host.mediaToText === 'keep') {
     try {
       await ctx.api.editMessageReplyMarkup(target.chatId, target.messageId, { reply_markup: { inline_keyboard: [] } });

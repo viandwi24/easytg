@@ -20,6 +20,7 @@ import { CallbackStore, type CallbackParamsMode, type StoredCallback } from './c
 import type { Dialogue, Page, Task, TaskBot } from './define';
 import { DialogueRunner, isCommand, parseWebAppData } from './dialogue';
 import { Commands, type CommandOptions } from './commands';
+import { checkTimeZone } from './steps';
 import { FlowRecorder, toMermaid, type FlowEdge, type FlowEdgeKind, type FlowchartOptions } from './flow';
 import { RelayStore, relayBotId, type RelayBot, type RelayEndReason, type RelayLink, type RelayStartOptions } from './relay';
 import { EasyTGError, InvalidParamsError, isChatUnreachable, isMessageNotFound, isMessageUnavailable, isNotModified, isTransient } from './errors';
@@ -40,6 +41,7 @@ import {
   type Delivery,
   type DeliveryResult,
   type EditTarget,
+  type EphemeralSend,
   type PreparedContent,
   type SentMessage,
 } from './render';
@@ -99,6 +101,19 @@ interface TextInputState extends View {
 
 /** Per menu message: the page it shows and the pages before it. */
 type NavHistory = Record<string, { current: View; stack: View[]; /** last used (ms) */ at?: number }>;
+
+/** A menu message in the Back history: its id, or `e<id>` for an ephemeral message (ids of their own). */
+type MessageKey = number | string;
+
+function keyOf(message: Message): MessageKey {
+  return message.ephemeral_message_id !== undefined ? `e${message.ephemeral_message_id}` : message.message_id;
+}
+
+/** The pressed message as a Back history key. */
+function pressedKey(ctx: Context): MessageKey | undefined {
+  const pressed = pressedMessage(ctx);
+  return pressed?.ephemeral ? `e${pressed.ephemeral.id}` : ctx.callbackQuery?.message?.message_id;
+}
 
 export interface EasyTGOptions<C extends Context = Context> {
   /** Default adapter for everything easytg persists. Default: in-memory (development only). */
@@ -261,6 +276,11 @@ export interface DialoguesOptions {
   cancelOnCommand?: boolean;
   /** End dialogues after this many ms without an answer (see `dialogue.timeout`). Default: never. */
   timeoutMs?: number;
+  /**
+   * The time zone of `date` steps: where "today" is, and which day a `Date`
+   * falls on. An IANA name such as `Asia/Jakarta`. Default: the server's.
+   */
+  timeZone?: string;
 }
 
 export interface I18nOptions<C extends Context = Context> {
@@ -332,6 +352,39 @@ export interface EasyTGEvents<C extends Context = Context> {
    * tell them).
    */
   relayEnd: { botId: number; users: [number, number]; reason: RelayEndReason; ctx?: C };
+}
+
+/** What `app.stream` reads: chunks of text as they come (e.g. from an AI model). */
+export type StreamSource = AsyncIterable<string> | ((signal: AbortSignal) => AsyncIterable<string>);
+
+export interface StreamOptions {
+  /** The final message, from the whole text: formatting, a keyboard, media… Default: the text, trimmed. */
+  finish?: (text: string, info: { stopped: boolean }) => PageContent;
+  /**
+   * Private chats: show a stop button; pressing it aborts the source's signal
+   * and the text so far becomes the final message. The stop arrives as an
+   * update: with `bot.start()` (one update at a time) it waits for the
+   * stream, so don't await `app.stream` in the handler there
+   * (`void app.stream(…).catch(…)`); with webhooks or `@grammyjs/runner` you can.
+   */
+  stoppable?: boolean;
+  /** Least time between preview updates. Default 300 ms (drafts), 1000 ms (edits, in groups). */
+  intervalMs?: number;
+  /**
+   * The text is Rich Markdown (Bot API 10.3): previews are rich drafts (or
+   * rich edits in groups) and the final message is a rich message, so an
+   * answer with headings, tables and code shows formatted while it grows.
+   * Default: previews are plain text and the final message is `text`.
+   */
+  rich?: boolean;
+}
+
+export interface StreamResult {
+  text: string;
+  /** The user pressed stop. */
+  stopped: boolean;
+  /** The final message (as `app.open` returns). */
+  result: DeliveryResult | undefined;
 }
 
 /** Relays between two users' private chats with the bot. */
@@ -453,6 +506,10 @@ interface UpdateScope {
   allowedUsers?: number[];
   /** `app.t(ctx)`, created once. */
   t?: Translate;
+  /** This update answers ephemerally (an `ephemeral` button or open): its later messages stay ephemeral too. */
+  ephemeral?: boolean;
+  /** The pressed message was already replaced by an ephemeral one (only the first one replaces it). */
+  ephemeralReplaced?: boolean;
   /** The page or dialogue whose render (or onFinish) is running: where `nav` buttons lead from, for `flowchart`. */
   flowFrom?: string;
   userSession?: Promise<Session>;
@@ -488,6 +545,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** @internal */ readonly homePage: string;
   /** @internal */ readonly cancelDialogueOnCommand: boolean;
   /** @internal */ readonly dialogueTimeoutMs?: number;
+  /** @internal */ readonly dialogueTimeZone?: string;
 
   private readonly parseMode: ParseMode;
   private readonly callbackParams: CallbackParamsMode;
@@ -530,6 +588,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   private readonly localeNames: string[];
   private readonly relays: RelayStore;
   private readonly flow = new FlowRecorder();
+  /** Streams with a stop button, by `chat:draft`. */
+  private readonly streams = new Map<string, AbortController>();
   private readonly relayFilter?: RelayOptions<C>['filter'];
   private readonly fallbackLocale: string;
   /** @internal */ readonly mediaToText: 'replace' | 'keep';
@@ -567,6 +627,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
     this.cancelDialogueOnCommand = dialogues.cancelOnCommand ?? true;
     this.dialogueTimeoutMs = dialogues.timeoutMs;
+    checkTimeZone(dialogues.timeZone); // a typo fails at startup, not when a user opens a calendar
+    this.dialogueTimeZone = dialogues.timeZone;
 
     const shared = options.cluster === true ? storage : options.cluster || undefined;
     if (shared) assertAtomic(shared, 'cluster');
@@ -733,6 +795,34 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     if (from && (this.pages.has(to) || this.dialogueDefs.has(to))) this.flow.record({ from, to, kind, label });
   }
 
+  /**
+   * @internal DeliveryHost: whether this update's new messages go out as
+   * ephemeral messages (Bot API 10.2), only for the user who acted. In groups,
+   * when asked for (`requested`, or earlier in the update), or when the user
+   * acted ephemerally (pressed a button of an ephemeral message, sent an
+   * ephemeral command). Telegram lets a bot that isn't an admin send them
+   * within 15 seconds of such an action, which `callback_query_id` and the
+   * reply to the ephemeral command prove.
+   */
+  ephemeral(ctx: C, requested: boolean): EphemeralSend | undefined {
+    const chat = ctx.chat;
+    const from = ctx.from;
+    if (!chat || !from || (chat.type !== 'group' && chat.type !== 'supergroup') || isProactive(ctx)) return undefined;
+    const scope = this.scope(ctx);
+    const query = ctx.callbackQuery;
+    const pressed = query?.message && query.message.date !== 0 ? (query.message as Message).ephemeral_message_id : undefined;
+    const incoming = ctx.message?.ephemeral_message_id;
+    if (!requested && !scope.ephemeral && pressed === undefined && incoming === undefined) return undefined;
+    if (requested) scope.ephemeral = true;
+    // The first ephemeral answer to a press on a normal message takes its place on the presser's screen.
+    const replace = !!query && pressed === undefined && !scope.ephemeralReplaced;
+    if (replace) scope.ephemeralReplaced = true;
+    return {
+      params: { receiver_user_id: from.id, ...(query ? { callback_query_id: query.id } : {}), ...(replace ? { replace_callback_query_message: true } : {}) },
+      replyTo: incoming,
+    };
+  }
+
   /** @internal What `nav` calls lead from (a dialogue's onFinish / onCancel). */
   setFlowSource(ctx: C, id: string) {
     this.scope(ctx).flowFrom = id;
@@ -823,6 +913,9 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     if (live !== undefined) this.liveUpdates.set(live, ctx);
     let failed = false;
     try {
+      // The user pressed stop under a streamed draft (app.stream).
+      const stopped = ctx.update.stopped_message_generation;
+      if (stopped) this.streams.get(`${stopped.chat.id}:${stopped.draft_id}`)?.abort();
       if (this.payments && ctx.preCheckoutQuery) {
         await this.handlePreCheckout(ctx, ctx.preCheckoutQuery);
         return;
@@ -895,8 +988,9 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** Render (`render` belongs to page `pageId`), deliver, and record the view. */
   private async show(ctx: C, pageId: string, mode: DeliveryMode, render: () => Promise<RenderResult>, depth = 0) {
     const scope = this.scope(ctx);
-    const sourceId = ctx.callbackQuery?.message?.message_id ?? scope.editTarget?.messageId;
-    const editing = sourceId !== undefined && (mode === 'edit' || mode === 'auto');
+    const sourceId: MessageKey | undefined = pressedKey(ctx) ?? scope.editTarget?.messageId;
+    // An ephemeral open from a menu continues that menu's history, on the presser's own copy.
+    const editing = sourceId !== undefined && (mode === 'edit' || mode === 'auto' || mode === 'ephemeral');
 
     // Navigating within a menu message pushes the page it showed onto its back stack.
     if (!scope.navStack) {
@@ -915,7 +1009,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       const loading = own === undefined ? this.defaultLoading : own;
       const result = loading ? await this.withPlaceholder(ctx, loading, render) : await render();
       // A placeholder message was sent while rendering: the page replaces it.
-      let target = editing ? sourceId : undefined;
+      let target: MessageKey | undefined = editing ? sourceId : undefined;
       if (scope.placeholder) {
         previousTarget = { value: scope.editTarget };
         scope.editTarget = scope.placeholder;
@@ -927,7 +1021,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       if (delivered && scope.view) {
         await this.recordView(ctx, delivered, target);
         await this.scheduleRefresh(ctx, delivered, target);
-        const inPlace = delivered === true || (target !== undefined && delivered.message_id === target);
+        const inPlace = delivered === true || (target !== undefined && keyOf(delivered) === target);
         await this.emit('pageView', {
           ctx,
           page: scope.view.id,
@@ -960,6 +1054,88 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
    */
   throttle(options: ThrottleOptions = {}): Transformer {
     return createThrottle(this.coordination, options);
+  }
+
+  /**
+   * Show text while it is being generated (an AI answer), then send it as a
+   * message. In private chats the preview is a Telegram draft (Bot API 10:
+   * animated, "Thinking…" first, optionally with a stop button); in groups a
+   * message that is edited as the text grows. The final message goes out like
+   * a page (`finish`: formatting, keyboard; long text is split).
+   *
+   *   await app.stream(ctx, (signal) => model.stream(prompt, { signal }), { stoppable: true });
+   */
+  async stream(ctx: C, source: StreamSource, options: StreamOptions = {}): Promise<StreamResult> {
+    const chat = ctx.chat;
+    if (!chat) throw new EasyTGError('app.stream needs a chat');
+    const controller = new AbortController();
+    const draft = chat.type === 'private';
+    const interval = options.intervalMs ?? (draft ? 300 : 1000);
+    const draftId = 1 + Math.floor(Math.random() * 2_000_000_000);
+    const key = `${chat.id}:${draftId}`;
+    const thread = threadIdOf(ctx);
+    const stopButton = draft && options.stoppable ? { can_stop: true } : {};
+    if (draft && options.stoppable) this.streams.set(key, controller);
+
+    let text = '';
+    let shown: string | undefined;
+    let last = 0;
+    let placeholder: Message | undefined;
+    // Previews are plain text: half-written formatting would be refused (Telegram's limit is 4096).
+    // Rich Markdown is forgiving, so `rich` previews are formatted (up to 32768 characters).
+    const rich = !!options.rich;
+    const limit = rich ? 32768 : 4096;
+    const preview = () => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
+    const show = async (force = false) => {
+      if (text === shown || (!force && Date.now() - last < interval)) return;
+      shown = text;
+      last = Date.now();
+      try {
+        const body = preview();
+        // Before the first word a draft without text shows "Thinking…", rich or not.
+        if (draft && rich && body.trim()) await ctx.api.sendRichMessageDraft(chat.id, draftId, { markdown: body }, { message_thread_id: thread, ...stopButton });
+        else if (draft) await ctx.api.sendMessageDraft(chat.id, draftId, body, { message_thread_id: thread, ...stopButton });
+        else if (placeholder) await ctx.api.editMessageText(chat.id, placeholder.message_id, rich && body.trim() ? { markdown: body } : body || '…');
+      } catch (error) {
+        if (!isNotModified(error)) this.logger.debug('app.stream: preview update failed', error);
+      }
+    };
+
+    let stopped = false;
+    try {
+      // Before the first word: "Thinking…" (a draft with no text), or a placeholder message in groups.
+      if (draft) await show(true);
+      else placeholder = await ctx.api.sendMessage(chat.id, '…', { message_thread_id: thread });
+      const iterable = typeof source === 'function' ? source(controller.signal) : source;
+      for await (const chunk of iterable) {
+        if (controller.signal.aborted) break;
+        text += chunk;
+        await show();
+      }
+      stopped = controller.signal.aborted;
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+      stopped = true; // the source gave up because it was stopped
+    } finally {
+      this.streams.delete(key);
+    }
+
+    // Models often end with a space or a newline: not worth a line in the chat. `finish` gets the text as it came.
+    const content = options.finish ? options.finish(text, { stopped }) : rich && text.trim() ? { rich: text.trim() } : { text: text.trim() };
+    const scope = this.scope(ctx);
+    if (!placeholder) {
+      const delivery = await this.deliverContent(ctx, content, 'send');
+      return { text, stopped, result: delivery?.result };
+    }
+    // Groups: the final message takes the place of the growing one.
+    const previous = scope.editTarget;
+    scope.editTarget = { chatId: chat.id, messageId: placeholder.message_id, message: placeholder };
+    try {
+      const delivery = await this.deliverContent(ctx, content, 'edit');
+      return { text, stopped, result: delivery?.result };
+    } finally {
+      scope.editTarget = previous;
+    }
   }
 
   /**
@@ -1054,7 +1230,10 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   }
 
   /** `refreshEveryMs`: render the page into its message again later (one task per message). */
-  private async scheduleRefresh(ctx: C, delivered: DeliveryResult, sourceId: number | undefined) {
+  private async scheduleRefresh(ctx: C, delivered: DeliveryResult, sourceId: MessageKey | undefined) {
+    // Ephemeral messages belong to one user's screen and may vanish: no refreshes, and a
+    // shared message opened ephemerally keeps its own.
+    if (typeof sourceId === 'string' || (delivered !== true && delivered.ephemeral_message_id !== undefined)) return;
     const scope = this.scope(ctx);
     const every = scope.refreshEveryMs;
     const messageId = delivered === true ? sourceId : delivered.message_id;
@@ -1103,20 +1282,22 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     return history && typeof history === 'object' ? history : {};
   }
 
-  private async recordView(ctx: C, delivered: DeliveryResult, sourceId: number | undefined) {
+  private async recordView(ctx: C, delivered: DeliveryResult, sourceId: MessageKey | undefined) {
     const scope = this.scope(ctx);
-    const messageId = delivered === true ? sourceId : delivered.message_id;
+    const messageId = delivered === true ? sourceId : keyOf(delivered);
     if (messageId === undefined || !scope.view) return;
     const session = await this.state(ctx);
     const history = { ...(await this.navHistory(ctx)) };
-    if (sourceId !== undefined && sourceId !== messageId) delete history[sourceId]; // the menu moved to a new message
+    // The menu moved to a new message; unless it opened ephemerally, as the presser's own copy of a shared menu.
+    const ephemeralCopy = typeof messageId === 'string' && typeof sourceId === 'number';
+    if (sourceId !== undefined && sourceId !== messageId && !ephemeralCopy) delete history[sourceId];
     history[messageId] = { current: scope.view, stack: scope.navStack ?? [], at: Date.now() };
     // Keep the most recently used menus (integer keys iterate in numeric order, not insertion order).
     const ids = Object.keys(history).sort((a, b) => (history[a]!.at ?? 0) - (history[b]!.at ?? 0));
     for (const old of ids.slice(0, Math.max(0, ids.length - MAX_NAV_MESSAGES))) delete history[old];
     session.set(NAV_KEY, history);
     // The last page shown decides where the user's text goes (`page.onText`).
-    if (this.pages.get(scope.view.id)?.textFn) session.set(INPUT_KEY, { ...scope.view, messageId } satisfies TextInputState);
+    if (this.pages.get(scope.view.id)?.textFn && typeof messageId === 'number') session.set(INPUT_KEY, { ...scope.view, messageId } satisfies TextInputState);
     else session.delete(INPUT_KEY);
   }
 
@@ -1284,6 +1465,10 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       const text = prepared.chunks[0]!;
       const reply_markup = prepared.reply_markup.inline_keyboard.length ? prepared.reply_markup : undefined;
       const { title, description, thumbnailUrl } = options;
+      if (prepared.rich) {
+        // Inline mode sends no files: media in a rich page must already be on Telegram (file ids).
+        return { type: 'article', id, title, description, thumbnail_url: thumbnailUrl, input_message_content: { rich_message: prepared.rich as never }, reply_markup };
+      }
       const media = prepared.media;
       if (media) {
         if (media.type !== 'photo' || typeof media.source !== 'string') {
@@ -1891,6 +2076,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       }
       // Per-button delivery mode.
       const sendNew = params._m === 's';
+      const ephemeral = params._m === 'e';
       delete params._m;
 
       if (!(await this.isMenuOwner(ctx))) {
@@ -1912,9 +2098,10 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         const session = await this.state(ctx);
         if (session.get<TextInputState>(INPUT_KEY)?.messageId === ctx.callbackQuery?.message?.message_id) session.delete(INPUT_KEY);
       } else if (page) {
-        await this.open(ctx, page.id, params, { mode: sendNew ? 'send' : 'edit' });
+        await this.open(ctx, page.id, params, { mode: ephemeral ? 'ephemeral' : sendNew ? 'send' : 'edit' });
       } else if (dialogue) {
-        await this.guardedDialogueStart(ctx, dialogue, params, { mode: sendNew ? 'send' : 'edit', closeMenu: !sendNew });
+        // An ephemeral start leaves the shared menu alone: it stays for the others.
+        await this.guardedDialogueStart(ctx, dialogue, params, { mode: ephemeral ? 'ephemeral' : sendNew ? 'send' : 'edit', closeMenu: !sendNew && !ephemeral });
       } else {
         await this.answerCallback(ctx, { text: texts.pageNotFound, show_alert: true });
       }
@@ -1945,7 +2132,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   /** `nav.back()`: show the previous page of this menu message, or the home page. */
   private async goBack(ctx: C) {
-    const messageId = ctx.callbackQuery?.message?.message_id;
+    const messageId = pressedKey(ctx);
     const entry = messageId === undefined ? undefined : (await this.navHistory(ctx))[messageId];
     const previous = entry?.stack.at(-1);
     if (previous && this.pages.has(previous.id)) {
@@ -2193,6 +2380,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const reserved = Object.keys(normalized).find((key) => key.startsWith('_'));
     if (reserved) throw new EasyTGError(`Param "${reserved}" of "${id}": names starting with "_" are reserved`);
     if (options?.mode === 'send') normalized._m = 's';
+    if (options?.mode === 'ephemeral') normalized._m = 'e';
     const store = options?.store || (this.callbackParams === 'stored' && Object.keys(normalized).length > 0);
     return this.encode(ctx, id, normalized, !!store);
   }
@@ -2321,7 +2509,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
       await this.emit('sent', { ctx, chatId: ctx.chat.id, messageIds: delivery.sent, page: scope.view?.id });
     }
     const chatId = ctx.chat?.id ?? scope.editTarget?.chatId;
-    if (delivery && chatId !== undefined) {
+    if (delivery && chatId !== undefined && !delivery.ephemeral) {
       // The message is out already: a failure here must not fail the page.
       await this.autoDelete(ctx, chatId, delivery, content.deleteAfterMs).catch((error) => {
         this.logger.error('deleteAfterMs: could not schedule or cancel the deletion', error);
@@ -2415,6 +2603,11 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
 
   /** @internal Delete the pressed message; if it's too old to delete, strip its keyboard. */
   async closeMessage(ctx: C) {
+    const pressed = pressedMessage(ctx);
+    if (pressed?.ephemeral) {
+      await ctx.api.deleteEphemeralMessage(pressed.chatId!, pressed.ephemeral.receiverUserId, pressed.ephemeral.id).catch((error: unknown) => this.logger.debug('Failed to delete an ephemeral message', error));
+      return;
+    }
     const message = ctx.callbackQuery?.message;
     if (!message && !ctx.callbackQuery?.inline_message_id) return;
     // Inline-mode messages can't be deleted by the bot: only strip the keyboard.
@@ -2516,6 +2709,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     depth = 0,
   ): Promise<DeliveryResult | undefined> {
     if (depth >= MAX_REDIRECTS) throw new EasyTGError(`Too many redirects (last: dialogue "${dialogue.id}")`);
+    // Started ephemerally: its prompts go to this user only (where Telegram has ephemeral messages).
+    if (options.mode === 'ephemeral') this.scope(ctx).ephemeral = true;
     let started = false;
     const result = await this.guard(ctx, dialogue, params as Params, async ({ session }) => {
       await this.dialogues.start(ctx, dialogue, params);

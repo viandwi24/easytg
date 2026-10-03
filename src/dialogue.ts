@@ -3,7 +3,8 @@ import type { InlineKeyboardButton, KeyboardButton, Message, ReplyKeyboardMarkup
 import type { Dialogue } from './define';
 import { EasyTGError } from './errors';
 import { validateSchema, type StandardSchemaV1 } from './schema';
-import { addStep, calendar, inRange, numberInRange, parseIsoDate, resolveDate, startMonth, validMonth } from './steps';
+import { sha256, toBase64Url } from './platform/crypto';
+import { addStep, calendar, checkTimeZone, inRange, numberInRange, parseIsoDate, resolveDate, startMonth, validMonth } from './steps';
 import type { EasyTG } from './engine';
 import type { Session } from './session';
 import type {
@@ -29,6 +30,8 @@ interface DialogueState {
   answers: Record<string, unknown>;
   /** Prompt/ack/error messages to clean up on the next input. */
   messages: number[];
+  /** The same, sent as ephemeral messages (a dialogue started ephemerally in a group). */
+  ephemeralMessages?: { chatId: number; receiverUserId: number; id: number }[];
   collected?: Collected;
   /** Options chosen so far in a `multiChoice` step. */
   selected?: string[];
@@ -196,8 +199,9 @@ export class DialogueRunner<C extends Context> {
         return this.submit(ctx, session, def, state, step, value);
       }
       case 'date': {
+        const { min, max } = this.dateBounds(ctx, state, step);
         const date = text === undefined ? undefined : parseIsoDate(text);
-        if (!date || !inRange(date, resolveDate(step.min), resolveDate(step.max))) return this.reject(ctx, session, def, state, texts.expectDate!);
+        if (!date || !inRange(date, min, max)) return this.reject(ctx, session, def, state, texts.expectDate!);
         return this.submit(ctx, session, def, state, step, date);
       }
     }
@@ -213,7 +217,8 @@ export class DialogueRunner<C extends Context> {
 
     const steps = await this.steps(ctx, def, state);
     const step = steps[state.step];
-    if (!step || params.s !== step.id) return false;
+    // Buttons sent by earlier versions carry the whole step id: still accepted, so an upgrade doesn't break dialogues in progress.
+    if (!step || (params.s !== stepKey(step.id) && params.s !== step.id)) return false;
 
     switch (params.k) {
       case Kind.Choice: {
@@ -256,13 +261,17 @@ export class DialogueRunner<C extends Context> {
         return true;
       }
       case Kind.Page: {
-        if (step.type !== 'date' || !validMonth(params.v ?? '', resolveDate(step.min), resolveDate(step.max))) return false;
+        if (step.type !== 'date') return false;
+        const { min, max } = this.dateBounds(ctx, state, step);
+        if (!validMonth(params.v ?? '', min, max)) return false;
         await this.refresh(ctx, session, def, state, step, params.v);
         return true;
       }
       case Kind.Pick: {
-        const date = step.type === 'date' ? parseIsoDate(params.v ?? '') : undefined;
-        if (step.type !== 'date' || !date || !inRange(date, resolveDate(step.min), resolveDate(step.max))) return false;
+        if (step.type !== 'date') return false;
+        const { min, max } = this.dateBounds(ctx, state, step);
+        const date = parseIsoDate(params.v ?? '');
+        if (!date || !inRange(date, min, max)) return false;
         await this.submit(ctx, session, def, state, step, date);
         return true;
       }
@@ -471,31 +480,31 @@ export class DialogueRunner<C extends Context> {
       const move = (label: string, delta: number | undefined) => {
         if (!delta) return [];
         const next = addStep(value, delta);
-        return [numberInRange(next, step) ? this.button(ctx, state, step, label, Kind.Set, String(next)) : this.button(ctx, state, step, ' ', Kind.Noop)];
+        // At the limit the button stays, greyed out, so the row doesn't jump around.
+        return [numberInRange(next, step) ? this.button(ctx, state, step, label, Kind.Set, String(next)) : disabled(label)];
       };
       keyboard.push([
         ...move('⏪', step.bigStep && -step.bigStep),
         ...move('➖', -(step.step ?? 1)),
-        this.button(ctx, state, step, step.format ? step.format(value) : String(value), Kind.Noop),
+        disabled(step.format ? step.format(value) : String(value)),
         ...move('➕', step.step ?? 1),
         ...move('⏩', step.bigStep),
       ]);
       keyboard.push([this.button(ctx, state, step, texts.done, Kind.Done, String(value))]);
     }
     if (step.type === 'date') {
-      const min = resolveDate(step.min);
-      const max = resolveDate(step.max);
-      const month = view ?? startMonth(resolveDate(step.initial), min, max);
+      const { min, max, initial, timeZone } = this.dateBounds(ctx, state, step);
+      const month = view ?? startMonth(initial, min, max, timeZone);
       const cal = calendar(month, { min, max, weekStartsOn: step.weekStartsOn, locale: this.app.localeOf(ctx) });
-      const noop = (label: string) => this.button(ctx, state, step, label, Kind.Noop);
       keyboard.push([
-        cal.previous ? this.button(ctx, state, step, '‹', Kind.Page, cal.previous) : noop(' '),
-        noop(cal.title),
-        cal.next ? this.button(ctx, state, step, '›', Kind.Page, cal.next) : noop(' '),
+        cal.previous ? this.button(ctx, state, step, '‹', Kind.Page, cal.previous) : disabled(' '),
+        disabled(cal.title),
+        cal.next ? this.button(ctx, state, step, '›', Kind.Page, cal.next) : disabled(' '),
       ]);
-      keyboard.push(cal.weekdays.map(noop));
+      keyboard.push(cal.weekdays.map(disabled));
       for (const week of cal.weeks) {
-        keyboard.push(week.map((day) => (!day ? noop(' ') : day.enabled ? this.button(ctx, state, step, String(day.day), Kind.Pick, day.iso) : noop('·'))));
+        // Days out of range keep their number, greyed out: the month stays readable.
+        keyboard.push(week.map((day) => (!day ? disabled(' ') : day.enabled ? this.button(ctx, state, step, String(day.day), Kind.Pick, day.iso) : disabled(String(day.day)))));
       }
     }
     if (step.actions?.length) {
@@ -506,6 +515,22 @@ export class DialogueRunner<C extends Context> {
     if (collected > 0) keyboard.push([this.button(ctx, state, step, texts.done, Kind.Done)]);
     keyboard.push(this.controls(ctx, def, state, step));
     return keyboard;
+  }
+
+  /**
+   * A `date` step's limits as days, in its time zone (the step's, else
+   * `dialogues.timeZone`, else the server's). Evaluated on every use, so
+   * "from today" moves with the clock.
+   */
+  private dateBounds(ctx: C, state: DialogueState, step: Extract<AnyStep<C>, { type: 'date' }>) {
+    const zone = typeof step.timeZone === 'function' ? step.timeZone(this.helpers(ctx, undefined as never, state)) : step.timeZone;
+    const timeZone = zone ?? this.app.dialogueTimeZone;
+    checkTimeZone(timeZone);
+    const what = (field: string) => `Step "${step.id}": ${field}`;
+    const min = resolveDate(step.min, timeZone, what('min'));
+    const max = resolveDate(step.max, timeZone, what('max'));
+    if (min && max && min > max) throw new EasyTGError(`Step "${step.id}": min (${min}) is after max (${max})`);
+    return { min, max, initial: resolveDate(step.initial, timeZone, what('initial')), timeZone };
   }
 
   /** The options chosen so far in a `multiChoice` step (its `initial` ones at first). */
@@ -552,7 +577,7 @@ export class DialogueRunner<C extends Context> {
   }
 
   private button(ctx: C, state: DialogueState, step: AnyStep<C>, text: string, kind: Kind, value?: string): InlineKeyboardButton {
-    return { text, callback_data: this.app.controlData(ctx, { r: state.run, s: step.id, k: kind, v: value }) };
+    return { text, callback_data: this.app.controlData(ctx, { r: state.run, s: stepKey(step.id), k: kind, v: value }) };
   }
 
   private async sendTracked(
@@ -565,6 +590,7 @@ export class DialogueRunner<C extends Context> {
   ) {
     const delivery = await this.app.deliverContent(ctx, content, mode, sendMarkup);
     if (delivery) state.messages.push(...delivery.sent);
+    if (delivery?.ephemeralSent?.length) state.ephemeralMessages = [...(state.ephemeralMessages ?? []), ...delivery.ephemeralSent];
     this.save(session, state);
   }
 
@@ -661,6 +687,12 @@ export class DialogueRunner<C extends Context> {
 
   /** Delete tracked messages, optionally keeping one (e.g. the one being edited). */
   private async clear(ctx: C, state: DialogueState, keepMessageId?: number) {
+    // Ephemeral prompts go with their own method; deleting one shows the message it replaced again.
+    const ephemeral = state.ephemeralMessages ?? [];
+    delete state.ephemeralMessages;
+    for (const e of ephemeral) {
+      await ctx.api.deleteEphemeralMessage(e.chatId, e.receiverUserId, e.id).catch((error: unknown) => this.app.logger.debug('Failed to delete an ephemeral prompt', error));
+    }
     const ids = state.messages.filter((id) => id !== keepMessageId);
     state.messages = [];
     if (!ids.length || !ctx.chat) return;
@@ -679,6 +711,18 @@ export function parseWebAppData(data: string): unknown {
   } catch {
     return data;
   }
+}
+
+/** A button Telegram shows greyed out, that sends nothing (Bot API 10.3). */
+const disabled = (text: string): InlineKeyboardButton => ({ text, disabled: {} });
+
+/**
+ * A step's id in button data: short ids as they are, longer ones as a short
+ * hash, so a calendar's 40-odd buttons stay within Telegram's 64 bytes
+ * instead of being stored server-side.
+ */
+function stepKey(id: string): string {
+  return id.length <= 8 ? id : `~${toBase64Url(sha256(id)).slice(0, 7)}`;
 }
 
 function randomRun() {

@@ -45,3 +45,14 @@ describe('simulated rate limits', () => {
     expect(sim.calls.filter((c) => c.error).map((c) => c.error)).toEqual(['Too Many Requests: retry after 1']);
   });
 });
+
+test('app.throttle keeps the order of a burst to one chat', async () => {
+  const sim = new TelegramSimulator({ rateLimits: { groupChat: { limit: 3, perMs: 300 } } });
+  const bot = sim.createBot();
+  const app = new EasyTG({ logger: false });
+  bot.api.config.use(app.throttle({ groupChat: { limit: 3, perMs: 300 } }));
+  const group = sim.createGroup({ title: 'G' });
+  await Promise.all(Array.from({ length: 12 }, (_, i) => bot.api.sendMessage(group.id, `#${i + 1}`)));
+  expect(sim.messages(group.id).map((m) => m.message.text)).toEqual(Array.from({ length: 12 }, (_, i) => `#${i + 1}`));
+  expect(sim.calls.filter((c) => c.error)).toEqual([]);
+});

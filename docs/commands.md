@@ -39,6 +39,22 @@ chats and, when some commands are only for private chats or only for groups,
 separate lists for those (Telegram shows the most specific list). Lists for a
 kind of chat without commands of its own are deleted.
 
+## Ephemeral commands
+
+`ephemeral: true` makes a command private in groups (Bot API 10.2):
+`syncCommands` lists it with `is_ephemeral`, so Telegram sends it to the bot
+only, and the page or dialogue answers the sender only, "Only you can see
+this". The group never sees either. Good for settings, personal lists, help:
+
+```ts
+app.command('mytasks', myTasks, { description: 'Your tasks', ephemeral: true, chats: 'groups' });
+```
+
+The answer replies to the ephemeral command, which Telegram accepts from a
+bot that isn't an admin too. Any ephemeral message the bot receives is
+answered ephemerally, whether or not its command was declared so. In private
+chats nothing changes. See [`examples/team.ts`](../examples/team.ts).
+
 ## Translated descriptions
 
 A description can be a function of the language. `syncCommands` then sets one
