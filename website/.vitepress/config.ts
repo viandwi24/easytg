@@ -7,14 +7,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
 const GITHUB = 'https://github.com/viandwi24/easytg';
 /** Markdown files that aren't pages of the site; links to them go to GitHub. */
-const OFF_SITE = ['RELEASING.md'];
+const OFF_SITE = ['RELEASING.md', 'packages/simulator/README.md'];
 
 export default defineConfig({
   title: 'easytg',
   description: 'Page-based Telegram bot UIs on top of grammY, with a Telegram simulator that runs in your browser.',
   // The repository is the source: README, docs/ and this website/ folder.
   srcDir: '..',
-  srcExclude: ['**/node_modules/**', 'legacy/**', 'dist/**', ...OFF_SITE, 'examples/**', 'test/**', 'src/**', '.github/**'],
+  srcExclude: ['**/node_modules/**', 'legacy/**', 'dist/**', ...OFF_SITE, 'examples/**', 'test/**', 'src/**', 'packages/**', '.github/**'],
   rewrites: {
     'website/index.md': 'index.md',
     'website/playground.md': 'playground.md',
@@ -150,6 +150,8 @@ export default defineConfig({
     publicDir: resolve(here, '../public'),
     resolve: {
       alias: [
+        { find: /^@easytg\/simulator$/, replacement: resolve(root, 'packages/simulator/src/index.ts') },
+        { find: /^@easytg\/simulator\/(.*)$/, replacement: resolve(root, 'packages/simulator/src/$1') },
         { find: /^easytg$/, replacement: resolve(root, 'src/index.ts') },
         { find: /^easytg\/(.*)$/, replacement: resolve(root, 'src/$1') },
       ],

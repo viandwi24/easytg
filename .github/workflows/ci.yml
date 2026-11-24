@@ -35,6 +35,7 @@ jobs:
       - run: bun run build
       - run: node --input-type=module -e "import('./dist/index.js').then((m) => { if (!m.EasyTG || !m.page) process.exit(1); console.log('ok'); })"
       - run: node --input-type=module -e "import('./dist/simulator/index.js').then((m) => { if (!m.TelegramSimulator) process.exit(1); console.log('ok'); })"
+      - run: node --input-type=module -e "import('@easytg/simulator').then((m) => { if (!m.TelegramSimulator) process.exit(1); console.log('ok'); })"
       # loadBot on Node: grammY uses the real node-fetch there, which interceptBotApi replaces.
       - run: node scripts/node-smoke.mjs
 

@@ -8,7 +8,7 @@ import * as grammy from 'grammy';
 import { transform } from 'sucrase';
 import * as easytg from 'easytg';
 import * as testing from 'easytg/testing';
-import { TelegramSimulator } from 'easytg/simulator/index';
+import { TelegramSimulator } from '@easytg/simulator';
 import { id as localeId } from '../../../examples/locales/id';
 
 export type LogLevel = 'log' | 'info' | 'warn' | 'error';
@@ -22,7 +22,7 @@ export interface RunOptions {
   users?: boolean;
   /** Answer floods with 429, like Telegram. */
   rateLimits?: boolean;
-  latencyMs?: number;
+  latencyMs?: number | [number, number];
 }
 
 export interface Run {
@@ -39,7 +39,8 @@ export function compile(code: string): string {
 }
 
 export function runBot(code: string, options: RunOptions): Run {
-  const sim = new TelegramSimulator({ latencyMs: options.latencyMs ?? 40, rateLimits: options.rateLimits });
+  // Like a real network: buttons show their spinner, edits arrive a moment later.
+  const sim = new TelegramSimulator({ latencyMs: options.latencyMs ?? [120, 280], rateLimits: options.rateLimits });
   if (options.group || options.users) {
     sim.addUser({ first_name: 'Alice', language_code: 'en' });
     sim.addUser({ first_name: 'Bob', language_code: 'en' });

@@ -25,8 +25,10 @@ const props = withDefaults(
     limits?: boolean;
     /** Read-only teaser: the bot runs, and a click opens it in the playground. */
     preview?: boolean;
+    /** Fill the parent's height (the full-page playground). */
+    fill?: boolean;
   }>(),
-  { start: undefined, group: false, users: false, limits: false, preview: false },
+  { start: undefined, group: false, users: false, limits: false, preview: false, fill: false },
 );
 
 type Runner = typeof import('./runner');
@@ -156,7 +158,7 @@ onMounted(async () => {
     import('codemirror'),
     import('@codemirror/lang-javascript'),
     import('@codemirror/theme-one-dark'),
-    import('easytg/simulator/element'),
+    import('@easytg/simulator/element'),
   ]);
   runner = loaded;
   oneDark = dark.oneDark;
@@ -196,14 +198,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="host" class="pg" :class="{ 'no-code': !showCode, preview }">
-    <nav v-if="picker && code === undefined" class="examples" aria-label="Examples">
-      <span class="examples-title">Examples</span>
-      <button v-for="e in EXAMPLES" :key="e.file" class="chip" :class="{ on: e.file === selected }" @click="pick(e.file)">{{ e.title }}</button>
-    </nav>
+  <div ref="host" class="pg" :class="{ 'no-code': !showCode, preview, fill }">
     <div class="bar">
-      <span class="label">{{ code === undefined ? `examples/${selected}.ts` : '▶ Playground' }}</span>
-      <span class="spacer" />
+      <template v-if="picker && code === undefined">
+        <label class="picker" :title="`examples/${selected}.ts`">
+          <span class="sr-only">Example</span>
+          <select :value="selected" @change="pick(($event.target as HTMLSelectElement).value)">
+            <option v-for="e in EXAMPLES" :key="e.file" :value="e.file">{{ e.title }}</option>
+          </select>
+        </label>
+        <span class="about">{{ example?.description }}</span>
+      </template>
+      <template v-else>
+        <span class="label">{{ code === undefined ? `examples/${selected}.ts` : '▶ Playground' }}</span>
+        <span class="spacer" />
+      </template>
       <template v-if="!preview">
         <button class="btn" :title="showCode ? 'Hide the code' : 'Show the code'" @click="showCode = !showCode">{{ showCode ? 'Hide code' : 'Show code' }}</button>
         <button class="btn" title="Back to the original code" @click="reset">Reset</button>
@@ -211,7 +220,6 @@ onBeforeUnmount(() => {
       </template>
       <a v-else class="btn primary" :href="playgroundLink">Open in the playground →</a>
     </div>
-    <p v-if="example?.description && picker" class="about">{{ example.description }}</p>
     <div class="body">
       <div v-show="showCode" class="editor"><div ref="editorHost" class="editor-inner" /></div>
       <div class="side">
@@ -291,53 +299,55 @@ onBeforeUnmount(() => {
   opacity: 0.6;
   cursor: wait;
 }
-.about {
-  margin: 0;
-  padding: 8px 12px;
-  font-size: 14px;
+.picker {
+  position: relative;
+  flex-shrink: 0;
+}
+.picker::after {
+  content: '▾';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 12px;
   color: var(--vp-c-text-2);
-  border-bottom: 1px solid var(--vp-c-divider);
+}
+.picker select {
+  appearance: none;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 28px 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-brand-1);
+  cursor: pointer;
+}
+.picker select:hover,
+.picker select:focus-visible {
+  border-color: var(--vp-c-brand-1);
+  outline: none;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.about {
+  flex: 1 1 240px;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--vp-c-text-2);
 }
 .body {
   display: grid;
   grid-template-columns: 1fr;
   position: relative;
-}
-.examples {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--vp-c-divider);
-}
-.examples-title {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--vp-c-text-3);
-  margin-right: 4px;
-}
-.chip {
-  font-size: 13px;
-  padding: 4px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--vp-c-divider);
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-2);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.chip:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1);
-}
-.chip.on {
-  background: var(--vp-c-brand-1);
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-white);
-  font-weight: 600;
 }
 .label {
   font-family: var(--vp-font-family-mono);
@@ -485,5 +495,31 @@ a.btn {
 }
 .muted {
   color: var(--vp-c-text-3);
+}
+/* The full-page playground: everything fits the parent's height, and the
+   editor, chat and logs scroll inside. */
+@media (min-width: 960px) {
+  .pg.fill {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    margin: 0;
+  }
+  .fill .body {
+    flex: 1;
+    min-height: 0;
+  }
+  .fill .side {
+    min-height: 0;
+  }
+  .fill .chat,
+  .fill .log {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+  .fill .chat :deep(easytg-chat) {
+    --easytg-chat-height: 100%;
+  }
 }
 </style>

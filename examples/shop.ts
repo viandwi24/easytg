@@ -1,13 +1,15 @@
 /**
- * A small shop: reply-keyboard main menu, catalog with pagination and Back
- * buttons, a photo album, and a checkout that asks for size, phone number and
- * delivery location.
+ * A small shop: reply-keyboard main menu, a catalog as a list or as cards
+ * (one product per photo, ⬅️ ➡️ edit the photo in place), Back buttons, a
+ * photo album, and a checkout that asks for size, phone number and delivery
+ * location.
  *
  *   BOT_TOKEN=123:abc bun run examples/shop.ts
  *
  * Commands: /start shows the menu; "✖️ Close menu" or /hide removes it.
  *
- * Shows: replyMenu + app.showMenu / hideMenu, nav.back(), paginate, photo & album content,
+ * Shows: replyMenu + app.showMenu / hideMenu, nav.back(), paginate (a list, and
+ * photo cards whose media is edited in place), photo & album content,
  * dialogue steps `choice` (reply keyboard), `contact`, `location`, and events.
  */
 import { Bot } from 'grammy';
@@ -19,13 +21,15 @@ if (!token) {
   process.exit(1);
 }
 
-// Any photo URL or Telegram file_id works here.
-const photo = (seed: string) => `https://picsum.photos/seed/${seed}/600/400`;
+// Any photo URL or Telegram file_id works here; these are placeholder images
+// with the product's name, a color each.
+const COLORS = ['2a9ef1', 'e17076', '7bc862', 'faa774', 'a695e7', '6ec9cb'];
+const photo = (name: string, i: number) => `https://placehold.co/600x400/${COLORS[i % COLORS.length]}/ffffff/png?text=${encodeURIComponent(name)}`;
 const products = Array.from({ length: 12 }, (_, i) => ({
   id: `p${i + 1}`,
   name: `T-shirt #${i + 1}`,
   price: 10 + i,
-  photo: photo(`shirt${i + 1}`),
+  photo: photo(`T-shirt #${i + 1}`, i),
 }));
 
 interface Order {
@@ -35,17 +39,36 @@ interface Order {
   location: DialogueLocation;
 }
 
-// ---- catalog: pagination, photos, Back ---------------------------------------
+// ---- catalog: a list or cards, pagination, photos, Back ----------------------
 
-const catalog = page<{ page?: string }>('catalog').render((args) => {
-  const { offset, limit, buttons } = paginate(args, { total: products.length, perPage: 4 });
-  const { nav } = args;
+const PER_PAGE = 4;
+
+// One page, two views. `view: 'cards'` shows one product per message, with its
+// photo; ⬅️ ➡️ edit that message in place (the photo changes with
+// editMessageMedia). The list keeps its own `page`, the cards their `item`, so
+// switching views lands on the same products.
+const catalog = page<{ page?: string; item?: string; view?: string }>('catalog').render((args) => {
+  const { nav, params } = args;
+  if (params.view === 'cards') {
+    const { offset, page: item, buttons } = paginate(args, { total: products.length, perPage: 1, param: 'item' });
+    const p = products[offset]!;
+    return {
+      photo: p.photo,
+      text: [md`**${p.name}**`, `$${p.price}`, '', `${item} of ${products.length}`],
+      keyboard: [
+        [nav.button('🛒 Buy', checkout, { product: p.id })],
+        buttons, // ⏮️ ⬅️ 2/12 ➡️ ⏭️: edits this photo message
+        [nav.button('☰ List view', catalog, { page: Math.ceil(item / PER_PAGE) })],
+      ],
+    };
+  }
+  const { offset, limit, buttons } = paginate(args, { total: products.length, perPage: PER_PAGE });
   return {
     text: '**Catalog**\nPick a product:',
     keyboard: [
       ...products.slice(offset, offset + limit).map((p) => [nav.button(`${p.name} · $${p.price}`, product, { id: p.id })]),
       buttons, // ⬅️ 1/3 ➡️
-      [nav.button('🖼 Gallery', gallery)],
+      [nav.button('🃏 Card view', catalog, { view: 'cards', item: offset + 1 }), nav.button('🖼 Gallery', gallery)],
     ],
   };
 });

@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ServerWebSocket, Subprocess } from 'bun';
-import { TelegramSimulator, type SimChat, type SimMediaKind } from '../simulator';
+import { TelegramSimulator, type SimChat, type SimMediaKind } from '@easytg/simulator';
 import { mermaidLiveUrl } from '../flow';
 import { generateTest, optionsCode, screenOf, type RecordedStep } from './testgen';
 
@@ -191,8 +191,8 @@ export async function startPreview(file: string, options: PreviewOptions = {}): 
       await restart('🔄 Started over');
     },
     exportTest: async () => ({ code: generateTest(sim, steps, `./${relative(root, botFile)}`), steps: steps.length }),
-    addUser: async () => {
-      const user = sim.addUser({ first_name: NAMES[sim.users.size - 1] ?? `User ${sim.users.size + 1}` });
+    addUser: async (profile?: { first_name?: string; last_name?: string; username?: string; language_code?: string }) => {
+      const user = sim.addUser({ ...profile, first_name: profile?.first_name || (NAMES[sim.users.size - 1] ?? `User ${sim.users.size + 1}`) });
       return user.id;
     },
   };

@@ -4,8 +4,8 @@
  * the preview server. State comes over a websocket; actions go back.
  */
 import type { BotCommand, User, UserFromGetMe } from 'grammy/types';
-import { mountChat } from '../simulator/element';
-import type { SimChat, SimMessage, TelegramSimulator } from '../simulator';
+import { mountChat } from '@easytg/simulator/element';
+import type { SimChat, SimMessage, TelegramSimulator } from '@easytg/simulator';
 
 type Listener = (event: any) => void;
 
@@ -118,6 +118,7 @@ class RemoteSimulator {
   chooseInlineResult = (...args: unknown[]) => this.call('chooseInlineResult', ...args);
   join = (...args: unknown[]) => this.call('join', ...args);
   stopGeneration = (...args: unknown[]) => this.call('stopGeneration', ...args);
+  addUser = (user?: Partial<User>) => this.call<number>('addUser', user);
 
   /** Files picked in the browser are uploaded first: the server keeps them. */
   async sendMedia(kind: string, source: { url?: string; name?: string; caption?: string }, options: unknown) {

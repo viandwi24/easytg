@@ -17,8 +17,9 @@ bun run release patch      # or: minor, major, or an explicit version such as 0.
 It shows the version and release notes and asks for confirmation, then:
 
 1. runs typecheck, tests and build (and stops if anything fails),
-2. bumps `version` in `package.json` and moves the Unreleased notes under the
-   new version,
+2. bumps `version` in `package.json` and `packages/simulator/package.json`
+   (easytg and `@easytg/simulator` always share a version) and moves the
+   Unreleased notes under the new version,
 3. commits `release: v<version>` and tags `v<version>`,
 4. pushes both to GitHub.
 
@@ -77,11 +78,38 @@ Then run `bun run release 0.1.0`. It dates the changelog and pushes the
 publishing and only creates the GitHub release. From then on, `bun run release patch|minor|major`
 does everything.
 
+### Once: the `@easytg/simulator` package
+
+easytg depends on `@easytg/simulator` (`packages/simulator/`), and every tag
+publishes both, under the same version: the simulator first. Like easytg, its
+first version has to be published by hand before trusted publishing works.
+
+1. On npmjs.com, create the organization **easytg** (free, public packages
+   only): avatar → **Add Organization**. It owns the `@easytg/` scope.
+2. Bump everything without pushing, then publish the simulator by hand:
+
+   ```bash
+   bun run release minor --no-push   # commits and tags locally, no push
+   cd packages/simulator
+   bunx npm login                    # if needed
+   npm publish --access public
+   cd ../..
+   ```
+
+3. On npmjs.com, open **@easytg/simulator → Settings → Trusted Publisher →
+   GitHub Actions** with the same values as for easytg (`viandwi24`,
+   `easytg`, `release.yml`, no environment), and optionally require 2FA and
+   disallow tokens.
+4. Push: `git push --atomic origin main v<version>`. The workflow sees the
+   simulator is already on npm, skips it and publishes easytg.
+
+From then on `bun run release` publishes both.
+
 ### Alternative: publish with a token
 
 To skip trusted publishing:
-1. Create a *granular access token* with read and write access to `easytg` on
-   npmjs.com.
+1. Create a *granular access token* with read and write access to `easytg`
+   and `@easytg/simulator` on npmjs.com.
 2. Save it as the repository secret `NPM_TOKEN` (**Settings → Secrets and
    variables → Actions**).
 

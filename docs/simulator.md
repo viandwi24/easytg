@@ -12,6 +12,17 @@ To run your bot's own file in it, with a chat window, use
 Use it for tests that read like a conversation, for trying a bot before it
 has a token, and for demos.
 
+It is its own package, [`@easytg/simulator`](../packages/simulator/README.md),
+which works with any grammY bot, with or without easytg. easytg depends on it
+and re-exports it, so in an easytg project `easytg/simulator`,
+`easytg/simulator/element` and `easytg/simulator/load` are the same modules as
+`@easytg/simulator`, `@easytg/simulator/element` and `@easytg/simulator/load`.
+This page uses the `easytg/…` names; without easytg:
+
+```bash
+bun add @easytg/simulator grammy    # or npm install
+```
+
 ```ts
 import { Bot } from 'grammy';
 import { EasyTG, page } from 'easytg';
@@ -52,7 +63,39 @@ sim.chat(alice.id)?.replyKeyboard;                        // the reply keyboard 
 
 The first member creates a group and the bot is one of its admins
 (`botAdmin: false` for a bot that isn't). Groups see every message (as with
-privacy mode off).
+privacy mode off). `type: 'group'` makes a basic group instead of a
+supergroup.
+
+### Channels
+
+```ts
+const news = sim.createChannel({ title: 'News', subscribers: [bob.id] }); // owner: the first user
+await sim.send('New arrivals!', { chat: news.id });       // the owner posts: the bot gets channel_post
+const carol = sim.addUser({ first_name: 'Carol' });
+await sim.join(news.id, carol.id);                        // subscribers join quietly
+```
+
+The owner and admins post; subscribers only read (`sim.send` as one throws).
+Posts carry `sender_chat` and no `from`, like Telegram's, and the bot needs to
+be an admin to post (`botAdmin: false` shows the error). Edits arrive as
+`edited_channel_post`.
+
+### Topics (forums)
+
+```ts
+const forum = sim.createGroup({ title: 'Team', members: [alice.id, bob.id], forum: true });
+const ideas = await sim.createTopic(forum.id, 'Ideas', { user: bob.id }); // the bot gets forum_topic_created
+await sim.send('hi', { chat: forum.id, thread: ideas.id });               // in the topic
+await sim.send('hi', { chat: forum.id });                                 // in "General"
+```
+
+A forum is a supergroup with `is_forum`. A topic's id is its
+`message_thread_id`: the id of the message that created it; "General" is
+thread 1 (`GENERAL_TOPIC`), whose messages carry no thread id. The bot's
+replies stay in the topic of the message they reply to, and its topic methods
+work: `createForumTopic`, `editForumTopic`, `closeForumTopic` (members can't
+write there any more, admins can), `reopenForumTopic`, `deleteForumTopic`
+(with its messages), and the `…GeneralForumTopic` ones.
 
 ## Ephemeral messages and drafts
 
@@ -177,7 +220,9 @@ sim.calls;                                                 // the last 200 calls
 ```
 
 `new TelegramSimulator({ latencyMs: 300 })` delays every API call, to see
-loading indicators. `rateLimits: true` answers floods with Telegram's
+loading indicators; `[120, 280]` picks a delay in that range each time, like
+a real network (the playground and the studio use that). `sim.latencyMs` can
+be changed while running. `rateLimits: true` answers floods with Telegram's
 `429 Too Many Requests: retry after N` (30 messages per second overall, 20
 per minute per group, counted in fixed windows like `app.throttle`); pass
 `{ global, groupChat, privateChat }` rules (`{ limit, perMs }` or `false`) for
@@ -213,7 +258,34 @@ mountChat(document.querySelector('#chat')!, sim, { theme: 'auto' });
 Or use the element: `<easytg-chat theme="dark" chat="-1001000000001">`,
 then `element.simulator = sim`. Attributes: `chat` (default: the user's
 private chat), `user` (who types; default the first user), `theme` (`light`,
-`dark` or `auto`). Its height is `--easytg-chat-height` (540px).
+`dark` or `auto`), `sidebar` (`auto` or `hide`). Its height is
+`--easytg-chat-height` (540px).
+
+From 680px wide, the window looks like Telegram on a computer: on the left
+your chats, latest first (your chat with the bot, your groups and channels,
+each with its last message), and at the bottom the profile you are typing
+as. Click it to switch to another user, or **New profile** to add one (first
+and last name, username, language: `language_code` for bots with
+[several languages](i18n.md)). Every profile sees only its own chats, so you
+can try a bot as several people.
+
+**✎** above the chats makes a group, a supergroup, a group with topics or a
+channel, with the profiles you pick as members (you create it; the bot is an
+admin unless you untick it). A group with topics gets a second column with
+its topics, like Telegram on a computer: "General" is open first, **＋** adds a
+topic. In a narrow window it opens on its topic list instead (‹ goes back to
+it), with **＋ New topic** at the bottom. In a channel you post
+as its owner and read as a subscriber.
+
+Pressed buttons show a spinner until the bot has answered, as on Telegram;
+with `latencyMs` you see it. A message and its buttons are as wide as the
+wider of the two, the buttons of a row equally wide. Photos and videos take
+their place at once and show a spinner until the file has loaded; an edited
+photo keeps its size while the new one loads.
+
+In a narrower window the chat and the user are picked at the top of the
+chat, and **New profile** and **New group or channel** are in the ⋮ menu.
+`sidebar="hide"` keeps the narrow layout at any width.
 
 ## easytg in the browser
 
@@ -227,6 +299,6 @@ queue again waits for a free slot instead of running right away.
 ## Not simulated
 
 Mini App pages themselves (their buttons open a dialog where you can send
-`sendData`), file downloads, channels, forum topics, business connections,
-poll votes and privacy mode. Telegram's rate limits only with `rateLimits`
+`sendData`), file downloads, channel comments and reactions, business
+connections, poll votes and privacy mode. Telegram's rate limits only with `rateLimits`
 (see [Watching](#watching)).

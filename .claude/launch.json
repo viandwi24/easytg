@@ -4,8 +4,29 @@
     {
       "name": "docs",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["--bun", "vitepress", "dev", "website", "--port", "5188"],
+      "runtimeArgs": [
+        "--bun",
+        "vitepress",
+        "dev",
+        "website",
+        "--port",
+        "5188"
+      ],
       "port": 5188
+    },
+    {
+      "name": "studio",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": [
+        "packages/studio/src/cli.ts",
+        "examples/sessions.ts",
+        "--users",
+        "2",
+        "--group",
+        "--port",
+        "4646"
+      ],
+      "port": 4646
     }
   ]
 }

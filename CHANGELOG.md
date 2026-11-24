@@ -5,6 +5,23 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Added
+
+- **Channels and forum topics in the simulator.** `sim.createChannel({ title, subscribers })`: the owner and admins post (`channel_post` updates with `sender_chat`, no `from`), subscribers read, and the bot needs to be an admin to post. `sim.createGroup({ forum: true })` makes a supergroup with topics; `sim.createTopic(chatId, name)` creates one as a user (the bot gets `forum_topic_created`) and `sim.send(text, { thread })` writes in it. The bot's `createForumTopic`, `editForumTopic`, `close…`/`reopen…`/`deleteForumTopic` and the `…GeneralForumTopic` methods work, `message_thread_id` included; replies stay in their topic. See [docs/simulator.md](docs/simulator.md#channels).
+- **New group or channel from the chat window**: ✎ above the chat list (or the ⋮ menu) makes a group, supergroup, group with topics or channel with the profiles you pick. A group with topics shows its topics in a second column next to the chats (on a narrow window: a topic list, with **＋ New topic**).
+- **`latencyMs: [min, max]`**: a random delay for every API call, like a real network. The docs playground uses 120–280 ms, so a pressed button shows its spinner and edits arrive a moment later.
+- **Chat list and profiles in the simulator's chat window.** From 680px wide, `<easytg-chat>` shows a sidebar like Telegram's: your chats and, at the bottom, the profile you are typing as (your chat with the bot and your groups, latest first, with their last message). Switch profiles there or create one with **New profile** (name, username, language), to try a bot as several users; each profile sees only its own chats. Narrower windows keep the pickers at the top and get **New profile** in the ⋮ menu; `sidebar="hide"` turns the sidebar off. `sim.addUser()` now emits `change`. See [docs/simulator.md](docs/simulator.md#a-chat-window).
+
+### Fixed
+
+- `easytg preview` and `loadBot` no longer start a bot a second time when its own `bot.start()` takes a while (a slow network or `latencyMs`): they start only bots whose `start()` was never called. `trackBots()` now also returns `started`.
+
+### Changed
+
+- **Photos and videos in the chat window have their size before they load**: a shimmer and a spinner while the file arrives, then it fades in, so the bubble doesn't jump. An edited photo (`editMessageMedia`, e.g. paging through cards) keeps the size of the one before.
+- **Messages with buttons look like Telegram's**: the message and its inline keyboard are as wide as the wider of the two, and the buttons of a row are equally wide.
+- **The simulator is its own package, `@easytg/simulator`** (in `packages/simulator/`, released together with easytg under the same version). It works with any grammY bot, with or without easytg: `bun add @easytg/simulator grammy`. easytg depends on it and keeps `easytg/simulator`, `easytg/simulator/element` and `easytg/simulator/load` as aliases, so nothing changes for existing code. See [docs/simulator.md](docs/simulator.md).
+
 ## 0.4.0 (2026-10-03)
 
 ### Added

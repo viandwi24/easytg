@@ -1,37 +1,24 @@
 ---
 layout: page
 sidebar: false
+footer: false
 title: Playground
+pageClass: playground-full
 ---
 
 <div class="playground-page">
-
-# Playground
-
-Every example from the repository's [`examples/`](https://github.com/viandwi24/easytg/tree/main/examples)
-folder that works without a server, running in a Telegram simulator in your
-browser. The code is unchanged: the same file runs with
-`BOT_TOKEN=… bun run examples/<file>.ts`. Edit it and press **Run**
-(⌘/Ctrl + Enter). Nothing is sent to Telegram. Pick an example below; the
-chat's ⋮ menu clears its history.
-
-<ClientOnly><Playground picker /></ClientOnly>
-
+<ClientOnly><Playground picker fill /></ClientOnly>
 </div>
 
 <style>
 .playground-page {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: 12px 16px 24px;
 }
-.playground-page h1 {
-  font-size: 32px;
-  font-weight: 700;
-  margin-bottom: 12px;
-}
-.playground-page > p {
-  color: var(--vp-c-text-2);
-  max-width: 760px;
+/* Full screen under the navbar: the playground scrolls inside, not the page. */
+@media (min-width: 960px) {
+  .playground-page {
+    height: calc(100dvh - var(--vp-nav-height));
+    padding: 12px 16px;
+  }
 }
 </style>

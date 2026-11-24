@@ -26,7 +26,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `isChatUnreachable`, `isMessageNotFound`, `isTransient`, `retryAfterMs` | [Error helpers](errors.md) |
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
 | `easytg/testing` | `createTestBot`, `telegramError`, `verifyStorageAdapter`, `verifyTaskStore` — [Testing](testing.md) |
-| `easytg/simulator` | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2`, `messageText`, `richPlainText`, `richButtons`, `richHtml` — [Simulator](simulator.md) |
+| `easytg/simulator` (= `@easytg/simulator`) | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2`, `messageText`, `richPlainText`, `richButtons`, `richHtml` — [Simulator](simulator.md) |
 | `easytg/simulator/load` | `loadBot`, `interceptBotApi`, `trackBots`: your bot file against a simulator (Bun, Node) — [Preview and recorded tests](preview.md) |
 | `easytg preview <file>` (CLI) | your bot file in a simulated Telegram, in the browser — [Preview](preview.md) |
 | `easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |

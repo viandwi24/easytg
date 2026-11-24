@@ -83,7 +83,7 @@ bot.command('start', (ctx) => app.open(ctx, home));
 - 📊 **Events** for analytics and monitoring: `update` (with timings), `pageView`, `sent`, dialogue events, `spam`, `error`, `payment`, `queueWait`, `taskError`, `broadcastBatch`, `webAppData`.
 - 🤖 **Multi-bot ready.** One app instance can serve several bots sharing one storage; sessions, buttons and rate limits stay per bot.
 - 🧪 **Testable.** `easytg/testing` runs your bot against a fake Telegram API, with no token and no network.
-- 💬 **Telegram simulator.** `easytg/simulator` is an in-memory Telegram with users, groups, buttons, inline mode and payments, plus a chat window for the browser. The [docs site](https://viandwi24.github.io/easytg) uses it for live playgrounds.
+- 💬 **Telegram simulator.** `easytg/simulator` (also on its own as [`@easytg/simulator`](packages/simulator/README.md), for any grammY bot) is an in-memory Telegram with users, groups, buttons, inline mode and payments, plus a chat window for the browser. The [docs site](https://viandwi24.github.io/easytg) uses it for live playgrounds.
 - 👀 **Preview without a token.** `bunx easytg preview bot.ts` runs your bot file in a simulated Telegram in the browser, restarts it on save, and turns what you click into a `bun test` file.
 - ⌘ **Commands and relays.** `app.command` binds `/commands` to pages and dialogues and syncs Telegram's command menu; `app.relay` lets two users talk through the bot, replies and edits included.
 - 🗺 **Flow map.** `app.flowchart()` draws your bot as a Mermaid diagram of pages, dialogues, commands and the buttons between them.

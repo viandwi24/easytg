@@ -3,7 +3,7 @@
  * same messages and button presses, and what the chat showed after each.
  */
 import type { User } from 'grammy/types';
-import type { SimChat, TelegramSimulator } from '../simulator';
+import type { SimChat, TelegramSimulator } from '@easytg/simulator';
 
 export interface RecordedStep {
   /** Code for the action, e.g. `await sim.send('/start')`. */

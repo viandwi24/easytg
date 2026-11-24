@@ -1,0 +1,17 @@
+{
+  "name": "@easytg/studio",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A development studio for Telegram bots: your bot against a simulated Telegram, with chats, profiles, groups and every Bot API call. Hot restarts on file changes.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "easytg-studio": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@easytg/simulator": "workspace:*"
+  },
+  "peerDependencies": {
+    "grammy": "^1.30.0"
+  }
+}

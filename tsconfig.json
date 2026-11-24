@@ -15,7 +15,13 @@
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true
+    "noImplicitOverride": true,
+
+    // The workspace packages, from source (their builds point "types" at dist/).
+    "paths": {
+      "@easytg/simulator": ["./packages/simulator/src/index.ts"],
+      "@easytg/simulator/*": ["./packages/simulator/src/*.ts"]
+    }
   },
-  "include": ["src", "test", "examples", "scripts"]
+  "include": ["src", "test", "examples", "scripts", "packages/*/src"]
 }

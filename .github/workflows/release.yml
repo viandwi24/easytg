@@ -32,6 +32,11 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match package.json version v$VERSION"
             exit 1
           fi
+          SIM_VERSION=$(node -p "require('./packages/simulator/package.json').version")
+          if [ "$SIM_VERSION" != "$VERSION" ]; then
+            echo "::error::packages/simulator/package.json is at $SIM_VERSION, easytg at $VERSION: they are released together"
+            exit 1
+          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
           # Prereleases (1.2.0-beta.1) go to the "next" dist-tag so they don't become "latest".
@@ -50,7 +55,11 @@ jobs:
             exit 1
           fi
 
-          # Already on npm (e.g. the first version was published by hand): only create the release.
+          # Already on npm (e.g. the first version was published by hand): skip that package.
+          if npm view "@easytg/simulator@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::@easytg/simulator@$VERSION is already on npm, skipping its publish"
+            echo "SKIP_SIMULATOR=1" >> "$GITHUB_ENV"
+          fi
           if npm view "easytg@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::easytg@$VERSION is already on npm, skipping publish"
             echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
@@ -58,8 +67,24 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # prepublishOnly runs typecheck, tests and build before anything is uploaded.
-      - name: Publish to npm
+      # easytg depends on @easytg/simulator, so the simulator goes first. Both are
+      # built and checked before either is uploaded (easytg's prepublishOnly runs
+      # the same checks again).
+      - name: Check and build
+        run: bun run typecheck && bun test && bun run build
+
+      - name: Publish @easytg/simulator to npm
+        if: env.SKIP_SIMULATOR != '1'
+        working-directory: packages/simulator
+        run: |
+          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
+            echo "::error::npm refused the publish. Usually: no Trusted Publisher on npmjs.com (@easytg/simulator → Settings → Trusted Publisher → GitHub Actions: user viandwi24, repository easytg, workflow release.yml, environment empty), or no NPM_TOKEN secret. Fix it, then re-run this workflow; no new tag is needed."
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish easytg to npm
         if: env.SKIP_PUBLISH != '1'
         run: |
           if ! npm publish --provenance --access public --tag "$NPM_TAG"; then

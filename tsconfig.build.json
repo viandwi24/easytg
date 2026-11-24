@@ -6,7 +6,8 @@
     "emitDeclarationOnly": true,
     "stripInternal": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "paths": {}
   },
   "include": ["src"]
 }
