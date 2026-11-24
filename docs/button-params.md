@@ -19,6 +19,8 @@ A stored button saves `{ target, params, user }` and carries only a
 - In `stored` mode, incoming inline params are rejected, so `p|order|id=999`
   sent by a modified client does nothing.
 - Pass `{ store: true }` to store the params of a single button.
+- A dialogue's buttons (its options' values) are stored when they don't fit,
+  in every mode, `inline` included.
 
 **Signed** buttons keep their params inline and add a short HMAC signature, so
 they can't be forged and nothing is written to storage when you render:

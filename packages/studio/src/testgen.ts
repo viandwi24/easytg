@@ -1,6 +1,7 @@
 /**
- * Turns what someone did in `easytg preview` into a `bun test` file: the
- * same messages and button presses, and what the chat showed after each.
+ * Turns what someone did in the studio into a `bun test` file: the same
+ * messages and button presses, and what the chat showed after each. The test
+ * runs the bot file as it is, with `loadBot` (JavaScript/TypeScript bots).
  */
 import type { User } from 'grammy/types';
 import type { SimChat, TelegramSimulator } from '@easytg/simulator';
@@ -43,12 +44,15 @@ export function generateTest(sim: TelegramSimulator, steps: RecordedStep[], botF
   const users = [...sim.users.values()];
   const [first, ...others] = users as [User, ...User[]];
   const groups = [...sim.chats.values()].filter((c): c is SimChat => c.type !== 'private');
+  const people = (g: SimChat, status?: string) =>
+    js([...g.members.values()].filter((m) => m.user.id !== sim.botInfo.id && (!status || m.status === status)).map((m) => m.user.id));
   const setup = [
     `const sim = new TelegramSimulator({ user: ${js(first)} });`,
     ...others.map((u) => `sim.addUser(${js(u)});`),
-    ...groups.map(
-      (g) =>
-        `sim.createGroup({ id: ${g.id}, title: ${js(g.title ?? '')}, type: ${js(g.type)}, members: ${js([...g.members.values()].filter((m) => m.user.id !== sim.botInfo.id).map((m) => m.user.id))} });`,
+    ...groups.map((g) =>
+      g.type === 'channel'
+        ? `sim.createChannel({ id: ${g.id}, title: ${js(g.title ?? '')}, owner: ${js([...g.members.values()].find((m) => m.status === 'creator')?.user.id ?? first.id)}, subscribers: ${people(g, 'member')} });`
+        : `sim.createGroup({ id: ${g.id}, title: ${js(g.title ?? '')}, type: ${js(g.type)}, members: ${people(g)}${g.forum ? ', forum: true' : ''} });`,
     ),
   ];
   const body = steps.flatMap((step) => {
@@ -57,12 +61,13 @@ export function generateTest(sim: TelegramSimulator, steps: RecordedStep[], botF
     return lines;
   });
   return `/**
- * Recorded in easytg preview. Run it with \`bun test\` from the project folder.
+ * Recorded in easytg studio. Run it with \`bun test\` from the project folder
+ * (it needs @easytg/simulator: \`bun add -d @easytg/simulator\`).
  * The bot file runs as it is, against a simulated Telegram.
  */
 import { afterAll, expect, test } from 'bun:test';
-import { TelegramSimulator } from 'easytg/simulator';
-import { loadBot } from 'easytg/simulator/load';
+import { TelegramSimulator } from '@easytg/simulator';
+import { loadBot } from '@easytg/simulator/load';
 
 ${setup.join('\n')}
 const { stop } = await loadBot(${js(botFile)}, { simulator: sim });

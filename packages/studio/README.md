@@ -1,17 +1,22 @@
-# easytg studio (experimental, not published yet)
+# @easytg/studio
 
 A Telegram for developing bots. Your bot runs against a simulated Telegram
 ([`@easytg/simulator`](../simulator/README.md)), and the studio's page (at the
 URL it prints; `--open` opens it) looks like Telegram on a computer: profiles,
-a chat list, groups. The panel next to it shows the bot's output, every Bot API call (request and result),
-the simulated world, and how to connect. No token, no network: nothing
-reaches Telegram, and it doesn't use up a bot on @BotFather.
+a chat list, groups, channels and topics. The panel next to it shows the
+bot's output, every Bot API call (request and result), the simulated world,
+an easytg bot's flow map, recorded tests, and how to connect. No token, no
+network: nothing reaches Telegram.
 
 ```bash
-bun run studio examples/shop.ts              # in this repository
-bunx easytg-studio src/bot.ts                # (once published)
-easytg-studio --cmd "python bot.py"          # a bot in any language
+bun add -d @easytg/studio
+bunx easytg-studio src/bot.ts --open          # a JavaScript/TypeScript bot
+bunx easytg-studio --cmd "python bot.py"      # a bot in any language
 ```
+
+In an [easytg](https://github.com/viandwi24/easytg) project, `easytg preview
+src/bot.ts` runs the studio too. From code: `import { startStudio } from
+'@easytg/studio'`.
 
 - **JavaScript/TypeScript**: the file runs unchanged with Bun; its calls to
   `api.telegram.org` come to the studio (grammY, or anything using `fetch`).
@@ -45,7 +50,8 @@ easytg-studio --cmd "python bot.py"          # a bot in any language
 | `--open` | open the studio in the browser (it doesn't by itself) |
 | `--no-watch` | don't restart on changes |
 
-Needs [Bun](https://bun.sh). In this repository it's registered as the
-`easytg-studio` command of the root package for development; `bun run release`
-refuses to release easytg while that entry is there, since `packages/studio`
-isn't part of the easytg package.
+- **Export test** (the Test tab, JavaScript/TypeScript bots): what you did in
+  the chat becomes a `bun test` file that runs the bot file with `loadBot`
+  and checks what each step showed.
+
+Needs [Bun](https://bun.sh). In the easytg repository: `bun run studio <file>`.

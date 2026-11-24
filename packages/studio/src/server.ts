@@ -16,6 +16,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ServerWebSocket, Subprocess } from 'bun';
 import { TelegramSimulator, type SimChat, type SimMediaKind } from '@easytg/simulator';
+import { generateTest, optionsCode, screenOf, type RecordedStep } from './testgen';
 
 export interface StudioOptions {
   /** A JavaScript/TypeScript bot file, run with Bun. */
@@ -97,6 +98,8 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
   let restarts = 0;
   let url = '';
   const info = () => ({ type: 'status', status, restarts, target, kind: botFile ? 'file' : 'command', api: url, token: sim.token, bot: sim.botInfo });
+  /** The bot's flow map (Mermaid), sent by its process when it is an easytg app. */
+  let flow = '';
   const setStatus = (next: Status) => {
     status = next;
     broadcast(info());
@@ -140,28 +143,90 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
     broadcast({ type: 'call', call: entry });
   });
 
-  // ---- what the page can do ----
+  // ---- what the page can do; users' actions are recorded for "Export test" ----
+  let steps: RecordedStep[] = [];
+  const record = (code: string, chat: number) => {
+    // After the action, what the chat shows (updates are confirmed once handled).
+    steps.push({ code, chat, screen: screenOf(sim, chat) });
+  };
+  type Where = { user?: number; chat?: number; thread?: number };
+  const chatOf = (o: Where = {}) => o.chat ?? o.user ?? sim.user.id;
+  const where = (o: Where = {}) => optionsCode(sim, o.user, o.chat, o.thread === undefined ? {} : { thread: o.thread });
   const actions: Record<string, (...args: any[]) => unknown> = {
-    send: (text: string, o = {}) => sim.send(text, o),
-    press: (messageId: number, button: never, o = {}) => sim.press(messageId, button, o),
-    pressReply: (button: never, o = {}) => sim.pressReply(button, o),
-    sendMedia: (kind: SimMediaKind, source: { upload?: string; name?: string; caption?: string }, o = {}) =>
-      sim.sendMedia(kind, { data: source.upload ? files.get(source.upload) : undefined, name: source.name, caption: source.caption }, o),
-    sendLocation: (lat: number, lon: number, o = {}) => sim.sendLocation(lat, lon, o),
-    sendContact: (contact: undefined, o = {}) => sim.sendContact(contact, o),
-    sendWebAppData: (data: string, button: string, o = {}) => sim.sendWebAppData(data, button, o),
+    send: async (text: string, o: Where = {}) => {
+      const result = await sim.send(text, o);
+      record(`await sim.send(${JSON.stringify(text)}${where(o)})`, chatOf(o));
+      return result;
+    },
+    press: async (messageId: number, button: { text: string }, o: Where = {}) => {
+      const result = await sim.press(messageId, button as never, o);
+      record(`await sim.tap(${JSON.stringify(button.text)}${where(o)})`, chatOf(o));
+      return result;
+    },
+    pressReply: async (button: { text: string } | string, o: Where = {}) => {
+      const result = await sim.pressReply(button as never, o);
+      record(`await sim.tap(${JSON.stringify(typeof button === 'string' ? button : button.text)}${where(o)})`, chatOf(o));
+      return result;
+    },
+    sendMedia: async (kind: SimMediaKind, source: { upload?: string; name?: string; caption?: string }, o: Where = {}) => {
+      const result = await sim.sendMedia(kind, { data: source.upload ? files.get(source.upload) : undefined, name: source.name, caption: source.caption }, o);
+      record(`await sim.sendMedia(${JSON.stringify(kind)}, ${JSON.stringify({ name: source.name, caption: source.caption })}${where(o)})`, chatOf(o));
+      return result;
+    },
+    sendLocation: async (lat: number, lon: number, o: Where = {}) => {
+      const result = await sim.sendLocation(lat, lon, o);
+      record(`await sim.sendLocation(${lat}, ${lon}${where(o)})`, chatOf(o));
+      return result;
+    },
+    sendContact: async (contact: undefined, o: Where = {}) => {
+      const result = await sim.sendContact(contact, o);
+      record(`await sim.sendContact(undefined${where(o)})`, chatOf(o));
+      return result;
+    },
+    sendWebAppData: async (data: string, button: string, o: Where = {}) => {
+      const result = await sim.sendWebAppData(data, button, o);
+      record(`await sim.sendWebAppData(${JSON.stringify(data)}, ${JSON.stringify(button)}${where(o)})`, chatOf(o));
+      return result;
+    },
     inlineQuery: (query: string, o = {}) => sim.inlineQuery(query, o),
-    chooseInlineResult: (result: never, query: string, o = {}) => sim.chooseInlineResult(result, query, o),
-    pay: (messageId: number, o = {}) => sim.pay(messageId, o),
-    clearHistory: (chatId: number) => sim.clearHistory(chatId),
-    stopGeneration: (chatId: number) => sim.stopGeneration(chatId),
+    chooseInlineResult: async (result: { id: string }, query: string, o: Where = {}) => {
+      const sent = await sim.chooseInlineResult(result as never, query, o);
+      const user = o.user === undefined || o.user === sim.user.id ? '' : `, { user: ${o.user} }`;
+      record(
+        `await sim.chooseInlineResult((await sim.inlineQuery(${JSON.stringify(query)}${user})).find((r) => r.id === ${JSON.stringify(result.id)})!, ${JSON.stringify(query)}${where(o)})`,
+        chatOf(o),
+      );
+      return sent;
+    },
+    pay: async (messageId: number, o: Where = {}) => {
+      const result = await sim.pay(messageId, o);
+      record(`await sim.pay(sim.messages(${chatOf(o)}).findLast((m) => m.message.invoice)!.message.message_id${where(o)})`, chatOf(o));
+      return result;
+    },
+    clearHistory: (chatId: number) => {
+      sim.clearHistory(chatId);
+      record(`sim.clearHistory(${chatId})`, chatId);
+    },
+    stopGeneration: async (chatId: number) => {
+      await sim.stopGeneration(chatId);
+      record(`await sim.stopGeneration(${chatId})`, chatId);
+    },
+    exportTest: () => {
+      if (!botFile) throw new Error('Export test is for JavaScript/TypeScript bot files (it runs them with loadBot)');
+      return { code: generateTest(sim, steps, `./${relative(root, botFile)}`), steps: steps.length };
+    },
     addUser: (profile?: { first_name?: string; last_name?: string; username?: string; language_code?: string }) =>
       sim.addUser({ ...profile, first_name: profile?.first_name || (NAMES[sim.users.size - 1] ?? `User ${sim.users.size + 1}`) }).id,
     createGroup: (o: Parameters<TelegramSimulator['createGroup']>[0]) => make({ channel: false, options: { ...o, title: o.title || 'New group' } }),
     createChannel: (o: Parameters<TelegramSimulator['createChannel']>[0]) => make({ channel: true, options: { ...o, title: o.title || 'New channel' } }),
-    createTopic: async (chatId: number, name: string, o = {}) => (await sim.createTopic(chatId, name, o)).id,
+    createTopic: async (chatId: number, name: string, o: { user?: number } = {}) => {
+      const topic = await sim.createTopic(chatId, name, o);
+      record(`await sim.createTopic(${chatId}, ${JSON.stringify(name)}${o.user !== undefined && o.user !== sim.user.id ? `, { user: ${o.user} }` : ''})`, chatId);
+      return topic.id;
+    },
     join: async (chatId: number, userId: number) => {
       await sim.join(chatId, userId);
+      record(`await sim.join(${chatId}, ${userId})`, chatId);
       const entry = made.get(chatId);
       if (entry?.channel) entry.options.subscribers = [...(entry.options.subscribers ?? []), userId];
       else if (entry) entry.options.members = [...(entry.options.members ?? []), userId];
@@ -183,6 +248,7 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
       made.clear();
       for (const [id, entry] of again) make(entry, id);
       calls.length = 0;
+      steps = [];
       broadcast({ type: 'calls', calls });
       await restart('🔄 Started over');
     },
@@ -203,6 +269,11 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
         if (path.startsWith('/files/')) {
           const data = files.get(path.split('/')[2]!);
           return data ? new Response(data) : new Response('Not Found', { status: 404 });
+        }
+        if (path === '/_studio/flow' && request.method === 'POST') {
+          flow = await request.text();
+          broadcast({ type: 'flow', chart: flow, url: mermaidLiveUrl(flow) });
+          return new Response('ok');
         }
         if (path === '/upload' && request.method === 'POST') {
           const id = store(await request.blob(), new URL(request.url).searchParams.get('name') ?? undefined).split('/')[2];
@@ -226,6 +297,7 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
           socket.send(JSON.stringify(info()));
           socket.send(JSON.stringify({ type: 'logs', logs }));
           socket.send(JSON.stringify({ type: 'calls', calls }));
+          if (flow) socket.send(JSON.stringify({ type: 'flow', chart: flow, url: mermaidLiveUrl(flow) }));
         },
         close(socket) {
           sockets.delete(socket);
@@ -351,6 +423,14 @@ function summarize(value: unknown) {
   return JSON.parse(JSON.stringify(value, (_key, v) => (v instanceof Blob ? `[file ${(v as File).name ?? ''}]` : v)));
 }
 
+/** A link that opens a Mermaid diagram in Mermaid Live. */
+function mermaidLiveUrl(diagram: string): string {
+  const bytes = new TextEncoder().encode(JSON.stringify({ code: diagram, mermaid: { theme: 'default' } }));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `https://mermaid.live/edit#base64:${btoa(binary)}`;
+}
+
 function escapeHtml(text: string) {
   return text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
@@ -386,6 +466,9 @@ const PAGE = `<!doctype html>
   easytg-chat { --easytg-chat-height: 100%; height: 100%; }
   aside { width: 420px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-left: 1px solid var(--border); }
   body.no-panel aside { display: none; }
+  body.command .file-only { display: none; }
+  textarea.code { width: 100%; min-height: 320px; font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--soft); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  pre.chart { font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--soft); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow: auto; white-space: pre; }
   .tabs { display: flex; gap: 2px; padding: 6px; border-bottom: 1px solid var(--border); }
   .tabs button { border: none; background: none; }
   .tabs button.on { background: var(--soft); font-weight: 600; }
@@ -447,11 +530,15 @@ const PAGE = `<!doctype html>
       <button data-tab="output" class="on">Output <small id="n-output"></small></button>
       <button data-tab="calls">API calls <small id="n-calls"></small></button>
       <button data-tab="world">World</button>
+      <button data-tab="flow" hidden>Flow</button>
+      <button data-tab="test" class="file-only">Test</button>
       <button data-tab="connect">Connect</button>
     </div>
     <div class="pane" id="output"><div class="tools"><input type="search" placeholder="Filter output" id="f-output"><button id="clear-output">Clear</button></div><div id="lines"></div></div>
     <div class="pane" id="calls" hidden><div class="tools"><input type="search" placeholder="Filter by method or text" id="f-calls"><label class="check"><input type="checkbox" id="only-errors">Errors</label><button id="clear-calls">Clear</button></div><div id="call-list"></div></div>
     <div class="pane" id="world" hidden></div>
+    <div class="pane" id="flow" hidden></div>
+    <div class="pane" id="test" hidden><div class="section"><h4>Export test</h4><p class="hint">Use the chat, then export: the conversation becomes a <code>bun test</code> file that runs the bot file as it is and checks what each step shows.</p><p><button id="export" class="primary">Export test</button></p><div id="test-out"></div></div></div>
     <div class="pane" id="connect" hidden></div>
   </aside>
 </main>

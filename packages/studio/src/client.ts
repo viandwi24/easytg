@@ -238,7 +238,10 @@ $('#clear-calls').onclick = () => {
 
 const sim = new RemoteSimulator((message) => {
   if (message.type === 'status') {
-    if (message.status !== 'disconnected') info = message;
+    if (message.status !== 'disconnected') {
+      info = message;
+      document.body.classList.toggle('command', message.kind === 'command');
+    }
     const label =
       { running: 'running', starting: 'starting…', restarting: 'restarting…', stopped: 'stopped', crashed: 'crashed: see Output', disconnected: 'studio stopped, reconnecting…' }[
         message.status as string
@@ -260,6 +263,14 @@ const sim = new RemoteSimulator((message) => {
     addCall(message.call);
   } else if (message.type === 'state') {
     renderWorld();
+  } else if (message.type === 'flow') {
+    // An easytg bot: its flow map (pages, dialogues and the buttons pressed so far).
+    $('[data-tab="flow"]').hidden = false;
+    const pane = $('#flow');
+    pane.innerHTML = `<div class="section"><h4>Flow map</h4><p class="hint">Pages, dialogues and commands, and the buttons pressed so far. Paste it into Markdown in a <code>\`\`\`mermaid</code> block.</p>
+      <p><button id="copy-flow">Copy</button> <a href="${esc(message.url)}" target="_blank" rel="noopener"><button>Open in Mermaid Live</button></a></p><pre class="chart"></pre></div>`;
+    pane.querySelector('pre')!.textContent = message.chart;
+    $('#copy-flow').onclick = () => copy(message.chart);
   }
 });
 
@@ -410,3 +421,24 @@ $('#connect').addEventListener('click', (event) => {
   const value = (event.target as HTMLElement).dataset.copy;
   if (value) copy(value);
 });
+
+// ---- Test: the conversation so far as a bun test ----
+
+$('#export').onclick = async () => {
+  const out = $('#test-out');
+  try {
+    const { code, steps } = await sim.call<{ code: string; steps: number }>('exportTest');
+    out.innerHTML = `<p class="hint">${steps ? `${steps} recorded step${steps === 1 ? '' : 's'}.` : 'Nothing recorded yet: use the chat first.'} Save it as e.g. <code>bot.test.ts</code> and run <code>bun test</code>.</p>
+      <p><button id="copy-test">Copy</button> <button id="download-test">Download</button></p><textarea class="code" readonly></textarea>`;
+    out.querySelector('textarea')!.value = code;
+    $('#copy-test').onclick = () => copy(code);
+    $('#download-test').onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([code], { type: 'text/typescript' }));
+      a.download = 'bot.test.ts';
+      a.click();
+    };
+  } catch (error) {
+    out.innerHTML = `<p class="hint">${esc((error as Error).message)}</p>`;
+  }
+};

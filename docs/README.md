@@ -60,8 +60,9 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [API reference](app.md) | every export and `app` method |
 | [Migrating](migration.md) | breaking changes between versions |
 | [Testing](testing.md) | `easytg/testing`: a fake Telegram API for your tests |
-| [Preview and recorded tests](preview.md) | `easytg preview`: your bot file in a simulated Telegram in the browser; tests recorded from it; `loadBot` |
+| [Studio, preview and recorded tests](preview.md) | `easytg preview` / `@easytg/studio`: your bot file in a simulated Telegram in the browser; tests recorded from it; `loadBot` |
 | [Simulator](simulator.md) | `easytg/simulator`: an in-memory Telegram with users, groups and a browser chat window; easytg in the browser |
+| [Bot API coverage](bot-api-coverage.md) | which Bot API methods the simulator answers, and which it doesn't (generated) |
 
 ## Examples
 

@@ -1,5 +1,49 @@
 # Migrating
 
+## 0.4 → 0.5
+
+Your bot's code doesn't change. What changes is how you install the tools
+around it: the simulator and the preview are their own packages now, and a
+bot in production no longer downloads them.
+
+- **`easytg/simulator` needs `@easytg/simulator`.** easytg re-exports it but
+  doesn't install it any more (it's only for tests, the playground and the
+  studio). If you import `easytg/simulator`, `easytg/simulator/load` or
+  `easytg/simulator/element`, add it as a dev dependency:
+
+  ```bash
+  bun add -d @easytg/simulator    # the same version as easytg
+  ```
+
+- **`easytg preview` runs easytg studio**, from `@easytg/studio`:
+
+  ```bash
+  bun add -d @easytg/studio @easytg/simulator
+  bunx easytg preview src/bot.ts
+  ```
+
+  The studio has everything the preview had (Flow map, Export test, uploads)
+  and more: profiles, groups, channels and topics made from the chat window,
+  and bots in any language (`easytg-studio --cmd "python bot.py"`). Changes:
+  - The default port is 4646 (was 4545).
+  - **Two chats** is gone: switch profiles at the bottom of the chat list
+    instead, or open the page in two browser tabs.
+  - Every Bot API call takes 120–280 ms, like a real network; `--latency 0`
+    for instant answers.
+  - Tests recorded with **Export test** import `@easytg/simulator`; tests
+    recorded before keep working (with `@easytg/simulator` installed).
+
+- **A message that can't be edited is replaced the other way round**: the
+  new message is sent first, then the old one deleted (it used to be deleted
+  first). Tests that check the exact order of API calls see
+  `sendMessage`, then `deleteMessage` / `editMessageReplyMarkup`.
+
+- **Dialogue `onFinish` runs before the prompt is cleared** and before
+  `dialogueFinish` is emitted. If it throws, the dialogue and its answers
+  stay (the next message tries again) instead of being gone.
+
+Nothing stored changes.
+
 ## 0.3.0 → 0.3.1
 
 Two small breaking changes, both from easytg dropping Node-only APIs so it

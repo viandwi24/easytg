@@ -13,8 +13,10 @@ Use it for tests that read like a conversation, for trying a bot before it
 has a token, and for demos.
 
 It is its own package, [`@easytg/simulator`](../packages/simulator/README.md),
-which works with any grammY bot, with or without easytg. easytg depends on it
-and re-exports it, so in an easytg project `easytg/simulator`,
+which works with any grammY bot, with or without easytg. It's only needed for
+tests and tools, so easytg doesn't install it: add it as a dev dependency
+(`bun add -d @easytg/simulator`). easytg re-exports it, so in an easytg
+project `easytg/simulator`,
 `easytg/simulator/element` and `easytg/simulator/load` are the same modules as
 `@easytg/simulator`, `@easytg/simulator/element` and `@easytg/simulator/load`.
 This page uses the `easytg/…` names; without easytg:
@@ -137,8 +139,11 @@ buttons are greyed out; pressing one does nothing.
 | `editMessage(messageId, text, options?)` | edit one of their messages (an `edited_message` update) |
 | `inlineQuery(query, { user?, chatType? })` | type `@bot query`; resolves with the bot's results |
 | `chooseInlineResult(result, query, options?)` | send a result into a chat, "via @bot"; its buttons keep working |
-| `pay(messageId, options?)` | pay an invoice: pre-checkout, then `successful_payment` |
+| `pay(messageId, { shippingAddress?, shippingOption?, … })` | pay an invoice: shipping query (for `is_flexible` invoices), pre-checkout, then `successful_payment` |
 | `join(chatId, userId)` / `leave(chatId, userId)` | join or leave a group |
+| `requestToJoin(chatId, userId, { inviteLink?, bio?, query? })` | ask to join a supergroup or channel: the bot gets `chat_join_request` |
+| `joinByLink(inviteLink, userId?)` | open an invite link the bot made: join, or ask to join when the link needs approval |
+| `react(messageId, emoji \| emoji[], { user?, chat? })` | react to a message (`[]` takes the reaction back): the bot gets `message_reaction` |
 | `block(userId?, blocked?)` | block the bot: sending to them fails with 403 |
 | `stopGeneration(chatId?)` | press ⏹ Stop on a streamed draft |
 | `tap(label, options?)` | the newest button with this label: inline, else on the reply keyboard |
@@ -197,6 +202,70 @@ An edit without `reply_markup` removes the inline keyboard, and a chat action
 - Files the bot uploads are kept: `getFile` and `/file/bot…/<path>` return
   them. `new TelegramSimulator({ storeFile })` decides the URL a chat window
   shows them at (default: an object URL in browsers).
+- `setMyName`, `setMyDescription`, `setMyShortDescription` and
+  `setMyDefaultAdministratorRights` are kept (per `language_code`, falling
+  back to the one for all languages) and their `getMy…` methods return them.
+- The simulator knows no sticker sets until you add one:
+  `sim.addStickerSet({ name, title?, type?, emojis? })` makes a set with one
+  sticker per emoji (their file ids work with `sendSticker`), for
+  `getStickerSet`, `getCustomEmojiStickers` and `setChatStickerSet`; other
+  names fail with `STICKERSET_INVALID`.
+
+## Groups: settings, invite links and join requests
+
+With the bot an admin (and the right for it, e.g. `can_change_info`;
+otherwise `Bad Request: not enough rights to …`):
+
+- `setChatTitle` posts a `new_chat_title` service message, `setChatPhoto` (an
+  uploaded file, not a file id) `new_chat_photo` and `deleteChatPhoto`
+  `delete_chat_photo`; `getChat` returns the title, `description`, `photo`,
+  `permissions`, primary `invite_link`, `pinned_message` and
+  `sticker_set_name`.
+- `setChatPermissions` sets what members may do, with Telegram's implications
+  (unless `use_independent_chat_permissions`); without `can_send_messages`
+  members can't write (`sim.send` throws), admins still can.
+- `setChatAdministratorCustomTitle` and `setChatMemberTag` show in
+  `getChatMember` (`custom_title`, `tag`); `banChatSenderChat` keeps
+  `chat.bannedSenderChats`.
+- Invite links: `exportChatInviteLink` (a new primary link, the old one
+  revoked), `createChatInviteLink`, `editChatInviteLink`,
+  `revokeChatInviteLink` and the subscription ones for channels. Users join
+  through them with `sim.joinByLink(link, userId)`; revoked, expired and full
+  links throw.
+- Join requests: `sim.requestToJoin(chatId, userId)` (or a link with
+  `creates_join_request`) sends `chat_join_request`, which the bot answers with
+  `approveChatJoinRequest` (the user joins; groups show "joined") or
+  `declineChatJoinRequest`. While it is pending the bot may write to the user
+  (`user_chat_id`). With `{ query: true }` the request has a `query_id` for
+  `answerChatJoinRequestQuery` or `sendChatJoinRequestWebApp` (an `open`
+  event for the user).
+
+```ts
+const link = await bot.api.createChatInviteLink(group.id, { creates_join_request: true });
+bot.on('chat_join_request', (ctx) => ctx.approveChatJoinRequest(ctx.from.id));
+await sim.joinByLink(link.invite_link, carol.id);   // resolves once Carol has joined
+```
+
+Updates caused by the bot's own calls (Carol joining after an approval, a
+`refunded_payment` after `refundStarPayment`) reach the bot after the update
+it is handling, before the user's action resolves.
+
+## Payments, polls and locations
+
+- An invoice sent with `is_flexible` asks the bot for shipping options
+  (`shipping_query`, answered with `answerShippingQuery`) when a user pays;
+  the chosen option is added to the total and to `successful_payment`. The
+  `need_*` flags fill `order_info`. Stars invoices have no shipping, like on
+  Telegram.
+- `refundStarPayment` refunds a Stars payment once (`CHARGE_ALREADY_REFUNDED`
+  the second time) and posts `refunded_payment` in the user's chat.
+  `createInvoiceLink` returns a `https://t.me/$…` link (users can't open it in
+  the simulator).
+- `stopPoll` closes a poll (`is_closed`) and returns it.
+- `sendLocation` with `live_period` sends a live location
+  (`SimMessage.liveUntil`); `editMessageLiveLocation` moves it and
+  `stopMessageLiveLocation` stops it. Afterwards, or once it expired, both
+  fail with `message can't be edited`. `sendVenue` sends a venue.
 
 ## Over HTTP
 
@@ -299,6 +368,8 @@ queue again waits for a free slot instead of running right away.
 ## Not simulated
 
 Mini App pages themselves (their buttons open a dialog where you can send
-`sendData`), file downloads, channel comments and reactions, business
-connections, poll votes and privacy mode. Telegram's rate limits only with `rateLimits`
+`sendData`), file downloads, channel comments, business connections, poll
+votes, chat boosts (`getUserChatBoosts` returns none), paying invoice links
+and privacy mode. Which Bot API methods are answered, and which aren't, is
+listed in [Bot API coverage](bot-api-coverage.md). Telegram's rate limits only with `rateLimits`
 (see [Watching](#watching)).

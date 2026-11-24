@@ -778,6 +778,11 @@ export class EasyTGChatElement extends HTMLElement {
     if (message.forum_topic_edited) return `${who} changed the topic${message.forum_topic_edited.name ? ` to “${message.forum_topic_edited.name}”` : ''}`;
     if (message.forum_topic_closed) return `${who} closed the topic`;
     if (message.forum_topic_reopened) return `${who} reopened the topic`;
+    const place = message.chat.type === 'channel' ? 'channel' : 'group';
+    if (message.new_chat_title !== undefined) return `${who} changed the ${place} name to “${message.new_chat_title}”`;
+    if (message.new_chat_photo) return `${who} changed the ${place} photo`;
+    if (message.delete_chat_photo) return `${who} removed the ${place} photo`;
+    if (message.refunded_payment) return `${amount(message.refunded_payment.total_amount, message.refunded_payment.currency)} were refunded`;
     return null;
   }
 
@@ -856,12 +861,17 @@ export class EasyTGChatElement extends HTMLElement {
       const i = m.invoice;
       return `<div class="card"><div class="title">${esc(i.title)}</div><div>${esc(i.description)}</div><div class="amount">${esc(amount(i.total_amount, i.currency))}</div></div>`;
     }
+    if (m.venue) {
+      const { latitude, longitude } = m.venue.location;
+      return `<div class="card">📍 <a href="https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}" target="_blank" rel="noopener"><b>${esc(m.venue.title)}</b></a><br>${esc(m.venue.address)}</div>`;
+    }
     if (m.location) {
       const { latitude, longitude } = m.location;
-      return `<div class="card">📍 <a href="https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}" target="_blank" rel="noopener">${latitude.toFixed(5)}, ${longitude.toFixed(5)}</a></div>`;
+      const live = m.location.live_period ? '📡 Live location · ' : '';
+      return `<div class="card">${live}📍 <a href="https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}" target="_blank" rel="noopener">${latitude.toFixed(5)}, ${longitude.toFixed(5)}</a></div>`;
     }
     if (m.contact) return `<div class="card">👤 <b>${esc(m.contact.first_name)}</b><br>${esc(m.contact.phone_number)}</div>`;
-    if (m.poll) return `<div class="card"><div class="title">📊 ${esc(m.poll.question)}</div>${m.poll.options.map((o) => `<div>○ ${esc(o.text)}</div>`).join('')}</div>`;
+    if (m.poll) return `<div class="card"><div class="title">📊 ${esc(m.poll.question)}</div>${m.poll.options.map((o) => `<div>○ ${esc(o.text)}</div>`).join('')}${m.poll.is_closed ? '<small>Final results</small>' : ''}</div>`;
     if (m.forward_origin) return `<div class="via">Forwarded</div>`;
     return '';
   }

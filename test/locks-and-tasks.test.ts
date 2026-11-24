@@ -1,3 +1,4 @@
+// Locks, shared queues, rate limits and scheduler bots, plus text input and message groups.
 import { describe, expect, test } from 'bun:test';
 import { Bot } from 'grammy';
 import { EasyTG, MemoryStorage, QueueFullError, page, type EasyTGOptions, type StorageAdapter } from '../src';

@@ -22,6 +22,19 @@ if (api) {
     }) as typeof fetch;
   }
 
+  // An easytg app's flow map (pages, dialogues, the buttons pressed), for the Flow tab, whenever it changes.
+  let lastChart = '';
+  setInterval(() => {
+    const registry = (globalThis as Record<symbol, unknown>)[Symbol.for('easytg.apps')] as Set<WeakRef<{ flowchart(): string }>> | undefined;
+    const chart = [...(registry ?? [])]
+      .map((ref) => ref.deref()?.flowchart())
+      .filter((c): c is string => !!c)
+      .join('\n\n');
+    if (!chart || chart === lastChart) return;
+    lastChart = chart;
+    fetch(`${api}/_studio/flow`, { method: 'POST', body: chart }).catch(() => undefined);
+  }, 1000).unref();
+
   // Stop with the studio, even when it was killed without a chance to stop us.
   const parent = process.ppid;
   setInterval(() => {

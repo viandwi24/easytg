@@ -16,7 +16,10 @@ session.toJSON();     // all values
 ```
 
 Changes are saved **once, at the end of the update**, however many times you
-call `set`.
+call `set`. A value changed in place counts too:
+`session.get<string[]>('cart')!.push(item)` is saved like a `set`. Only the
+keys this update changed are written, on top of what is stored, so two
+updates that overlap don't undo each other.
 - Outside renders, get the session with `await app.session(ctx)`.
 - Handlers registered after `bot.use(app)` are saved automatically.
 - Anywhere else, call `await app.flush(ctx)`.

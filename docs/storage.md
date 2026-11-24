@@ -21,7 +21,6 @@ import { EasyTG, SqliteStorage } from 'easytg';
 
 const storage = new SqliteStorage(new Database('bot.sqlite'));   // tables easytg_kv and easytg_tasks
 const app = new EasyTG({ storage });
-setInterval(() => storage.purgeExpired(), 3600_000);              // optional: reclaim space
 ```
 
 ```ts
@@ -34,6 +33,10 @@ const storage = new RedisStorage((command, args) => redis.send(command, args), {
 // ioredis:    new RedisStorage((command, args) => redis.call(command, ...args))
 // node-redis: new RedisStorage((command, args) => client.sendCommand([command, ...args]))
 ```
+
+Expired keys are deleted by themselves: Redis expires them, and
+`SqliteStorage` purges them during a write at most once an hour
+(`{ purgeEveryMs }`; `false` to call `storage.purgeExpired()` yourself).
 
 `RedisStorage` works with Redis-compatible servers (Valkey, KeyDB, Dragonfly)
 that support Lua scripts. `new SqliteStorage(db, { table })` and

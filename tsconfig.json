@@ -20,7 +20,8 @@
     // The workspace packages, from source (their builds point "types" at dist/).
     "paths": {
       "@easytg/simulator": ["./packages/simulator/src/index.ts"],
-      "@easytg/simulator/*": ["./packages/simulator/src/*.ts"]
+      "@easytg/simulator/*": ["./packages/simulator/src/*.ts"],
+      "@easytg/studio": ["./packages/studio/src/index.ts"]
     }
   },
   "include": ["src", "test", "examples", "scripts", "packages/*/src"]

@@ -154,6 +154,10 @@ bot.start();
 - A `/command` sent during a dialogue cancels it and still runs the command
   (`dialogues: { cancelOnCommand: false }` turns this off).
 - `onFinish`'s result (content, a redirect, …) is sent as a new message.
+- `onFinish` runs before the dialogue is cleared up: if it throws (a database
+  that is down), the dialogue keeps its answers, `dialogueFinish` isn't
+  emitted, and the user's next message tries `onFinish` again. It may start
+  another dialogue (`app.startDialogue`); that one stays.
 - `.use(...middlewares)` guards the start (like [page middlewares](pages.md#middlewares)),
   `.allowDeepLink()` lets a [deep link](deep-links.md) start it, and
   `.loading(...)` shows a placeholder or "typing…" while a slow `onFinish`

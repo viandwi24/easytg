@@ -1,3 +1,4 @@
+// Loading indicators: placeholders, chat actions, app.withLoading.
 import { describe, expect, test } from 'bun:test';
 import { EasyTG, MemoryStorage, dialogue, page, type EasyTGOptions } from '../src';
 import { createTestBot } from '../src/testing';
@@ -9,28 +10,53 @@ function setup(options: EasyTGOptions = {}) {
   return { ...t, app };
 }
 
-describe('merged sessions', () => {
-  test('a migration is saved even when only one key changes', async () => {
-    const storage = new MemoryStorage();
-    await storage.set('usersession:1:7', { data: { old: 1 }, meta: { v: 1, savedAt: 1, app: 1 } });
-    const { app, bot, message } = setup({ storage, session: { version: 2, migrate: (d) => ({ renamed: d.old }) } });
-    bot.on('message', async (ctx) => (await app.userSession(ctx)).set('x', 1));
-    await message('hi');
-    expect(await storage.get('usersession:1:7')).toMatchObject({ data: { renamed: 1, x: 1 }, meta: { app: 2 } });
-    expect(((await storage.get('usersession:1:7')) as { data: object }).data).not.toHaveProperty('old');
+describe('loading', () => {
+  const slow = (ms: number, text = 'done') =>
+    page(`slow${ms}`)
+      .loading({ text: '⏳ Loading…', action: 'typing', afterMs: 20 })
+      .render(async () => {
+        await Bun.sleep(ms);
+        return { text, parseMode: 'plain' };
+      });
+
+  test('a slow page shows a placeholder and "typing", then replaces the placeholder', async () => {
+    const { app, bot, message, find, sent } = setup();
+    const p = slow(80);
+    app.register(p);
+    bot.command('go', (ctx) => app.open(ctx, p));
+    await message('/go');
+    expect(find('sendChatAction')[0]!.payload).toMatchObject({ chat_id: 7, action: 'typing' });
+    const placeholder = find('sendMessage')[0]!;
+    expect(placeholder.payload.text).toBe('⏳ Loading…');
+    expect(find('editMessageText')[0]!.payload).toMatchObject({ message_id: sent[0]!.message_id, text: 'done' });
+    expect(find('sendMessage').length).toBe(1);
   });
 
-  test("a save without changes doesn't bring back what others changed or deleted", async () => {
-    const storage = new MemoryStorage();
-    const { app, bot, message } = setup({ storage, session: { ttlMs: 1000 } });
-    await storage.set('usersession:1:7', { data: { a: 1 }, meta: { v: 1, savedAt: 1 } }); // due for a TTL refresh
-    bot.on('message:text', async (ctx) => {
-      await app.userSession(ctx);
-      if (ctx.message.text === 'slow') await Bun.sleep(30);
-      else await storage.set('usersession:1:7', { data: { a: 1, plan: 'pro' }, meta: { v: 1, savedAt: Date.now() } });
+  test('a fast page shows nothing', async () => {
+    const { app, bot, message, methods } = setup();
+    const p = slow(0);
+    app.register(p);
+    bot.command('go', (ctx) => app.open(ctx, p));
+    await message('/go');
+    expect(methods()).toEqual(['sendMessage']);
+  });
+
+  test('a pressed menu shows the placeholder until the page replaces it', async () => {
+    const { app, press, find } = setup();
+    app.register(slow(80));
+    await press('p|slow80');
+    expect(find('editMessageText').map((c) => c.payload.text)).toEqual(['⏳ Loading…', 'done']);
+  });
+
+  test('app.withLoading for your own handlers; the placeholder is removed', async () => {
+    const { app, bot, message, find } = setup();
+    bot.command('ask', async (ctx) => {
+      const answer = await app.withLoading(ctx, () => Bun.sleep(60).then(() => 42), { text: 'Thinking…', afterMs: 10 });
+      await ctx.reply(`answer ${answer}`);
     });
-    await Promise.all([message('slow'), Bun.sleep(5).then(() => message('other', { chatId: 99 }))]);
-    expect(await storage.get('usersession:1:7')).toMatchObject({ data: { plan: 'pro' } });
+    await message('/ask');
+    expect(find('sendMessage').map((c) => c.payload.text)).toEqual(['Thinking…', 'answer 42']);
+    expect(find('deleteMessage').length).toBe(1);
   });
 });
 

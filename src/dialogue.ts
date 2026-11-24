@@ -673,15 +673,19 @@ export class DialogueRunner<C extends Context> {
   }
 
   private async finish(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState) {
-    session.delete(DIALOGUE_STATE_KEY);
+    this.app.setFlowSource(ctx, def.id);
+    const finish = () => def.finishFn!(this.endArgs(ctx, session, state));
+    // onFinish runs before anything is cleared: if it fails (a database that is
+    // down), the dialogue keeps its answers and the user's next message tries
+    // again, instead of starting over. The placeholder is a new message.
+    const result = def.loadingOptions ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();
+    // onFinish may have started another dialogue: that one stays.
+    const current = session.get<DialogueState>(DIALOGUE_STATE_KEY);
+    if (current?.run === state.run) session.delete(DIALOGUE_STATE_KEY);
     await this.clear(ctx, state);
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
     await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, params: state.params, answers: state.answers });
-    this.app.setFlowSource(ctx, def.id);
-    const finish = () => def.finishFn!(this.endArgs(ctx, session, state));
-    // The prompt was just cleared: the placeholder is always a new message.
-    const result = def.loadingOptions ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();
     await this.app.showResult(ctx, result, 'send');
   }
 

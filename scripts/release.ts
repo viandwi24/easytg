@@ -97,11 +97,21 @@ for (const [name, path] of Object.entries(pkg.bin ?? {})) {
   }
 }
 
-const SIMULATOR_PKG = 'packages/simulator/package.json';
-const simulatorText = await Bun.file(SIMULATOR_PKG).text();
-const simulatorVersion = (JSON.parse(simulatorText) as { version: string }).version;
-if (simulatorVersion !== current) fail(`${SIMULATOR_PKG} is at ${simulatorVersion}, easytg at ${current}: they are released together, so make them equal first`);
-if (!pkgText.includes(`"@easytg/simulator": "${current}"`)) fail(`package.json must depend on "@easytg/simulator": "${current}" (the same version)`);
+// easytg, @easytg/simulator and @easytg/studio are released together, under one version,
+// and depend on each other's exact version.
+const PACKAGES = ['packages/simulator/package.json', 'packages/studio/package.json'];
+const texts = new Map<string, string>([['package.json', pkgText]]);
+for (const file of PACKAGES) {
+  const text = await Bun.file(file).text();
+  const { version: at } = JSON.parse(text) as { version: string };
+  if (at !== current) fail(`${file} is at ${at}, easytg at ${current}: they are released together, so make them equal first`);
+  texts.set(file, text);
+}
+for (const [file, text] of texts) {
+  for (const [, dep, range] of text.matchAll(/"(@easytg\/[a-z-]+)": "([^"]+)"/g)) {
+    if (range !== current) fail(`${file} wants ${dep} ${range}: it must be the same version, ${current}`);
+  }
+}
 
 const changelog = await Bun.file('CHANGELOG.md').text();
 const unreleased = /^## Unreleased[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(changelog);
@@ -137,7 +147,7 @@ ${notes}
 `);
 console.log('Plan:');
 console.log('  1. typecheck, test, build');
-console.log(`  2. update both package.json files, bun.lock and CHANGELOG.md, commit "release: ${tag}", tag ${tag}`);
+console.log(`  2. update the three package.json files, bun.lock and CHANGELOG.md, commit "release: ${tag}", tag ${tag}`);
 if (push) {
   console.log(`  3. push ${MAIN_BRANCH} and ${tag}: GitHub Actions publishes to npm and creates the GitHub release`);
 }
@@ -156,19 +166,17 @@ await check('Build', $`bun run build`);
 
 const date = new Date().toISOString().slice(0, 10);
 const newChangelog = changelog.replace(unreleased[0], () => `## Unreleased\n\n## ${version} (${date})\n\n${notes}\n\n`);
-// easytg and @easytg/simulator share one version, and easytg depends on that exact version.
-await Bun.write(
-  'package.json',
-  pkgText
+for (const [file, text] of texts) {
+  const bumped = text
     .replace(`"version": "${current}"`, () => `"version": "${version}"`)
-    .replace(`"@easytg/simulator": "${current}"`, () => `"@easytg/simulator": "${version}"`),
-);
-await Bun.write(SIMULATOR_PKG, simulatorText.replace(`"version": "${current}"`, () => `"version": "${version}"`));
+    .replaceAll(new RegExp(`("@easytg/[a-z-]+": )"${current.replaceAll('.', '\\.')}"`, 'g'), (_, key: string) => `${key}"${version}"`);
+  await Bun.write(file, bumped);
+}
 await Bun.write('CHANGELOG.md', newChangelog);
 await check('Updating bun.lock', $`bun install`);
 
 step(`Committing and tagging ${tag}`);
-await $`git add package.json ${SIMULATOR_PKG} bun.lock CHANGELOG.md`.quiet();
+await $`git add ${[...texts.keys()]} bun.lock CHANGELOG.md`.quiet();
 await $`git commit --quiet -m ${`release: ${tag}`}`;
 await $`git tag -a ${tag} -m ${tag}`;
 
@@ -180,7 +188,7 @@ if (!push) {
 }
 
 if (!assumeYes) {
-  const answer = prompt(`\nPush ${tag} and publish easytg@${version} and @easytg/simulator@${version} to npm? [y/N]`);
+  const answer = prompt(`\nPush ${tag} and publish easytg, @easytg/simulator and @easytg/studio ${version} to npm? [y/N]`);
   if (answer?.trim().toLowerCase() !== 'y') {
     console.log(`\nStopped before pushing. The commit and tag are local; to undo them:\n  ${undo}`);
     process.exit(0);
@@ -193,7 +201,8 @@ if (pushed.exitCode !== 0) fail(`Push failed; nothing was published. To undo the
 
 const repoUrl = repo ? `https://github.com/${repo}` : undefined;
 console.log(`
-✓ Pushed ${tag}. GitHub Actions now publishes easytg@${version} and @easytg/simulator@${version} to npm and creates the release:
+✓ Pushed ${tag}. GitHub Actions now publishes easytg, @easytg/simulator and @easytg/studio ${version} to npm and creates the release:
   ${repoUrl ? `${repoUrl}/actions/workflows/release.yml` : 'see the Actions tab on GitHub'}
   https://www.npmjs.com/package/easytg
-  https://www.npmjs.com/package/@easytg/simulator`);
+  https://www.npmjs.com/package/@easytg/simulator
+  https://www.npmjs.com/package/@easytg/studio`);

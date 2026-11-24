@@ -7,14 +7,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
 const GITHUB = 'https://github.com/viandwi24/easytg';
 /** Markdown files that aren't pages of the site; links to them go to GitHub. */
-const OFF_SITE = ['RELEASING.md', 'packages/simulator/README.md'];
+const OFF_SITE = ['RELEASING.md', 'packages/simulator/README.md', 'packages/studio/README.md'];
 
 export default defineConfig({
   title: 'easytg',
   description: 'Page-based Telegram bot UIs on top of grammY, with a Telegram simulator that runs in your browser.',
   // The repository is the source: README, docs/ and this website/ folder.
   srcDir: '..',
-  srcExclude: ['**/node_modules/**', 'legacy/**', 'dist/**', ...OFF_SITE, 'examples/**', 'test/**', 'src/**', 'packages/**', '.github/**'],
+  srcExclude: ['**/node_modules/**', 'dist/**', ...OFF_SITE, 'examples/**', 'test/**', 'src/**', 'packages/**', '.github/**'],
   rewrites: {
     'website/index.md': 'index.md',
     'website/playground.md': 'playground.md',
@@ -96,6 +96,7 @@ export default defineConfig({
           { text: 'Testing', link: '/docs/testing' },
           { text: 'Preview and recorded tests', link: '/docs/preview' },
           { text: 'Simulator', link: '/docs/simulator' },
+          { text: 'Bot API coverage', link: '/docs/bot-api-coverage' },
           { text: 'Migrating', link: '/docs/migration' },
         ],
       },

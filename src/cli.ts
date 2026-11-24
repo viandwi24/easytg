@@ -2,20 +2,22 @@
 /**
  * The easytg command line.
  *
- *   easytg preview <bot file> [--port 4545] [--users 2] [--group] [--latency 300] [--no-open] [--no-watch]
+ *   easytg preview <bot file> [options]   your bot in easytg studio (@easytg/studio)
  */
-import { startPreview } from './preview/server';
-
 const HELP = `easytg preview <bot file> [options]
 
-  Runs your bot file, unchanged, against a simulated Telegram, and opens a
-  chat window in the browser. No token, no network: nothing reaches Telegram.
-  The bot restarts when a file in its folder changes; the chat stays.
+  Runs your bot file, unchanged, in easytg studio: a simulated Telegram in
+  the browser, with profiles, chats, groups, the bot's output, every Bot API
+  call, its flow map and "Export test". No token, no network: nothing
+  reaches Telegram. The bot restarts when a file in its folder changes.
 
-  --port <n>       port of the chat window (default 4545)
-  --users <n>      more users to switch between (Alice, Bob, …)
-  --group          add a group with every user
-  --latency <ms>   delay every API call, to see loading indicators
+  It needs the studio:  bun add -d @easytg/studio
+  (the same as: bunx easytg-studio <bot file> --open)
+
+  --port <n>       the studio's port (default 4646)
+  --users <n>      more profiles to switch between (Alice, Bob, …)
+  --group          add a group with every profile
+  --latency <ms>   delay every API call (default 120–280, like a real network)
   --no-open        don't open the browser
   --no-watch       don't restart on changes
 
@@ -58,7 +60,17 @@ if (!file) {
   process.exit(1);
 }
 
-const preview = await startPreview(file, {
+type StudioModule = typeof import('@easytg/studio');
+let studioModule: StudioModule;
+try {
+  studioModule = await import('@easytg/studio');
+} catch {
+  console.error('easytg preview runs easytg studio, which isn\'t installed here. Add it:\n\n  bun add -d @easytg/studio\n');
+  process.exit(1);
+}
+
+const studio = await studioModule.startStudio({
+  file,
   port: port ? Number(port) : undefined,
   users: users ? Number(users) : 0,
   group,
@@ -66,10 +78,10 @@ const preview = await startPreview(file, {
   open: !noOpen,
   watch: !noWatch,
 });
-console.log(`\n  easytg preview: ${preview.url}\n  ${file} runs against a simulated Telegram. Ctrl+C to stop.\n`);
+console.log(`\n  easytg studio: ${studio.url}\n  ${file} runs against a simulated Telegram. Ctrl+C to stop.\n`);
 
 const shutdown = async () => {
-  await preview.stop();
+  await studio.stop();
   process.exit(0);
 };
 process.once('SIGINT', shutdown);

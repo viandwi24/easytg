@@ -4,14 +4,13 @@
   "workspaces": {
     "": {
       "name": "easytg",
-      "dependencies": {
-        "@easytg/simulator": "0.4.0",
-      },
       "devDependencies": {
         "@codemirror/lang-javascript": "^6.2.5",
         "@codemirror/state": "^6",
         "@codemirror/theme-one-dark": "^6.1.3",
         "@codemirror/view": "^6",
+        "@easytg/simulator": "0.4.0",
+        "@easytg/studio": "0.4.0",
         "@types/bun": "latest",
         "codemirror": "^6.0.2",
         "grammy": "^1.46.0",
@@ -20,8 +19,14 @@
         "vitepress": "^1.6.4",
       },
       "peerDependencies": {
+        "@easytg/simulator": "0.4.0",
+        "@easytg/studio": "0.4.0",
         "grammy": "^1.30.0",
       },
+      "optionalPeers": [
+        "@easytg/simulator",
+        "@easytg/studio",
+      ],
     },
     "packages/simulator": {
       "name": "@easytg/simulator",
@@ -32,14 +37,12 @@
     },
     "packages/studio": {
       "name": "@easytg/studio",
-      "version": "0.0.0",
+      "version": "0.4.0",
       "bin": {
         "easytg-studio": "./src/cli.ts",
       },
       "dependencies": {
-        "@easytg/simulator": "workspace:*",
-      },
-      "peerDependencies": {
+        "@easytg/simulator": "0.4.0",
         "grammy": "^1.30.0",
       },
     },

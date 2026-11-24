@@ -1,17 +1,46 @@
 {
   "name": "@easytg/studio",
-  "version": "0.0.0",
-  "private": true,
-  "description": "A development studio for Telegram bots: your bot against a simulated Telegram, with chats, profiles, groups and every Bot API call. Hot restarts on file changes.",
+  "version": "0.4.0",
+  "description": "A Telegram for developing bots: your bot (any language) against a simulated Telegram in the browser, with profiles, chats, groups, channels and topics, the bot's output, every Bot API call, its flow map and recorded tests. Restarts on file changes.",
   "license": "MIT",
+  "author": "viandwi24",
+  "homepage": "https://github.com/viandwi24/easytg/blob/main/packages/studio/README.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/viandwi24/easytg.git",
+    "directory": "packages/studio"
+  },
+  "bugs": {
+    "url": "https://github.com/viandwi24/easytg/issues"
+  },
   "type": "module",
   "bin": {
     "easytg-studio": "./src/cli.ts"
   },
-  "dependencies": {
-    "@easytg/simulator": "workspace:*"
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
   },
-  "peerDependencies": {
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "telegram",
+    "bot",
+    "simulator",
+    "devtools",
+    "grammy",
+    "bot-api"
+  ],
+  "dependencies": {
+    "@easytg/simulator": "0.4.0",
     "grammy": "^1.30.0"
+  },
+  "engines": {
+    "bun": ">=1.1"
   }
 }

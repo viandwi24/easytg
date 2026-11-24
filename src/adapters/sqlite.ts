@@ -16,6 +16,12 @@ export interface SqliteStatement {
 export interface SqliteStorageOptions {
   /** Table name prefix: tables are `<table>_kv` and `<table>_tasks`. Default `easytg`. */
   table?: string;
+  /**
+   * Delete expired keys (stored buttons, deep links, sessions with a TTL…) at
+   * most this often, during a write: no timer, so serverless works too.
+   * Default one hour; `false` leaves it to you (`purgeExpired()`).
+   */
+  purgeEveryMs?: number | false;
 }
 
 interface TaskRow {
@@ -41,6 +47,8 @@ export class SqliteStorage implements StorageAdapter, TaskStore {
   private readonly kv: string;
   private readonly tasks: string;
   private readonly statements = new Map<string, SqliteStatement>();
+  private readonly purgeEveryMs: number | false;
+  private lastPurge = Date.now();
 
   constructor(
     private readonly db: SqliteDatabase,
@@ -57,6 +65,17 @@ export class SqliteStorage implements StorageAdapter, TaskStore {
       id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL, run_at INTEGER NOT NULL,
       due_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, every INTEGER, bot INTEGER)`);
     db.exec(`CREATE INDEX IF NOT EXISTS ${this.tasks}_run_at ON ${this.tasks} (run_at)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS ${this.kv}_expires_at ON ${this.kv} (expires_at) WHERE expires_at IS NOT NULL`);
+    this.purgeEveryMs = options.purgeEveryMs ?? 3_600_000;
+  }
+
+  /** On a write: purge expired keys when the last purge is long enough ago. */
+  private maybePurge() {
+    if (this.purgeEveryMs === false) return;
+    const now = Date.now();
+    if (now - this.lastPurge < this.purgeEveryMs) return;
+    this.lastPurge = now;
+    this.purgeExpired();
   }
 
   async get(key: string): Promise<unknown> {
@@ -72,6 +91,7 @@ export class SqliteStorage implements StorageAdapter, TaskStore {
       `INSERT INTO ${this.kv} (key, value, expires_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
     ).run(key, toJson(value), expiry(ttlMs));
+    this.maybePurge();
   }
 
   async delete(key: string): Promise<void> {

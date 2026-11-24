@@ -37,7 +37,8 @@ export interface StoredSession {
 /**
  * Per user, per chat key/value state. Reads and writes are synchronous; changes
  * are saved once at the end of the update (or of `app.open` / `app.sendTo`).
- * Values must be JSON-serializable.
+ * Values must be JSON-serializable. A value changed in place
+ * (`session.get('cart')!.push(item)`) is saved too, like one passed to `set`.
  */
 export class Session {
   /** @internal */
@@ -49,6 +50,8 @@ export class Session {
   private expires: Record<string, number>;
   /** Keys set or deleted since loading, for merging into a newer stored copy. */
   private readonly changed = new Set<string>();
+  /** Each key's value as loaded (JSON), to notice values changed in place. */
+  private snapshot = new Map<string, string>();
   /** @internal The app's schema version the data is in. */
   version?: number;
 
@@ -59,6 +62,25 @@ export class Session {
     this.expires = parsed?.meta.expires ?? {};
     this.savedAt = parsed?.meta.savedAt;
     this.version = parsed?.meta.app;
+    this.takeSnapshot();
+  }
+
+  /**
+   * @internal Values changed in place since loading (`get(key).push(…)`)
+   * count as set: mark them, so they are saved and merged like `set`.
+   */
+  detectChanges() {
+    for (const [key, value] of Object.entries(this.data)) {
+      if (this.changed.has(key)) continue;
+      if (this.snapshot.get(key) !== json(value)) {
+        this.changed.add(key);
+        this.dirty = true;
+      }
+    }
+  }
+
+  private takeSnapshot() {
+    this.snapshot = new Map(Object.entries(this.data).map(([key, value]) => [key, json(value)]));
   }
 
   /** @internal Bring stored data to the app's current schema version. */
@@ -149,12 +171,16 @@ export class Session {
     this.data = data;
     this.expires = expires;
     this.changed.clear();
+    this.takeSnapshot();
   }
 
   /** @internal */
   serialize(now: number): StoredSession {
     this.keys(); // drops expired keys
     const expires = Object.keys(this.expires).length ? { ...this.expires } : undefined;
+    // Saved: later in-place changes are compared to this.
+    this.changed.clear();
+    this.takeSnapshot();
     return { data: { ...this.data }, meta: { v: 1, savedAt: now, expires, app: this.version } };
   }
 
@@ -168,6 +194,15 @@ export class Session {
       return false;
     }
     return true;
+  }
+}
+
+/** A value's JSON, to compare it with an earlier one (`undefined` for what can't be serialized). */
+function json(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? 'undefined';
+  } catch {
+    return 'unserializable';
   }
 }
 

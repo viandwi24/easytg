@@ -119,6 +119,14 @@ export function resolveRich(input: RichInput): InputRichMessage {
 }
 
 export function prepareContent(content: PageContent, defaultMode: ParseMode, protect = false): PreparedContent | null {
+  // Checked before anything is sent: a page with a bad value fails as a whole, not after delivery.
+  const { refreshEveryMs, deleteAfterMs } = content;
+  if (refreshEveryMs !== undefined && !(Number.isFinite(refreshEveryMs) && refreshEveryMs >= 5000)) {
+    throw new EasyTGError(`refreshEveryMs must be at least 5000 (got ${refreshEveryMs})`);
+  }
+  if (deleteAfterMs !== undefined && !(Number.isFinite(deleteAfterMs) && deleteAfterMs >= 0)) {
+    throw new EasyTGError(`deleteAfterMs must be a number of milliseconds, 0 or more (got ${deleteAfterMs})`);
+  }
   const keyboard = normalizeKeyboard(content.keyboard);
   if (content.rich !== undefined) {
     const other = [...(content.text !== undefined ? ['text'] : []), ...MEDIA_TYPES.filter((type) => content[type] !== undefined), ...(['album', 'copy', 'invoice'] as const).filter((k) => content[k])];
@@ -219,6 +227,12 @@ export async function deliver(
     const editTarget = target ?? pressedMessage(ctx);
     if (editTarget) {
       const edited = await tryEdit(host, ctx, content, editTarget, options.fallbackToSend !== false);
+      if (edited === REPLACE) {
+        // The new message first: if sending fails, the user keeps the old menu instead of none.
+        const delivery = await send(host, ctx, content, false, ephemeral);
+        await replacePressed(host, ctx, editTarget);
+        return delivery;
+      }
       if (edited) return { result: edited, sent: [], ...(editTarget.ephemeral ? { ephemeral: true } : {}) };
     }
     if (options.fallbackToSend === false) return undefined;
@@ -431,10 +445,13 @@ function editor(ctx: Context, target: EditTarget) {
   };
 }
 
+/** `tryEdit`: the message can't show the content; send a new one, then remove this one. */
+const REPLACE = Symbol('replace');
+
 /**
- * Returns undefined when the message can't be edited and a new one should be
- * sent. The old message is only removed when `replace` is true, i.e. when a new
- * one will actually take its place (`app.edit` never sends).
+ * Returns REPLACE when the message can't be edited and a new one should take
+ * its place (only when `replace` is true: `app.edit` never sends), undefined
+ * when there is nothing to edit.
  */
 async function tryEdit(
   host: DeliveryHost,
@@ -442,12 +459,9 @@ async function tryEdit(
   content: PreparedContent,
   target: EditTarget,
   replace: boolean,
-): Promise<DeliveryResult | undefined> {
+): Promise<DeliveryResult | typeof REPLACE | undefined> {
   const { message } = target;
-  const giveUp = async () => {
-    if (replace) await replacePressed(host, ctx, target);
-    return undefined;
-  };
+  const giveUp = async () => (replace ? REPLACE : undefined);
   const inline = !!target.inlineMessageId;
   if (!inline && (target.chatId === undefined || target.messageId === undefined)) return undefined;
 
@@ -513,8 +527,7 @@ async function tryEdit(
       result = true;
     } else if (!inline && isMessageUnavailable(error)) {
       host.logger.debug('Message cannot be edited, sending a new one instead', error);
-      if (replace) await replacePressed(host, ctx, target); // don't leave the stale menu behind
-      return undefined;
+      return giveUp(); // the stale menu goes once the new one is there
     } else {
       throw error;
     }

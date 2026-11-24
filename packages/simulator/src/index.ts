@@ -23,18 +23,25 @@ import { Bot, type BotConfig, type Context } from 'grammy';
 import type {
   BotCommand,
   Chat,
+  ChatInviteLink,
   ChatMember,
+  ChatPermissions,
   ForceReply,
   InlineKeyboardButton,
   InlineKeyboardMarkup,
   InlineQueryResult,
   KeyboardButton,
+  Location,
   Message,
   MessageEntity,
+  ReactionType,
   ReplyKeyboardMarkup,
   RichBlock,
   RichMessage,
   RichMessageButton,
+  ShippingAddress,
+  Sticker,
+  StickerSet,
   Update,
   User,
   UserFromGetMe,
@@ -80,6 +87,32 @@ export interface SimMessage {
   hiddenFor?: number[];
   /** For an ephemeral message shown in place of another: that message's id. */
   replaced?: number;
+  /** A live location (`sendLocation` with `live_period`): until when it can be edited, in Unix time. */
+  liveUntil?: number;
+  /** Reactions on the message: by users (`react`) and by the bot (`setMessageReaction`). */
+  reactions?: SimReaction[];
+}
+
+export interface SimReaction {
+  /** Who reacted: a user (or the bot), or a chat reacting anonymously. */
+  user?: number;
+  actorChat?: number;
+  reaction: ReactionType[];
+}
+
+/** An invite link the bot made (`exportChatInviteLink`, `createChatInviteLink`, …), as `ChatInviteLink`, plus who joined through it. */
+export interface SimInviteLink extends ChatInviteLink {
+  joined: number[];
+}
+
+/** A pending request to join a chat (`requestToJoin`, or `joinByLink` with a link that needs approval). */
+export interface SimJoinRequest {
+  userId: number;
+  date: number;
+  inviteLink?: string;
+  bio?: string;
+  /** For join requests with a query (`requestToJoin(…, { query: true })`): its id, until answered. */
+  queryId?: string;
 }
 
 export interface SimMember {
@@ -88,6 +121,10 @@ export interface SimMember {
   /** Rights of an administrator (all true unless given), or permissions of a restricted member. */
   rights: Record<string, boolean>;
   until?: number;
+  /** An administrator's title (`setChatAdministratorCustomTitle`). */
+  customTitle?: string;
+  /** A regular member's tag (`setChatMemberTag`). */
+  tag?: string;
 }
 
 export interface SimChat {
@@ -121,6 +158,20 @@ export interface SimChat {
   topics?: SimTopic[];
   /** "General" of a forum: renamed, closed or hidden by the bot. */
   general?: { name: string; closed: boolean; hidden: boolean };
+  /** Set by `setChatDescription`. */
+  description?: string;
+  /** Set by `setChatPhoto` (`fileId` of the photo, `url` to show it), removed by `deleteChatPhoto`. */
+  photo?: { fileId: string; url?: string };
+  /** Default permissions of members (`setChatPermissions`); unset: everything allowed. */
+  permissions?: ChatPermissions;
+  /** Invite links the bot made; the primary one is `getChat`'s `invite_link`. */
+  inviteLinks?: SimInviteLink[];
+  /** Pending join requests, by user id. */
+  joinRequests?: Map<number, SimJoinRequest>;
+  /** The group sticker set (`setChatStickerSet`). */
+  stickerSet?: string;
+  /** Channels banned from writing (`banChatSenderChat`). */
+  bannedSenderChats?: number[];
 }
 
 /** A topic of a forum supergroup. Its id is `message_thread_id`: the id of the message that created it. */
@@ -301,6 +352,20 @@ export class TelegramSimulator {
   private readonly ephemeralIds = new Map<number, number>();
   private readonly inlineQueries = new Map<string, (results: InlineQueryResult[] | null) => void>();
   private readonly preCheckouts = new Map<string, (answer: { ok: boolean; error?: string }) => void>();
+  private readonly shippingQueries = new Map<string, (answer: ShippingAnswer) => void>();
+  /** Successful payments by `telegram_payment_charge_id`, for `refundStarPayment`. */
+  private readonly charges = new Map<string, { userId: number; currency: string; amount: number; payload: string; providerChargeId: string; refunded: boolean }>();
+  /** `setMyName`, `setMyDescription`, `setMyShortDescription`, by kind and language. */
+  private readonly botTexts = new Map<string, string>();
+  /** `setMyDefaultAdministratorRights`, for groups and for channels. */
+  private readonly defaultAdminRights = new Map<'groups' | 'channels', Record<string, boolean>>();
+  private readonly stickerSets = new Map<string, StickerSet>();
+  private readonly preparedButtons = new Map<string, { userId: number; button: KeyboardButton }>();
+  /** Updates an API call caused (a member approved, a payment refunded), delivered after the call returns. */
+  private readonly followUps: (() => Promise<void>)[] = [];
+  /** Updates being delivered right now (follow-ups wait for them). */
+  private delivering = 0;
+  private nextLink = 1;
   private readonly queue: Update[] = [];
   private waiting: (() => void) | null = null;
   /** Updates handed out through getUpdates, until the bot confirms them (a later getUpdates offset). */
@@ -753,35 +818,71 @@ export class TelegramSimulator {
     return message;
   }
 
-  /** A user pays an invoice. Resolves with the bot's pre-checkout answer; on success a `successful_payment` message follows. */
-  async pay(messageId: number, options: SendOptions = {}): Promise<{ ok: boolean; error?: string }> {
+  /**
+   * A user pays an invoice. Resolves with the bot's answer; on success a
+   * `successful_payment` message follows. For an invoice with `is_flexible`
+   * the bot first gets a `shipping_query` (to the `shippingAddress` given, or
+   * a default one) and the user picks `shippingOption` (default: the first the
+   * bot offered). `need_name`, `need_phone_number`, `need_email` and
+   * `need_shipping_address` fill `order_info`.
+   */
+  async pay(messageId: number, options: SendOptions & { shippingAddress?: Partial<ShippingAddress>; shippingOption?: string } = {}): Promise<{ ok: boolean; error?: string }> {
     const userId = options.user ?? this.user.id;
-    const found = this.findMessage(options.chat ?? userId, messageId);
+    const found = this.findMessage(options.chat ?? userId, messageId) as InvoiceMessage | undefined;
     const invoice = found?.message.invoice;
     if (!found || !invoice) throw new Error(`Message ${messageId} is not an invoice`);
-    const payload = (found as SimMessage & { invoicePayload?: string }).invoicePayload ?? '';
+    const payload = found.invoicePayload ?? '';
+    const needs = found.invoiceNeeds ?? {};
+    const user = this.userOf(userId);
+    const chatId = found.message.chat.id;
+    const fail = (answer: { ok: boolean; error?: string }) => {
+      this.emit('toast', { chatId, userId, text: answer.error ?? 'Payment failed', alert: true });
+      return answer;
+    };
+    const address = needs.shipping || needs.flexible ? { ...DEFAULT_ADDRESS, ...options.shippingAddress } : undefined;
+    let total = invoice.total_amount;
+    let shippingOptionId: string | undefined;
+    if (needs.flexible) {
+      const id = String(this.nextQuery++);
+      const answered = new Promise<ShippingAnswer>((resolve) => this.shippingQueries.set(id, resolve));
+      await this.deliver({ shipping_query: { id, from: user, invoice_payload: payload, shipping_address: address! } } as Omit<Update, 'update_id'>);
+      const answer = await Promise.race([answered, Promise.resolve<ShippingAnswer>({ ok: false, error: 'The bot did not answer' })]);
+      this.shippingQueries.delete(id);
+      if (!answer.ok) return fail({ ok: false, error: answer.error });
+      const option = options.shippingOption === undefined ? answer.options![0] : answer.options!.find((o) => o.id === options.shippingOption);
+      if (!option) throw new Error(`The bot offered no shipping option ${options.shippingOption}`);
+      shippingOptionId = option.id;
+      total += option.prices.reduce((sum, price) => sum + price.amount, 0);
+    }
+    const orderInfo = {
+      ...(needs.name ? { name: [user.first_name, user.last_name].filter(Boolean).join(' ') } : {}),
+      ...(needs.phone ? { phone_number: '+10000000000' } : {}),
+      ...(needs.email ? { email: `user${userId}@example.com` } : {}),
+      ...(address ? { shipping_address: address } : {}),
+    };
+    const extra = { ...(shippingOptionId ? { shipping_option_id: shippingOptionId } : {}), ...(Object.keys(orderInfo).length ? { order_info: orderInfo } : {}) };
     const id = String(this.nextQuery++);
     const answered = new Promise<{ ok: boolean; error?: string }>((resolve) => this.preCheckouts.set(id, resolve));
     await this.deliver({
-      pre_checkout_query: { id, from: this.userOf(userId), currency: invoice.currency, total_amount: invoice.total_amount, invoice_payload: payload },
+      pre_checkout_query: { id, from: user, currency: invoice.currency, total_amount: total, invoice_payload: payload, ...extra },
     } as Omit<Update, 'update_id'>);
     const answer = await Promise.race([answered, Promise.resolve({ ok: false, error: 'The bot did not answer' })]);
     this.preCheckouts.delete(id);
-    if (!answer.ok) {
-      this.emit('toast', { chatId: found.message.chat.id, userId, text: answer.error ?? 'Payment failed', alert: true });
-      return answer;
-    }
+    if (!answer.ok) return fail(answer);
+    const charge = `sim_${id}`;
+    this.charges.set(charge, { userId, currency: invoice.currency, amount: total, payload, providerChargeId: `sim_provider_${id}`, refunded: false });
     await this.userMessage(
       {
         successful_payment: {
           currency: invoice.currency,
-          total_amount: invoice.total_amount,
+          total_amount: total,
           invoice_payload: payload,
-          telegram_payment_charge_id: `sim_${id}`,
+          telegram_payment_charge_id: charge,
           provider_payment_charge_id: `sim_provider_${id}`,
+          ...extra,
         },
       },
-      { ...options, user: userId, chat: found.message.chat.id },
+      { ...options, user: userId, chat: chatId },
     );
     return answer;
   }
@@ -820,6 +921,118 @@ export class TelegramSimulator {
     return this.userMessage({ left_chat_member: this.userOf(userId) }, { chat: chatId, user: userId });
   }
 
+  /**
+   * A user asks to join a supergroup or channel: the bot gets a
+   * `chat_join_request` and decides with `approveChatJoinRequest` (the user
+   * joins) or `declineChatJoinRequest`. Until then, and for 5 minutes at most,
+   * the bot may write to the user (`user_chat_id`). `inviteLink`: the link
+   * used (one the bot made). `query`: the request carries a `query_id`, to be
+   * answered within 10 seconds with `answerChatJoinRequestQuery` or
+   * `sendChatJoinRequestWebApp`.
+   */
+  async requestToJoin(chatId: number, userId: number, options: { inviteLink?: string; bio?: string; query?: boolean } = {}): Promise<SimJoinRequest> {
+    const chat = this.chatFor(chatId);
+    if (chat.type !== 'supergroup' && chat.type !== 'channel') throw new Error('Join requests are for supergroups and channels');
+    const user = this.userOf(userId);
+    const status = chat.members.get(userId)?.status;
+    if (status === 'kicked') throw new Error(`User ${userId} is banned from ${chat.title ?? chat.id}`);
+    if (status && status !== 'left') throw new Error(`User ${userId} is already a member of ${chat.title ?? chat.id}`);
+    const link = options.inviteLink === undefined ? undefined : chat.inviteLinks?.find((l) => l.invite_link === options.inviteLink);
+    if (options.inviteLink !== undefined && !link) throw new Error(`No invite link ${options.inviteLink} in ${chat.title ?? chat.id}`);
+    const request: SimJoinRequest = {
+      userId,
+      date: now(),
+      ...(link ? { inviteLink: link.invite_link } : {}),
+      ...(options.bio ? { bio: options.bio } : {}),
+      ...(options.query ? { queryId: String(this.nextQuery++) } : {}),
+    };
+    (chat.joinRequests ??= new Map()).set(userId, request);
+    this.privateChat(userId);
+    this.emit('change', { chatId: chat.id });
+    await this.deliver({
+      chat_join_request: {
+        chat: this.chatObject(chat),
+        from: user,
+        user_chat_id: userId,
+        date: request.date,
+        ...(request.bio ? { bio: request.bio } : {}),
+        ...(link ? { invite_link: this.linkObject(chat, link) } : {}),
+        ...(request.queryId ? { query_id: request.queryId } : {}),
+      },
+    } as Omit<Update, 'update_id'>);
+    return request;
+  }
+
+  /**
+   * A user opens an invite link the bot made: they join the chat, or, for a
+   * link with `creates_join_request`, ask to join (`requestToJoin`). Throws
+   * for links that are revoked, expired or full, which Telegram's apps refuse.
+   */
+  async joinByLink(inviteLink: string, userId = this.user.id): Promise<SimMessage | SimJoinRequest | undefined> {
+    for (const chat of this.chats.values()) {
+      const link = chat.inviteLinks?.find((l) => l.invite_link === inviteLink);
+      if (!link) continue;
+      if (link.is_revoked || (link.expire_date !== undefined && link.expire_date <= now())) throw new Error(`The invite link ${inviteLink} has expired`);
+      if (link.creates_join_request) return this.requestToJoin(chat.id, userId, { inviteLink });
+      const status = chat.members.get(userId)?.status;
+      if (status === 'kicked') throw new Error(`User ${userId} is banned from ${chat.title ?? chat.id}`);
+      if (status && status !== 'left') throw new Error(`User ${userId} is already a member of ${chat.title ?? chat.id}`);
+      if (link.member_limit !== undefined && link.joined.filter((id) => isIn(chat, id)).length >= link.member_limit) {
+        throw new Error(`The invite link ${inviteLink} has reached its member limit`);
+      }
+      link.joined.push(userId);
+      return this.join(chat.id, userId);
+    }
+    throw new Error(`No invite link ${inviteLink}`);
+  }
+
+  /**
+   * A user reacts to a message with emoji (an empty list takes their reaction
+   * back): the bot gets a `message_reaction` update.
+   */
+  async react(messageId: number, reaction: string | string[], options: { user?: number; chat?: number } = {}): Promise<void> {
+    const userId = options.user ?? this.user.id;
+    const chat = this.chatFor(options.chat ?? userId);
+    const found = this.findMessage(chat.id, messageId);
+    if (!found || !visibleTo([found], userId).length) throw new Error(`No message ${messageId} in chat ${chat.title ?? chat.id}`);
+    if (chat.type !== 'private' && !isIn(chat, userId)) throw new Error(`User ${userId} is not a member of ${chat.title ?? chat.id}`);
+    const next = (Array.isArray(reaction) ? reaction : [reaction]).map((emoji) => ({ type: 'emoji', emoji }) as ReactionType);
+    const old = found.reactions?.find((r) => r.user === userId)?.reaction ?? [];
+    found.reactions = [...(found.reactions ?? []).filter((r) => r.user !== userId), ...(next.length ? [{ user: userId, reaction: next }] : [])];
+    this.emit('change', { chatId: chat.id });
+    await this.deliver({
+      message_reaction: { chat: this.chatObject(chat), message_id: messageId, user: this.userOf(userId), date: now(), old_reaction: old, new_reaction: next },
+    } as Omit<Update, 'update_id'>);
+  }
+
+  /**
+   * A sticker set that exists on this Telegram (the simulator knows none
+   * otherwise), for `getStickerSet`, `getCustomEmojiStickers` and
+   * `setChatStickerSet`: one sticker per emoji, whose file ids `sendSticker`
+   * accepts.
+   */
+  addStickerSet(set: { name: string; title?: string; type?: StickerSet['sticker_type']; emojis?: string[] }): StickerSet {
+    const type = set.type ?? 'regular';
+    const stickers = (set.emojis ?? ['🙂']).map((emoji) => {
+      const fileId = this.registerFile({ kind: 'sticker', name: `${emoji}.webp` });
+      return {
+        file_id: fileId,
+        file_unique_id: fileId,
+        type,
+        width: type === 'custom_emoji' ? 100 : 512,
+        height: type === 'custom_emoji' ? 100 : 512,
+        is_animated: false,
+        is_video: false,
+        emoji,
+        set_name: set.name,
+        ...(type === 'custom_emoji' ? { custom_emoji_id: String(5_000_000_000_000_000_000 + this.nextFile++) } : {}),
+      } as Sticker;
+    });
+    const full: StickerSet = { name: set.name, title: set.title ?? set.name, sticker_type: type, stickers };
+    this.stickerSets.set(set.name, full);
+    return full;
+  }
+
   /** A user blocks (or unblocks) the bot: sending to them fails with 403, like Telegram. */
   async block(userId = this.user.id, blocked = true) {
     const chat = this.privateChat(userId);
@@ -854,6 +1067,9 @@ export class TelegramSimulator {
       throw new Error(`User ${userId} can't send messages in ${chat.title ?? chat.id}`);
     }
     const admin = member?.status === 'creator' || member?.status === 'administrator';
+    if (member?.status === 'member' && chat.permissions?.can_send_messages === false && !fields.new_chat_members && !fields.left_chat_member && !fields.forum_topic_created) {
+      throw new Error(`Members can't send messages in ${chat.title ?? chat.id}`);
+    }
     if (chat.type === 'channel' && !admin) throw new Error(`User ${userId} can't post in the channel ${chat.title ?? chat.id}: only its owner and admins can`);
     if (fields.forum_topic_created && !chat.forum) throw new Error(`${chat.title ?? chat.id} has no topics`);
     // A topic of a forum: given, or the one of the message replied to.
@@ -890,6 +1106,17 @@ export class TelegramSimulator {
   }
 
   private async deliver(update: Omit<Update, 'update_id'>) {
+    this.delivering++;
+    try {
+      await this.handOut(update);
+    } finally {
+      this.delivering--;
+    }
+    // What the bot's calls caused (a member it approved joins) is delivered before the user's action resolves.
+    while (this.followUps.length) await this.followUps.shift()!();
+  }
+
+  private async handOut(update: Omit<Update, 'update_id'>) {
     const full = { update_id: this.updateId++, ...update } as Update;
     const bot = this.bot;
     if (!bot || bot.isRunning()) {
@@ -909,15 +1136,29 @@ export class TelegramSimulator {
           resolve();
         }
       });
+    } else {
+      try {
+        if (!bot.isInited()) await bot.init();
+        await bot.handleUpdate(full);
+      } catch (error) {
+        this.emit('error', { error });
+        if (!this.listeners.get('error')?.size) throw error;
+      }
+    }
+  }
+
+  /**
+   * Deliver an update an API call caused, after the update being handled (the
+   * bot may be waiting for its call); right away when nothing is being handled.
+   */
+  private followUp(update: Omit<Update, 'update_id'>) {
+    if (this.delivering) {
+      this.followUps.push(() => this.deliver(update));
       return;
     }
-    try {
-      if (!bot.isInited()) await bot.init();
-      await bot.handleUpdate(full);
-    } catch (error) {
-      this.emit('error', { error });
-      if (!this.listeners.get('error')?.size) throw error;
-    }
+    void Promise.resolve()
+      .then(() => this.deliver(update))
+      .catch((error) => this.emit('error', { error }));
   }
 
   private open(url: string, kind: SimEvents['open']['kind'], chatId: number | undefined, userId: number): SimCallbackAnswer {
@@ -1051,8 +1292,42 @@ export class TelegramSimulator {
       });
     },
 
-    sendLocation: (p: Record<string, any>) =>
-      this.botMessage(this.target(p.chat_id), p, { location: { latitude: p.latitude, longitude: p.longitude } }).message,
+    sendLocation: (p: Record<string, any>) => {
+      const chat = this.target(p.chat_id);
+      const location = this.location(p);
+      const live = p.live_period !== undefined;
+      if (live && !(p.live_period === LIVE_FOREVER || (p.live_period >= 60 && p.live_period <= 86400))) throw badRequest('LIVE_PERIOD_INVALID');
+      const sent = this.botMessage(chat, p, { location: live ? { ...location, live_period: p.live_period as number } : stripLive(location) });
+      if (live) sent.liveUntil = p.live_period === LIVE_FOREVER ? Infinity : sent.message.date + p.live_period;
+      return sent.message;
+    },
+    sendVenue: (p: Record<string, any>) => {
+      const chat = this.target(p.chat_id);
+      const location = stripLive(this.location(p));
+      if (!p.title || !String(p.title).trim()) throw badRequest('venue title is empty');
+      if (!p.address || !String(p.address).trim()) throw badRequest('venue address is empty');
+      const optional = ['foursquare_id', 'foursquare_type', 'google_place_id', 'google_place_type'].filter((k) => p[k] !== undefined).map((k) => [k, p[k]]);
+      const venue = { location, title: String(p.title), address: String(p.address), ...Object.fromEntries(optional) };
+      return this.botMessage(chat, p, { venue, location } as Partial<Message>).message;
+    },
+    editMessageLiveLocation: (p: Record<string, any>) => {
+      const found = this.liveLocation(p);
+      const location = this.location(p);
+      const period = p.live_period ?? found.message.location!.live_period;
+      if (p.live_period !== undefined) {
+        if (!(p.live_period === LIVE_FOREVER || p.live_period >= 60)) throw badRequest('LIVE_PERIOD_INVALID');
+        const until = p.live_period === LIVE_FOREVER ? Infinity : found.message.date + (p.live_period as number);
+        if (until <= now()) throw badRequest('LIVE_PERIOD_INVALID');
+        found.liveUntil = until;
+      }
+      const next = { ...location, live_period: period };
+      return this.applyEdit(found, p, { location: next } as Partial<Message>, () => same(found.message.location, next));
+    },
+    stopMessageLiveLocation: (p: Record<string, any>) => {
+      const found = this.liveLocation(p);
+      found.liveUntil = undefined;
+      return this.applyEdit(found, p, { location: stripLive(found.message.location!) } as Partial<Message>, () => false);
+    },
     sendContact: (p: Record<string, any>) =>
       this.botMessage(this.target(p.chat_id), p, { contact: { phone_number: p.phone_number, first_name: p.first_name, last_name: p.last_name } }).message,
     sendDice: (p: Record<string, any>) => {
@@ -1081,7 +1356,17 @@ export class TelegramSimulator {
       const sent = this.botMessage(this.target(p.chat_id), { ...p, reply_markup: markup }, {
         invoice: { title: p.title, description: p.description, start_parameter: p.start_parameter ?? '', currency: p.currency, total_amount: total },
       });
-      (sent as SimMessage & { invoicePayload?: string }).invoicePayload = p.payload;
+      const invoiceMessage = sent as InvoiceMessage;
+      invoiceMessage.invoicePayload = p.payload;
+      // Stars invoices have no shipping (Telegram ignores the flags).
+      const stars = p.currency === 'XTR';
+      invoiceMessage.invoiceNeeds = {
+        flexible: !stars && !!p.is_flexible,
+        shipping: !stars && !!p.need_shipping_address,
+        name: !stars && !!p.need_name,
+        phone: !stars && !!p.need_phone_number,
+        email: !stars && !!p.need_email,
+      };
       if (p.photo_url) sent.media = { kind: 'photo', url: p.photo_url };
       return sent.message;
     },
@@ -1224,7 +1509,22 @@ export class TelegramSimulator {
 
     getChat: (p: Record<string, any>) => {
       const chat = this.target(p.chat_id, true);
-      return { ...this.chatObject(chat), accent_color_id: 0, max_reaction_count: 11 };
+      const group = chat.type === 'group' || chat.type === 'supergroup';
+      const primary = chat.inviteLinks?.find((l) => l.is_primary && !l.is_revoked);
+      const pinned = chat.pinned.length ? this.findMessage(chat.id, chat.pinned.at(-1)!) : undefined;
+      const botStatus = chat.members.get(this.botInfo.id)?.status;
+      return {
+        ...this.chatObject(chat),
+        accent_color_id: 0,
+        max_reaction_count: 11,
+        ...(chat.photo ? { photo: chatPhoto(chat.photo.fileId) } : {}),
+        ...(chat.description ? { description: chat.description } : {}),
+        ...(primary ? { invite_link: primary.invite_link } : {}),
+        ...(pinned ? { pinned_message: pinned.message } : {}),
+        ...(group ? { permissions: chat.permissions ?? allPermissions() } : {}),
+        ...(chat.stickerSet ? { sticker_set_name: chat.stickerSet } : {}),
+        ...(chat.type === 'supergroup' && (botStatus === 'administrator' || botStatus === 'creator') ? { can_set_sticker_set: true } : {}),
+      };
     },
     getChatMember: (p: Record<string, any>) => this.memberObject(this.target(p.chat_id, true), p.user_id),
 
@@ -1311,7 +1611,8 @@ export class TelegramSimulator {
     setMessageReaction: (p: Record<string, any>) => {
       const found = this.findMessage(this.target(p.chat_id, true).id, p.message_id);
       if (!found) throw badRequest('message to react not found');
-      (found as SimMessage & { reactions?: unknown }).reactions = p.reaction;
+      const reaction = (p.reaction ?? []) as ReactionType[];
+      found.reactions = [...(found.reactions ?? []).filter((r) => r.user !== this.botInfo.id), ...(reaction.length ? [{ user: this.botInfo.id, reaction }] : [])];
       this.emit('change', { chatId: found.message.chat.id });
       return true;
     },
@@ -1335,10 +1636,24 @@ export class TelegramSimulator {
     },
     setChatMenuButton: () => true,
     getChatMenuButton: () => ({ type: 'commands' }),
-    setMyDescription: () => true,
-    setMyShortDescription: () => true,
-    setMyName: () => true,
-    setMyDefaultAdministratorRights: () => true,
+    setMyName: (p: Record<string, any>) => this.setBotText('name', p.name, p.language_code, 64),
+    getMyName: (p: Record<string, any>) => ({ name: this.botText('name', p.language_code) ?? this.botInfo.first_name }),
+    setMyDescription: (p: Record<string, any>) => this.setBotText('description', p.description, p.language_code, 512),
+    getMyDescription: (p: Record<string, any>) => ({ description: this.botText('description', p.language_code) ?? '' }),
+    setMyShortDescription: (p: Record<string, any>) => this.setBotText('short_description', p.short_description, p.language_code, 120),
+    getMyShortDescription: (p: Record<string, any>) => ({ short_description: this.botText('short_description', p.language_code) ?? '' }),
+    setMyDefaultAdministratorRights: (p: Record<string, any>) => {
+      const key = p.for_channels ? 'channels' : 'groups';
+      if (p.rights === undefined) this.defaultAdminRights.delete(key);
+      else this.defaultAdminRights.set(key, Object.fromEntries(Object.entries(p.rights as Record<string, unknown>).map(([k, v]) => [k, !!v])));
+      return true;
+    },
+    getMyDefaultAdministratorRights: (p: Record<string, any>) => {
+      const channels = !!p.for_channels;
+      const rights = this.defaultAdminRights.get(channels ? 'channels' : 'groups') ?? {};
+      const names = [...ADMIN_RIGHTS, ...(channels ? ['can_post_messages', 'can_edit_messages'] : ['can_pin_messages', 'can_manage_topics', 'can_manage_tags'])];
+      return Object.fromEntries(names.map((name) => [name, rights[name] ?? false]));
+    },
 
     getFile: (p: Record<string, any>) => {
       const file = this.files.get(p.file_id);
@@ -1346,6 +1661,296 @@ export class TelegramSimulator {
       return { file_id: p.file_id, file_unique_id: p.file_id, file_size: this.fileData.get(p.file_id)?.size ?? 1024, file_path: `${file.kind}/${p.file_id}` };
     },
     getUserProfilePhotos: () => ({ total_count: 0, photos: [] }),
+
+    // Polls
+    stopPoll: (p: Record<string, any>) => {
+      const chat = this.target(p.chat_id, true);
+      const found = this.findMessage(chat.id, p.message_id);
+      if (!found?.message.poll) throw badRequest('message with poll to stop not found');
+      if (!found.fromBot) throw badRequest("message can't be edited");
+      if (found.message.poll.is_closed) throw badRequest('poll has already been closed');
+      const markup = p.reply_markup?.inline_keyboard ? (p.reply_markup as InlineKeyboardMarkup) : undefined;
+      this.checkMarkup(markup);
+      const poll = { ...found.message.poll, is_closed: true };
+      found.message = { ...found.message, poll, ...(markup ? { reply_markup: markup } : {}) } as Message;
+      this.emit('change', { chatId: chat.id });
+      return poll;
+    },
+
+    // Payments
+    answerShippingQuery: (p: Record<string, any>) => {
+      const resolve = this.shippingQueries.get(String(p.shipping_query_id));
+      if (!resolve) throw badRequest('query is too old and response timeout expired or query ID is invalid');
+      if (p.ok) {
+        const options = p.shipping_options as { id: string; title: string; prices: { label: string; amount: number }[] }[] | undefined;
+        if (!Array.isArray(options) || !options.length) throw badRequest('SHIPPING_OPTIONS_EMPTY');
+        for (const option of options) {
+          if (!option.id || !option.title || !Array.isArray(option.prices) || !option.prices.length) throw badRequest('SHIPPING_OPTION_INVALID');
+        }
+        resolve({ ok: true, options });
+      } else {
+        if (!p.error_message) throw badRequest('error_message is required if ok is False');
+        resolve({ ok: false, error: p.error_message });
+      }
+      this.shippingQueries.delete(String(p.shipping_query_id));
+      return true;
+    },
+    createInvoiceLink: (p: Record<string, any>) => {
+      if (!p.title || String(p.title).length > 32) throw badRequest('INVOICE_TITLE_INVALID');
+      if (!p.description || String(p.description).length > 255) throw badRequest('INVOICE_DESCRIPTION_INVALID');
+      if (!p.payload || new TextEncoder().encode(String(p.payload)).length > 128) throw badRequest('INVOICE_PAYLOAD_INVALID');
+      const prices = p.prices as { label: string; amount: number }[] | undefined;
+      if (!Array.isArray(prices) || !prices.length) throw badRequest('INVOICE_PRICES_EMPTY'); // the simulator's wording
+      if (p.currency === 'XTR' && prices.length !== 1) throw badRequest('STARS_INVOICE_INVALID');
+      if (p.subscription_period !== undefined && (p.currency !== 'XTR' || p.subscription_period !== 2592000)) throw badRequest('SUBSCRIPTION_PERIOD_INVALID');
+      return `https://t.me/$${this.slug()}`;
+    },
+    refundStarPayment: (p: Record<string, any>) => {
+      const charge = this.charges.get(String(p.telegram_payment_charge_id));
+      if (!charge || charge.currency !== 'XTR' || charge.userId !== p.user_id) throw badRequest('CHARGE_NOT_FOUND');
+      if (charge.refunded) throw badRequest('CHARGE_ALREADY_REFUNDED');
+      charge.refunded = true;
+      // The user's chat shows the refund, and the bot gets it as a message.
+      const chat = this.privateChat(charge.userId);
+      const refunded = {
+        currency: charge.currency,
+        total_amount: charge.amount,
+        invoice_payload: charge.payload,
+        telegram_payment_charge_id: String(p.telegram_payment_charge_id),
+        provider_payment_charge_id: charge.providerChargeId,
+      };
+      const message = this.push(chat, this.userOf(charge.userId), { refunded_payment: refunded } as Partial<Message>, false);
+      this.followUp({ message: message.message } as Omit<Update, 'update_id'>);
+      return true;
+    },
+
+    // Reactions
+    deleteMessageReaction: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_delete_messages', 'delete reactions', ['group', 'supergroup']);
+      const found = this.findMessage(chat.id, p.message_id);
+      if (!found) throw badRequest('MESSAGE_ID_INVALID');
+      if (p.user_id === undefined && p.actor_chat_id === undefined) throw badRequest('user_id or actor_chat_id must be specified');
+      found.reactions = found.reactions?.filter((r) => !reactedBy(r, p));
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    deleteAllMessageReactions: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_delete_messages', 'delete reactions', ['group', 'supergroup']);
+      if (p.user_id === undefined && p.actor_chat_id === undefined) throw badRequest('user_id or actor_chat_id must be specified');
+      for (const message of chat.messages) if (message.reactions) message.reactions = message.reactions.filter((r) => !reactedBy(r, p));
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+
+    // Stickers (sets come from sim.addStickerSet)
+    getStickerSet: (p: Record<string, any>) => {
+      const set = this.stickerSets.get(String(p.name));
+      if (!set) throw badRequest('STICKERSET_INVALID');
+      return set;
+    },
+    getCustomEmojiStickers: (p: Record<string, any>) => {
+      const ids = p.custom_emoji_ids as string[] | undefined;
+      if (!Array.isArray(ids) || ids.length > 200) throw badRequest('custom_emoji_ids must be a list of at most 200 identifiers');
+      const all = [...this.stickerSets.values()].flatMap((set) => set.stickers);
+      return ids.map((id) => all.find((s) => s.custom_emoji_id === String(id))).filter((s): s is Sticker => !!s);
+    },
+
+    savePreparedKeyboardButton: (p: Record<string, any>) => {
+      if (!this.users.has(p.user_id)) throw badRequest('user not found');
+      const button = p.button as KeyboardButton | undefined;
+      if (!button || typeof button !== 'object' || !['request_users', 'request_chat', 'request_managed_bot'].some((k) => k in button)) {
+        throw badRequest('button must be of the type request_users, request_chat or request_managed_bot');
+      }
+      if (!button.text) throw badRequest('button text is empty');
+      const id = `prepared-button-${this.nextQuery++}`;
+      this.preparedButtons.set(id, { userId: p.user_id, button });
+      return { id };
+    },
+
+    // Chat settings
+    setChatTitle: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat title');
+      const title = String(p.title ?? '').trim();
+      if (!title) throw badRequest('chat title is empty');
+      if (title.length > 128) throw badRequest('chat title is too long'); // the simulator's wording
+      if (title === chat.title) throw badRequest('chat title is not modified');
+      chat.title = title;
+      this.push(chat, this.botUser(), { new_chat_title: title } as Partial<Message>, true);
+      return true;
+    },
+    setChatDescription: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat description');
+      const description = String(p.description ?? '');
+      if (description.length > 255) throw badRequest('chat description is too long');
+      if (description === (chat.description ?? '')) throw badRequest('chat description is not modified');
+      chat.description = description || undefined;
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    setChatPhoto: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat photo');
+      // A new photo must be uploaded; file ids and URLs aren't accepted.
+      if (p.photo === undefined || typeof p.photo === 'string') throw badRequest('there is no photo in the request');
+      const media = this.mediaFrom('photo', p.photo, p.photo?.filename);
+      const fields = this.mediaFields('photo', media);
+      const fileId = fields.photo!.at(-1)!.file_id;
+      chat.photo = { fileId, url: media.url };
+      this.push(chat, this.botUser(), { new_chat_photo: fields.photo } as Partial<Message>, true, media);
+      return true;
+    },
+    deleteChatPhoto: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat photo');
+      if (!chat.photo) throw badRequest('CHAT_NOT_MODIFIED');
+      chat.photo = undefined;
+      this.push(chat, this.botUser(), { delete_chat_photo: true } as Partial<Message>, true);
+      return true;
+    },
+    setChatPermissions: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_restrict_members', 'change chat permissions', ['group', 'supergroup']);
+      const given = p.permissions as Record<string, unknown> | undefined;
+      if (!given || typeof given !== 'object') throw badRequest('permissions must be an object');
+      const permissions = Object.fromEntries(PERMISSIONS.map((name) => [name, !!given[name]])) as Record<string, boolean>;
+      if (!p.use_independent_chat_permissions) {
+        // Telegram's implications for chats that don't set them independently.
+        if (permissions.can_send_other_messages || permissions.can_add_web_page_previews) {
+          for (const name of ['can_send_messages', 'can_send_audios', 'can_send_documents', 'can_send_photos', 'can_send_videos', 'can_send_video_notes', 'can_send_voice_notes']) permissions[name] = true;
+        }
+        if (permissions.can_send_polls) permissions.can_send_messages = true;
+      }
+      if (given.can_react_to_messages === undefined) permissions.can_react_to_messages = permissions.can_send_messages!;
+      if (given.can_manage_topics === undefined) permissions.can_manage_topics = permissions.can_pin_messages!;
+      if (given.can_edit_tag === undefined) permissions.can_edit_tag = permissions.can_pin_messages!;
+      chat.permissions = permissions as ChatPermissions;
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    setChatAdministratorCustomTitle: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_promote_members', 'change custom title', ['supergroup']);
+      const member = chat.members.get(p.user_id);
+      if (!member || (member.status !== 'administrator' && member.status !== 'creator')) throw badRequest('user is not an administrator');
+      const title = String(p.custom_title ?? '');
+      if (title.length > 16) throw badRequest('ADMIN_RANK_INVALID');
+      if (EMOJI.test(title)) throw badRequest('ADMIN_RANK_EMOJI_NOT_ALLOWED');
+      member.customTitle = title || undefined;
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    setChatMemberTag: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_manage_tags', 'manage tags', ['group', 'supergroup']);
+      const member = chat.members.get(p.user_id);
+      if (!member || member.status === 'left' || member.status === 'kicked') throw badRequest('USER_NOT_PARTICIPANT');
+      if (member.status !== 'member' && member.status !== 'restricted') throw badRequest('tags can be set only for regular members');
+      const tag = String(p.tag ?? '');
+      if (tag.length > 16) throw badRequest('TAG_INVALID');
+      if (EMOJI.test(tag)) throw badRequest('TAG_EMOJI_NOT_ALLOWED');
+      member.tag = tag || undefined;
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    banChatSenderChat: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_restrict_members', 'restrict/unrestrict chat member', ['supergroup', 'channel']);
+      if (!Number.isInteger(p.sender_chat_id)) throw badRequest('sender_chat_id must be an integer');
+      if (p.sender_chat_id === chat.id) throw badRequest("can't ban the chat itself");
+      chat.bannedSenderChats = [...new Set([...(chat.bannedSenderChats ?? []), p.sender_chat_id as number])];
+      return true;
+    },
+    unbanChatSenderChat: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_restrict_members', 'restrict/unrestrict chat member', ['supergroup', 'channel']);
+      chat.bannedSenderChats = chat.bannedSenderChats?.filter((id) => id !== p.sender_chat_id);
+      return true;
+    },
+    setChatStickerSet: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat sticker set', ['supergroup']);
+      if (!this.stickerSets.has(String(p.sticker_set_name))) throw badRequest('STICKERSET_INVALID');
+      chat.stickerSet = String(p.sticker_set_name);
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    deleteChatStickerSet: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_change_info', 'change chat sticker set', ['supergroup']);
+      chat.stickerSet = undefined;
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    getUserChatBoosts: (p: Record<string, any>) => {
+      this.manage(p, undefined, 'get boosts', ['supergroup', 'channel']);
+      if (!this.users.has(p.user_id)) throw badRequest('user not found');
+      return { boosts: [] }; // nobody boosts chats in the simulator
+    },
+
+    // Invite links
+    exportChatInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link');
+      return this.newPrimaryLink(chat).invite_link;
+    },
+    createChatInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link');
+      const link = this.newLink(chat, { is_primary: false, creates_join_request: !!p.creates_join_request });
+      this.editLink(link, p);
+      return this.linkObject(chat, link);
+    },
+    editChatInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link');
+      const link = this.botLink(chat, p.invite_link);
+      if (link.is_primary) throw badRequest("primary invite link can't be edited");
+      if (link.subscription_period !== undefined) throw badRequest('use editChatSubscriptionInviteLink for subscription links');
+      this.editLink(link, p);
+      return this.linkObject(chat, link);
+    },
+    revokeChatInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link');
+      const link = this.botLink(chat, p.invite_link);
+      if (link.is_primary) this.newPrimaryLink(chat); // revokes this one and makes the next
+      else link.is_revoked = true;
+      return this.linkObject(chat, link);
+    },
+    createChatSubscriptionInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link', ['channel']);
+      if (p.subscription_period !== 2592000) throw badRequest('SUBSCRIPTION_PERIOD_INVALID');
+      if (!Number.isInteger(p.subscription_price) || p.subscription_price < 1 || p.subscription_price > 2500) throw badRequest('SUBSCRIPTION_PRICE_INVALID');
+      const link = this.newLink(chat, { is_primary: false, creates_join_request: false, subscription_period: p.subscription_period, subscription_price: p.subscription_price });
+      this.editLink(link, { name: p.name });
+      return this.linkObject(chat, link);
+    },
+    editChatSubscriptionInviteLink: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage chat invite link', ['channel']);
+      const link = this.botLink(chat, p.invite_link);
+      if (link.subscription_period === undefined) throw badRequest('the link is not a subscription link');
+      this.editLink(link, { name: p.name });
+      return this.linkObject(chat, link);
+    },
+
+    // Join requests
+    approveChatJoinRequest: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage join requests', ['supergroup', 'channel']);
+      const request = this.joinRequest(chat, p.user_id);
+      if (isIn(chat, p.user_id)) throw badRequest('USER_ALREADY_PARTICIPANT');
+      this.admit(chat, request);
+      return true;
+    },
+    declineChatJoinRequest: (p: Record<string, any>) => {
+      const chat = this.manage(p, 'can_invite_users', 'manage join requests', ['supergroup', 'channel']);
+      this.joinRequest(chat, p.user_id);
+      chat.joinRequests!.delete(p.user_id);
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    answerChatJoinRequestQuery: (p: Record<string, any>) => {
+      if (!['approve', 'decline', 'queue'].includes(p.result)) throw badRequest('result must be one of "approve", "decline" or "queue"');
+      const { chat, request } = this.joinQuery(p.chat_join_request_query_id);
+      request.queryId = undefined;
+      if (p.result === 'approve') this.admit(chat, request);
+      else if (p.result === 'decline') chat.joinRequests!.delete(request.userId);
+      this.emit('change', { chatId: chat.id });
+      return true;
+    },
+    sendChatJoinRequestWebApp: (p: Record<string, any>) => {
+      const { request } = this.joinQuery(p.chat_join_request_query_id);
+      if (typeof p.web_app_url !== 'string' || !p.web_app_url.startsWith('https://')) throw badRequest('WEBAPP_URL_INVALID');
+      request.queryId = undefined; // the Mini App decides now; the bot approves or declines later
+      this.open(p.web_app_url, 'webApp', request.userId, request.userId);
+      return true;
+    },
   };
 
   /* ------------------------------ internals ------------------------------ */
@@ -1407,7 +2012,7 @@ export class TelegramSimulator {
     }
     if (chat.type === 'private') {
       if (chat.blocked) throw new ApiError(403, 'Forbidden: bot was blocked by the user');
-      if (!chat.started && !any) throw new ApiError(403, "Forbidden: bot can't initiate conversation with a user");
+      if (!chat.started && !any && !this.askedToJoin(chat.id)) throw new ApiError(403, "Forbidden: bot can't initiate conversation with a user");
     } else if (!chat.members.has(this.botInfo.id)) {
       throw new ApiError(403, 'Forbidden: bot is not a member of the supergroup chat');
     }
@@ -1445,12 +2050,14 @@ export class TelegramSimulator {
         'can_edit_stories',
         'can_delete_stories',
       ];
-      return { status, user, is_anonymous: false, ...Object.fromEntries(all.map((r) => [r, rights[r] ?? true])) } as ChatMember;
+      const title = member.customTitle ? { custom_title: member.customTitle } : {};
+      return { status, user, is_anonymous: false, ...Object.fromEntries(all.map((r) => [r, rights[r] ?? true])), ...title } as ChatMember;
     }
-    if (status === 'restricted') return { status, user, is_member: true, until_date: member.until ?? 0, ...rights } as ChatMember;
+    const tag = member.tag ? { tag: member.tag } : {};
+    if (status === 'restricted') return { status, user, is_member: true, until_date: member.until ?? 0, ...rights, ...tag } as ChatMember;
     if (status === 'kicked') return { status, user, until_date: member.until ?? 0 } as ChatMember;
-    if (status === 'creator') return { status, user, is_anonymous: false } as ChatMember;
-    return { status, user } as ChatMember;
+    if (status === 'creator') return { status, user, is_anonymous: false, ...(member.customTitle ? { custom_title: member.customTitle } : {}) } as ChatMember;
+    return { status, user, ...(status === 'member' ? tag : {}) } as ChatMember;
   }
 
   /** The forum a topic method is about, with Telegram's errors. */
@@ -1482,6 +2089,172 @@ export class TelegramSimulator {
     Object.assign(chat.general!, change);
     this.emit('change', { chatId: chat.id });
     return true;
+  }
+
+  /**
+   * The group or channel an admin method is about, with Telegram's errors:
+   * the chat type must fit, and the bot must be an admin with `right`.
+   */
+  private manage(p: Record<string, any>, right: string | undefined, action: string, types: Chat['type'][] = ['group', 'supergroup', 'channel']): SimChat {
+    const chat = this.target(p.chat_id, true);
+    if (!types.includes(chat.type)) {
+      const key = types.join(',');
+      throw badRequest(
+        key === 'supergroup'
+          ? 'method is available only for supergroups'
+          : key === 'channel'
+            ? 'method is available only for channels'
+            : key === 'supergroup,channel'
+              ? 'method is available for supergroup and channel chats only'
+              : key === 'group,supergroup'
+                ? 'method is available only for groups and supergroups'
+                : "method isn't available for private chats",
+      );
+    }
+    const bot = chat.members.get(this.botInfo.id);
+    const admin = bot?.status === 'creator' || (bot?.status === 'administrator' && (right === undefined || bot.rights[right] !== false));
+    if (!admin) throw badRequest(`not enough rights to ${action}`);
+    return chat;
+  }
+
+  /** The point a location method gives, checked like Telegram. */
+  private location(p: Record<string, any>): Location {
+    const { latitude, longitude } = p;
+    if (typeof latitude !== 'number' || latitude < -90 || latitude > 90) throw badRequest('wrong latitude');
+    if (typeof longitude !== 'number' || longitude < -180 || longitude > 180) throw badRequest('wrong longitude');
+    const location: Record<string, number> = { latitude, longitude };
+    if (p.horizontal_accuracy !== undefined) {
+      if (p.horizontal_accuracy < 0 || p.horizontal_accuracy > 1500) throw badRequest('wrong horizontal accuracy');
+      location.horizontal_accuracy = p.horizontal_accuracy;
+    }
+    if (p.heading !== undefined) {
+      if (!Number.isInteger(p.heading) || p.heading < 1 || p.heading > 360) throw badRequest('wrong heading');
+      location.heading = p.heading;
+    }
+    if (p.proximity_alert_radius !== undefined) {
+      if (!Number.isInteger(p.proximity_alert_radius) || p.proximity_alert_radius < 1 || p.proximity_alert_radius > 100000) throw badRequest('wrong proximity alert radius');
+      location.proximity_alert_radius = p.proximity_alert_radius;
+    }
+    return location as unknown as Location;
+  }
+
+  /** A live location that can still be edited. */
+  private liveLocation(p: Record<string, any>): SimMessage {
+    const found = this.editable(p);
+    if (!found.message.location || found.message.venue || found.liveUntil === undefined || found.liveUntil <= now()) throw badRequest("message can't be edited");
+    return found;
+  }
+
+  private setBotText(kind: string, value: unknown, language: string | undefined, max: number) {
+    if (language !== undefined && language !== '' && !/^[a-z]{2}$/.test(language)) throw badRequest('LANG_CODE_INVALID');
+    const text = String(value ?? '');
+    if (text.length > max) throw badRequest(`${kind.replace('_', ' ')} is too long`); // the simulator's wording
+    const key = `${kind}|${language ?? ''}`;
+    if (text) this.botTexts.set(key, text);
+    else this.botTexts.delete(key);
+    return true;
+  }
+
+  /** A bot text in a language, else the one for all languages. */
+  private botText(kind: string, language: string | undefined): string | undefined {
+    return this.botTexts.get(`${kind}|${language ?? ''}`) ?? this.botTexts.get(`${kind}|`);
+  }
+
+  /** The unique part of a t.me link. */
+  private slug(): string {
+    return `Sim${(this.nextLink++).toString(36).padStart(10, '0')}`;
+  }
+
+  /** A new invite link of the bot, checked (see `editLink`) before it's added. */
+  private newLink(chat: SimChat, fields: Partial<ChatInviteLink>, p: Record<string, any> = {}): SimInviteLink {
+    const link: SimInviteLink = {
+      invite_link: `https://t.me/+${this.slug()}`,
+      creator: this.botUser(),
+      creates_join_request: false,
+      is_primary: false,
+      is_revoked: false,
+      ...fields,
+      joined: [],
+    };
+    this.editLink(link, p);
+    (chat.inviteLinks ??= []).push(link);
+    return link;
+  }
+
+  /** `exportChatInviteLink`: the bot's primary link is revoked and replaced. */
+  private newPrimaryLink(chat: SimChat): SimInviteLink {
+    for (const link of chat.inviteLinks ?? []) if (link.is_primary) link.is_revoked = true;
+    const link = this.newLink(chat, { is_primary: true });
+    this.emit('change', { chatId: chat.id });
+    return link;
+  }
+
+  /** Name, expiry, member limit and approval of a link, with Telegram's checks. */
+  private editLink(link: SimInviteLink, p: Record<string, any>) {
+    if (p.name !== undefined && String(p.name).length > 32) throw badRequest('invite link name is too long');
+    if (p.expire_date !== undefined && p.expire_date !== 0 && p.expire_date <= now()) throw badRequest('EXPIRE_DATE_INVALID');
+    if (p.member_limit !== undefined && (!Number.isInteger(p.member_limit) || p.member_limit < 1 || p.member_limit > 99999)) throw badRequest('USAGE_LIMIT_INVALID');
+    const approval = p.creates_join_request ?? link.creates_join_request;
+    if (approval && (p.member_limit ?? link.member_limit) !== undefined) throw badRequest("member_limit can't be specified for links that require approval");
+    if (p.name !== undefined) link.name = String(p.name) || undefined;
+    if (p.expire_date !== undefined) link.expire_date = p.expire_date || undefined;
+    if (p.member_limit !== undefined) link.member_limit = p.member_limit;
+    if (p.creates_join_request !== undefined) link.creates_join_request = !!p.creates_join_request;
+    for (const key of ['name', 'expire_date', 'member_limit'] as const) if (link[key] === undefined) delete link[key];
+  }
+
+  /** A link of this chat the bot made. */
+  private botLink(chat: SimChat, inviteLink: unknown): SimInviteLink {
+    const link = chat.inviteLinks?.find((l) => l.invite_link === inviteLink);
+    if (!link) throw badRequest('INVITE_HASH_INVALID');
+    return link;
+  }
+
+  /** A link as the Bot API returns it (`ChatInviteLink`). */
+  private linkObject(chat: SimChat, link: SimInviteLink): ChatInviteLink {
+    const { joined: _joined, ...rest } = link;
+    if (!link.creates_join_request) return rest;
+    const pending = [...(chat.joinRequests?.values() ?? [])].filter((r) => r.inviteLink === link.invite_link).length;
+    return { ...rest, pending_join_request_count: pending };
+  }
+
+  private joinRequest(chat: SimChat, userId: number): SimJoinRequest {
+    const request = chat.joinRequests?.get(userId);
+    if (!request) throw badRequest('HIDE_REQUESTER_MISSING');
+    return request;
+  }
+
+  /** A join request whose query is waiting for an answer (10 seconds). */
+  private joinQuery(queryId: unknown): { chat: SimChat; request: SimJoinRequest } {
+    for (const chat of this.chats.values()) {
+      for (const request of chat.joinRequests?.values() ?? []) {
+        if (request.queryId !== undefined && request.queryId === String(queryId) && now() - request.date <= 10) return { chat, request };
+      }
+    }
+    throw badRequest('query is too old and response timeout expired or query ID is invalid');
+  }
+
+  /** An approved join request: the user joins (groups see it; the bot gets the message after its call returns). */
+  private admit(chat: SimChat, request: SimJoinRequest) {
+    chat.joinRequests?.delete(request.userId);
+    const user = this.userOf(request.userId);
+    chat.members.set(request.userId, { user, status: 'member', rights: {} });
+    if (request.inviteLink) chat.inviteLinks?.find((l) => l.invite_link === request.inviteLink)?.joined.push(request.userId);
+    if (chat.type === 'channel') {
+      this.emit('change', { chatId: chat.id });
+      return;
+    }
+    const message = this.push(chat, user, { new_chat_members: [user] }, false);
+    this.followUp({ message: message.message } as Omit<Update, 'update_id'>);
+  }
+
+  /** The user asked to join a chat in the last 5 minutes: the bot may write to them (`user_chat_id`). */
+  private askedToJoin(userId: number): boolean {
+    for (const chat of this.chats.values()) {
+      const request = chat.joinRequests?.get(userId);
+      if (request && now() - request.date <= 300) return true;
+    }
+    return false;
   }
 
   private setMember(p: Record<string, any>, status: SimMember['status'], rights: Record<string, boolean>) {
@@ -1781,7 +2554,75 @@ export class TelegramSimulator {
   }
 }
 
-const NUMERIC = /(^|_)(id|ids|offset|limit|timeout|latitude|longitude|date|duration|width|height|amount|period|count|radius|heading|position|length)$/;
+const NUMERIC = /(^|_)(id|ids|offset|limit|timeout|latitude|longitude|date|duration|width|height|amount|period|count|radius|heading|position|length|price|accuracy)$/;
+
+/** `live_period` for a live location without end. */
+const LIVE_FOREVER = 0x7fffffff;
+/** The rights `ChatAdministratorRights` has for groups and channels alike. */
+const ADMIN_RIGHTS = [
+  'is_anonymous',
+  'can_manage_chat',
+  'can_delete_messages',
+  'can_manage_video_chats',
+  'can_restrict_members',
+  'can_promote_members',
+  'can_change_info',
+  'can_invite_users',
+  'can_post_stories',
+  'can_edit_stories',
+  'can_delete_stories',
+];
+const PERMISSIONS = [
+  'can_send_messages',
+  'can_send_audios',
+  'can_send_documents',
+  'can_send_photos',
+  'can_send_videos',
+  'can_send_video_notes',
+  'can_send_voice_notes',
+  'can_send_polls',
+  'can_send_other_messages',
+  'can_add_web_page_previews',
+  'can_react_to_messages',
+  'can_change_info',
+  'can_invite_users',
+  'can_edit_tag',
+  'can_pin_messages',
+  'can_manage_topics',
+];
+const EMOJI = /\p{Extended_Pictographic}/u;
+/** The address a user ships to when a test gives none. */
+const DEFAULT_ADDRESS: ShippingAddress = { country_code: 'US', state: 'CA', city: 'San Francisco', street_line1: '1 Market St', street_line2: '', post_code: '94105' };
+
+type InvoiceMessage = SimMessage & {
+  invoicePayload?: string;
+  invoiceNeeds?: { flexible?: boolean; shipping?: boolean; name?: boolean; phone?: boolean; email?: boolean };
+};
+type ShippingAnswer = { ok: boolean; options?: { id: string; title: string; prices: { label: string; amount: number }[] }[]; error?: string };
+
+/** What a member is allowed to do in a group whose permissions were never set. */
+function allPermissions(): ChatPermissions {
+  return Object.fromEntries(PERMISSIONS.map((name) => [name, true])) as ChatPermissions;
+}
+
+function stripLive(location: Location): Location {
+  const { live_period: _period, heading: _heading, proximity_alert_radius: _radius, ...rest } = location;
+  return rest;
+}
+
+/** A user is in a chat (not left or banned). */
+function isIn(chat: SimChat, userId: number): boolean {
+  const status = chat.members.get(userId)?.status;
+  return !!status && status !== 'left' && status !== 'kicked';
+}
+
+function reactedBy(reaction: SimReaction, p: Record<string, any>): boolean {
+  return (p.user_id !== undefined && reaction.user === p.user_id) || (p.actor_chat_id !== undefined && reaction.actorChat === p.actor_chat_id);
+}
+
+function chatPhoto(fileId: string) {
+  return { small_file_id: fileId, small_file_unique_id: fileId, big_file_id: fileId, big_file_unique_id: fileId };
+}
 
 /** A Bot API request body as the payload object grammY sent. */
 async function readPayload(request: Request, url: URL): Promise<Record<string, any>> {
