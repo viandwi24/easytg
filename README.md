@@ -1,5 +1,12 @@
 <div align="center">
 
+<a href="https://viandwi24.github.io/easytg/playground">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/hero-dark.png">
+    <img alt="easytg: a bot's code next to the Telegram chat it makes, in the simulator" src=".github/assets/hero-light.png" width="100%">
+  </picture>
+</a>
+
 # easytg
 
 **Build Telegram bot interfaces like pages, not message handlers.**

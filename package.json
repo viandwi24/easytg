@@ -87,6 +87,7 @@
     "prepublishOnly": "bun run typecheck && bun test && bun run build",
     "example:notify": "bun run examples/notify.ts",
     "release": "bun run scripts/release.ts",
+    "hero": "bun scripts/hero.ts",
     "api-coverage": "bun run scripts/api-coverage.ts"
   },
   "peerDependencies": {
