@@ -57,20 +57,6 @@ jobs:
             exit 1
           fi
 
-          # Already on npm (e.g. the first version was published by hand): skip that package.
-          if npm view "@easytg/simulator@$VERSION" version >/dev/null 2>&1; then
-            echo "::notice::@easytg/simulator@$VERSION is already on npm, skipping its publish"
-            echo "SKIP_SIMULATOR=1" >> "$GITHUB_ENV"
-          fi
-          if npm view "@easytg/studio@$VERSION" version >/dev/null 2>&1; then
-            echo "::notice::@easytg/studio@$VERSION is already on npm, skipping its publish"
-            echo "SKIP_STUDIO=1" >> "$GITHUB_ENV"
-          fi
-          if npm view "easytg@$VERSION" version >/dev/null 2>&1; then
-            echo "::notice::easytg@$VERSION is already on npm, skipping publish"
-            echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
-          fi
-
       - run: bun install --frozen-lockfile
 
       # Each package goes after the ones it depends on: simulator, studio, easytg.
@@ -79,35 +65,21 @@ jobs:
       - name: Check and build
         run: bun run typecheck && bun test && bun run build
 
+      # A version already on npm (e.g. a package's first version, published by
+      # hand) is skipped: the script checks right before publishing.
       - name: Publish @easytg/simulator to npm
-        if: env.SKIP_SIMULATOR != '1'
-        working-directory: packages/simulator
-        run: |
-          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
-            echo "::error::npm refused the publish. Usually: no Trusted Publisher on npmjs.com (@easytg/simulator → Settings → Trusted Publisher → GitHub Actions: user viandwi24, repository easytg, workflow release.yml, environment empty), or no NPM_TOKEN secret. Fix it, then re-run this workflow; no new tag is needed."
-            exit 1
-          fi
+        run: bash scripts/publish-package.sh packages/simulator
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @easytg/studio to npm
-        if: env.SKIP_STUDIO != '1'
-        working-directory: packages/studio
-        run: |
-          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
-            echo "::error::npm refused the publish. Usually: no Trusted Publisher on npmjs.com (@easytg/studio → Settings → Trusted Publisher → GitHub Actions: user viandwi24, repository easytg, workflow release.yml, environment empty), or no NPM_TOKEN secret. Fix it, then re-run this workflow; no new tag is needed."
-            exit 1
-          fi
+        run: bash scripts/publish-package.sh packages/studio
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # prepublishOnly runs typecheck, tests and build once more.
       - name: Publish easytg to npm
-        if: env.SKIP_PUBLISH != '1'
-        run: |
-          if ! npm publish --provenance --access public --tag "$NPM_TAG"; then
-            echo "::error::npm refused the publish. Usually: no Trusted Publisher on npmjs.com (easytg → Settings → Trusted Publisher → GitHub Actions: user viandwi24, repository easytg, workflow release.yml, environment empty), or no NPM_TOKEN secret. Fix it, then re-run this workflow; no new tag is needed."
-            exit 1
-          fi
+        run: bash scripts/publish-package.sh .
         env:
           # Only needed without trusted publishing.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
