@@ -5,6 +5,10 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Changed
+
+- **Studio restarts are quieter.** The chat shows a single "🔄 Restarted" (not one per restart in a row, and no file name); which file changed goes to the Output tab. Changing a test file (`*.test.ts`, `*.spec.js`, `*_test.go`, `test_*.py`, …) no longer restarts the bot.
+
 ## 0.5.0 (2026-11-24)
 
 ### Added

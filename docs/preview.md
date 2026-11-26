@@ -21,8 +21,10 @@ bunx easytg preview src/bot.ts          # = bunx easytg-studio src/bot.ts --open
   every call to `api.telegram.org` goes to the studio instead. A file that
   doesn't call `bot.start()` (a webhook setup) is started for you.
 - The bot runs in its own process and restarts when a file in its folder
-  changes (`--no-watch` turns that off); the chats keep their messages and
-  show "🔄 Restarted". Anything your bot keeps in memory starts over.
+  changes (`--no-watch` turns that off; test files like `*.test.ts` don't
+  count); the chats keep their messages and show "🔄 Restarted", and the
+  Output tab says which file changed. Anything your bot keeps in memory
+  starts over.
 - **Profiles**: switch the user you type as, or make one (name, username,
   language), at the bottom of the chat list. **✎** above it makes a group, a
   supergroup, a group with topics or a channel with the profiles you pick.

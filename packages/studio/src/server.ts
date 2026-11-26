@@ -54,6 +54,9 @@ const NAMES = ['Alice', 'Bob', 'Carol', 'Dave', 'Erin', 'Frank'];
 const here = dirname(fileURLToPath(import.meta.url));
 /** Files that restart the bot when they change. */
 const CODE = /\.(m?[jt]sx?|cjs|json|py|go|rb|php|rs|java|kts?|cs|exs?|lua|ya?ml|toml|env)$/;
+const RESTARTED = '🔄 Restarted';
+/** Tests don't run in the bot: changing them doesn't restart it. */
+const TESTS = /(\.(test|spec)\.[^/\\]+|_test\.(go|py)|(^|[/\\])test_[^/\\]+\.py)$/;
 const IGNORED = /(^|[/\\])(node_modules|\.git|dist|build|target|__pycache__|\.venv|venv|\.easytg-studio)([/\\]|$)/;
 
 export async function startStudio(options: StudioOptions): Promise<Studio> {
@@ -378,12 +381,16 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
     proc.kill();
     await Promise.race([proc.exited, Bun.sleep(3000).then(() => proc.kill(9))]);
   };
-  const restart = async (note = '🔄 Restarted') => {
+  const restart = async (reason?: string) => {
     setStatus('restarting');
     await kill();
     restarts++;
-    if (sim.chats.size) sim.notice(note);
-    addLog(`[studio] ${note}`, 'info');
+    // The chat only says that the bot restarted (once, not once per restart in a row);
+    // why it restarted goes to the output.
+    for (const chat of sim.chats.values()) {
+      if (chat.messages.at(-1)?.notice !== RESTARTED) sim.notice(RESTARTED, chat.id);
+    }
+    addLog(`[studio] restarted${reason ? `: ${reason}` : ''}`, 'info');
     spawn();
   };
   spawn();
@@ -392,9 +399,9 @@ export async function startStudio(options: StudioOptions): Promise<Studio> {
   if (options.watch !== false) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     watcher = watch(resolve(options.watchDir ?? (botFile ? dirname(botFile) : root)), { recursive: true }, (_event, name) => {
-      if (!name || IGNORED.test(name) || !CODE.test(name)) return;
+      if (!name || IGNORED.test(name) || TESTS.test(name) || !CODE.test(name)) return;
       clearTimeout(timer);
-      timer = setTimeout(() => void restart(`🔄 Restarted: ${name} changed`), 150);
+      timer = setTimeout(() => void restart(`${name} changed`), 150);
     });
   }
 

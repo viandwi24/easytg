@@ -27,7 +27,8 @@ src/bot.ts` runs the studio too. From code: `import { startStudio } from
   Telegraf, python-telegram-bot and aiogram). Long polling works; webhooks
   don't.
 - **Hot restart**: the bot restarts when a code file changes (also `.py`,
-  `.go`, …); the chats stay and show "🔄 Restarted". **Restart** and
+  `.go`, …; not test files); the chats stay and show "🔄 Restarted", and
+  the Output tab says which file changed. **Restart** and
   **Start over** (clears the chats; profiles and groups stay) are at the top.
 - **Profiles, groups, channels, topics**: switch or create profiles at the
   bottom of the chat list, and make groups, supergroups, groups with topics
