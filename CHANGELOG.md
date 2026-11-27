@@ -5,6 +5,8 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+## 0.6.0 (2026-11-27)
+
 ### Added
 
 - **`transformText`**: one function that rewrites every plain string before it is parsed (page text, captions, dialogue prompts, your validation messages), e.g. to convert your own Markdown flavour for `markdownv2`. Not called for `md`/`html` fragments, plain text or built-in messages. See [docs/formatting.md](docs/formatting.md#one-transform-for-every-text).
