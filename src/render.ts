@@ -7,11 +7,12 @@ import type {
   LinkPreviewOptions,
   InputRichMessage,
   Message,
+  MessageEntity,
   ReplyKeyboardMarkup,
   ReplyKeyboardRemove,
 } from 'grammy/types';
 import { EasyTGError, isMessageUnavailable, isNotModified } from './errors';
-import { Formatted, resolveText, type ParseMode } from './format';
+import { Formatted, resolveText, type ParseMode, type ResolvedText, type TelegramParseMode, type TextTransform } from './format';
 import type { Logger } from './logger';
 import { threadIdOf } from './proactive';
 import { CAPTION_LIMIT, MESSAGE_LIMIT, splitText, visibleLength } from './split';
@@ -22,7 +23,9 @@ const MEDIA_TYPES: MediaType[] = ['photo', 'video', 'animation', 'document', 'au
 export interface PreparedContent {
   /** Text split to Telegram's limits; one message per chunk. Always at least one (possibly empty). */
   chunks: string[];
-  parse_mode?: 'HTML' | 'MarkdownV2';
+  parse_mode?: TelegramParseMode;
+  /** Formatting as entities (`PageContent.entities`) instead of a parse mode; then there is one chunk. */
+  entities?: MessageEntity[];
   media?: { type: MediaType; source: MediaSource };
   album?: AlbumItem[];
   /** The first chunk is the album's caption (only when there is no keyboard). */
@@ -118,7 +121,7 @@ export function resolveRich(input: RichInput): InputRichMessage {
   return { markdown: parts.map((p) => (p instanceof Formatted ? (p.rich ?? p.markdown!) : p)).join('\n') };
 }
 
-export function prepareContent(content: PageContent, defaultMode: ParseMode, protect = false): PreparedContent | null {
+export function prepareContent(content: PageContent, defaultMode: ParseMode, protect = false, transform?: TextTransform): PreparedContent | null {
   // Checked before anything is sent: a page with a bad value fails as a whole, not after delivery.
   const { refreshEveryMs, deleteAfterMs } = content;
   if (refreshEveryMs !== undefined && !(Number.isFinite(refreshEveryMs) && refreshEveryMs >= 5000)) {
@@ -140,7 +143,7 @@ export function prepareContent(content: PageContent, defaultMode: ParseMode, pro
       protect_content: content.protectContent ?? protect ? true : undefined,
     };
   }
-  const resolved = resolveText(content.text, content.parseMode ?? defaultMode);
+  const resolved = content.entities ? textWithEntities(content) : resolveText(content.text, content.parseMode ?? defaultMode, transform);
 
   const kinds = [
     ...MEDIA_TYPES.filter((type) => content[type] !== undefined),
@@ -172,11 +175,17 @@ export function prepareContent(content: PageContent, defaultMode: ParseMode, pro
 
   const albumCaption = !!album && keyboard.length === 0;
   const limits = media || copy || albumCaption ? [CAPTION_LIMIT, MESSAGE_LIMIT] : [MESSAGE_LIMIT];
+  if (content.entities && resolved.text.length > limits[0]!) {
+    // Entity offsets point into the whole text: it can't be cut into several messages.
+    throw new EasyTGError(`Text with entities must fit one ${limits[0] === CAPTION_LIMIT ? 'caption' : 'message'} (${limits[0]} characters, got ${resolved.text.length})`);
+  }
   // MarkdownV2 is split as plain text: fine unless one entity spans a cut.
-  const chunks = resolved.text ? splitText(resolved.text, resolved.parse_mode === 'HTML', limits, resolved.parse_mode === 'MarkdownV2') : [''];
+  const escapes = resolved.parse_mode === 'MarkdownV2' || resolved.parse_mode === 'Markdown';
+  const chunks = !resolved.text ? [''] : content.entities ? [resolved.text] : splitText(resolved.text, resolved.parse_mode === 'HTML', limits, escapes);
   return {
     chunks,
     parse_mode: resolved.text ? resolved.parse_mode : undefined,
+    entities: resolved.text && content.entities?.length ? content.entities : undefined,
     media,
     album,
     albumCaption,
@@ -185,6 +194,25 @@ export function prepareContent(content: PageContent, defaultMode: ParseMode, pro
     link_preview_options: content.linkPreview === false ? { is_disabled: true } : undefined,
     protect_content: content.protectContent ?? protect ? true : undefined,
   };
+}
+
+/** `text` with `entities`: plain strings only, sent as they are. */
+function textWithEntities(content: PageContent): ResolvedText {
+  const parts = content.text === undefined ? [] : Array.isArray(content.text) ? content.text : [content.text];
+  if (parts.some((part) => part instanceof Formatted)) throw new EasyTGError("`entities` can't be combined with md``/html`` text: give the plain text they point into");
+  return { text: parts.join('\n') };
+}
+
+/** How a text chunk is formatted: a parse mode, or the content's entities. */
+function textFormat(content: PreparedContent, chunk: string) {
+  if (!chunk) return {};
+  return content.entities ? { entities: content.entities } : { parse_mode: content.parse_mode };
+}
+
+/** The same for a caption. */
+function captionFormat(content: PreparedContent, caption: string | undefined) {
+  if (!caption) return {};
+  return content.entities ? { caption_entities: content.entities } : { parse_mode: content.parse_mode };
 }
 
 /** The message whose button was pressed, as an edit target. */
@@ -216,7 +244,7 @@ export async function deliver(
   // Ephemeral (groups only, see host.ephemeral): reply keyboards can't come with one, so those messages stay normal.
   const ephemeral = content.sendMarkup ? undefined : host.ephemeral?.(ctx, mode === 'ephemeral');
   let resolved: DeliveryMode = mode === 'ephemeral' ? 'auto' : mode;
-  if (resolved === 'auto') resolved = ctx.callbackQuery ? 'edit' : 'reply';
+  if (resolved === 'auto') resolved = ctx.callbackQuery ? 'edit' : 'send';
   if (ephemeral && resolved === 'edit') {
     // Never edit the message everyone sees: a pressed ephemeral message is edited, any
     // other one is replaced on the presser's screen only, by a new ephemeral message.
@@ -264,7 +292,7 @@ async function send(host: DeliveryHost, ctx: Context, content: PreparedContent, 
 }
 
 async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedContent, asReply: boolean, messages: SentMessage[]): Promise<Delivery> {
-  const { chunks, media, album, copy, invoice, parse_mode, link_preview_options, protect_content } = content;
+  const { chunks, media, album, copy, invoice, link_preview_options, protect_content } = content;
   if (invoice) {
     const chat = ctx.chat;
     if (!chat) throw new EasyTGError('invoice needs a chat to send to');
@@ -297,7 +325,7 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
   if (album) {
     const caption = content.albumCaption ? chunks[0] : undefined;
     const items = album.map((item, i) =>
-      i === 0 && caption ? { type: item.type, media: item.media, caption, parse_mode } : { type: item.type, media: item.media },
+      i === 0 && caption ? { type: item.type, media: item.media, caption, ...captionFormat(content, caption) } : { type: item.type, media: item.media },
     );
     messages.push(
       ...(await ctx.replyWithMediaGroup(items as Parameters<Context['replyWithMediaGroup']>[0], { reply_parameters: replyTo, protect_content })),
@@ -314,7 +342,7 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
     const rest = chunks.slice(1);
     const { message_id } = await ctx.api.copyMessage(chat.id, copy.fromChatId, copy.messageId, {
       caption,
-      parse_mode: caption ? parse_mode : undefined,
+      ...captionFormat(content, caption),
       reply_markup: rest.length ? undefined : (content.sendMarkup ?? content.reply_markup),
       reply_parameters: replyTo,
       protect_content,
@@ -332,12 +360,12 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
       i === 0 && media
         ? await sendMedia(ctx, media.type, media.source, {
             caption: chunk || undefined,
-            parse_mode: chunk ? parse_mode : undefined,
+            ...captionFormat(content, chunk),
             reply_markup,
             reply_parameters,
             protect_content,
           })
-        : await ctx.reply(chunk, { parse_mode, reply_markup, reply_parameters, link_preview_options, protect_content }),
+        : await ctx.reply(chunk, { ...textFormat(content, chunk), reply_markup, reply_parameters, link_preview_options, protect_content }),
     );
   }
 
@@ -351,7 +379,7 @@ async function sendAll(host: DeliveryHost, ctx: Context, content: PreparedConten
  * for its presser when asked. Not tracked: they belong to one user's screen.
  */
 async function sendEphemeral(ctx: Context, content: PreparedContent, ephemeral: EphemeralSend): Promise<Delivery> {
-  const { chunks, media, parse_mode, link_preview_options, protect_content } = content;
+  const { chunks, media, link_preview_options, protect_content } = content;
   if (content.album || content.copy || content.invoice) {
     throw new EasyTGError(`${content.album ? 'Albums' : content.copy ? 'Copies' : 'Invoices'} can't be sent as ephemeral messages`);
   }
@@ -378,8 +406,8 @@ async function sendEphemeral(ctx: Context, content: PreparedContent, ephemeral: 
     };
     sent.push(
       i === 0 && media
-        ? ((await sendMedia(ctx, media.type, media.source, { ...other, caption: chunk || undefined, parse_mode: chunk ? parse_mode : undefined })) as Message)
-        : await ctx.reply(chunk, { ...other, parse_mode, link_preview_options }),
+        ? ((await sendMedia(ctx, media.type, media.source, { ...other, caption: chunk || undefined, ...captionFormat(content, chunk) })) as Message)
+        : await ctx.reply(chunk, { ...other, ...textFormat(content, chunk), link_preview_options }),
     );
   }
   const ephemeralSent = sent.flatMap((m) =>
@@ -504,9 +532,9 @@ async function tryEdit(
       // Same file already shown: only the caption and buttons change.
       const sameFile = typeof media.source === 'string' && mediaFileIds(message, media.type).includes(media.source);
       result = sameFile
-        ? await edit.caption({ caption: text, parse_mode, reply_markup })
+        ? await edit.caption({ caption: text, ...captionFormat(content, text), reply_markup })
         : await edit.media(
-            { type: media.type, media: media.source, caption: text || undefined, parse_mode } as Parameters<typeof edit.media>[0],
+            { type: media.type, media: media.source, caption: text || undefined, ...captionFormat(content, text) } as Parameters<typeof edit.media>[0],
             { reply_markup },
           );
     } else if (isTextMessage === false) {
@@ -514,12 +542,12 @@ async function tryEdit(
       return giveUp();
     } else {
       try {
-        result = await edit.text(text, { parse_mode, reply_markup, link_preview_options: content.link_preview_options });
+        result = await edit.text(text, { ...textFormat(content, text), reply_markup, link_preview_options: content.link_preview_options });
       } catch (error) {
         if (isTextMessage !== undefined || !String(error).includes('no text in the message')) throw error;
         // `app.edit` on a media message: update its caption instead, if the text fits a caption.
         if (visibleLength(text, parse_mode === 'HTML') > CAPTION_LIMIT) return giveUp();
-        result = await edit.caption({ caption: text, parse_mode, reply_markup });
+        result = await edit.caption({ caption: text, ...captionFormat(content, text), reply_markup });
       }
     }
   } catch (error) {

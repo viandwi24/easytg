@@ -21,6 +21,12 @@ export class Buttons<C extends Context> {
   readonly deepLinks: CallbackStore;
   readonly mode: CallbackParamsMode;
   readonly ownerOnly: boolean;
+  /** Param names starting with this are easytg's own (`buttons.reservedPrefix`). */
+  readonly reserved: string;
+  /** The param carrying a button's delivery mode (`{ mode: 'send' }`). */
+  readonly modeKey: string;
+  /** The param carrying a `signed` button's signature. */
+  private readonly signatureKey: string;
   private readonly secret?: string;
 
   constructor(
@@ -38,6 +44,12 @@ export class Buttons<C extends Context> {
       throw new EasyTGError("buttons.params 'signed' needs buttons.secret with at least 16 characters");
     }
     this.ownerOnly = buttons.ownerOnly ?? true;
+    this.reserved = buttons.reservedPrefix ?? '_';
+    if (!this.reserved || /[\s|&=]/.test(this.reserved)) {
+      throw new EasyTGError(`buttons.reservedPrefix must be a non-empty string without spaces, "|", "&" or "=" (got "${this.reserved}")`);
+    }
+    this.modeKey = `${this.reserved}m`;
+    this.signatureKey = `${this.reserved}s`;
   }
 
   /** Callback data for a registered page/dialogue. */
@@ -46,10 +58,10 @@ export class Buttons<C extends Context> {
       throw new EasyTGError(`"${id}" is not a registered page or dialogue`);
     }
     const normalized = normalizeParams(params);
-    const reserved = Object.keys(normalized).find((key) => key.startsWith('_'));
-    if (reserved) throw new EasyTGError(`Param "${reserved}" of "${id}": names starting with "_" are reserved`);
-    if (options?.mode === 'send') normalized._m = 's';
-    if (options?.mode === 'ephemeral') normalized._m = 'e';
+    const reserved = Object.keys(normalized).find((key) => key.startsWith(this.reserved));
+    if (reserved) throw new EasyTGError(`Param "${reserved}" of "${id}": names starting with "${this.reserved}" are reserved (see buttons.reservedPrefix)`);
+    if (options?.mode === 'send') normalized[this.modeKey] = 's';
+    if (options?.mode === 'ephemeral') normalized[this.modeKey] = 'e';
     const store = options?.store || (this.mode === 'stored' && Object.keys(normalized).length > 0);
     return this.encode(ctx, id, normalized, !!store);
   }
@@ -70,7 +82,7 @@ export class Buttons<C extends Context> {
     if (!store) {
       const signed =
         this.mode === 'signed' && Object.keys(normalized).length > 0
-          ? { ...normalized, _s: sign(this.secret!, { botId: 0 }, id, normalized) }
+          ? { ...normalized, [this.signatureKey]: sign(this.secret!, { botId: 0 }, id, normalized) }
           : normalized;
       const inline = encodeDeepLinkInline(id, signed);
       if (inline) return { payload: inline };
@@ -87,7 +99,7 @@ export class Buttons<C extends Context> {
     if (!store) {
       const signed =
         this.mode === 'signed' && id !== DIALOGUE_BUTTON_ID && Object.keys(params).length > 0
-          ? { ...params, _s: sign(this.secret!, { botId: ctx.me.id, chatId: ctx.chat?.id, userId: boundUser }, id, params) }
+          ? { ...params, [this.signatureKey]: sign(this.secret!, { botId: ctx.me.id, chatId: ctx.chat?.id, userId: boundUser }, id, params) }
           : params;
       const inline = encodeInline(id, signed);
       if (fitsCallback(inline)) return inline;
@@ -105,8 +117,8 @@ export class Buttons<C extends Context> {
   acceptInline(ctx: C, id: string, params: Record<string, string>, deepLink = false): boolean {
     if (this.mode === 'stored') return false;
     if (this.mode !== 'signed') return true;
-    const signature = params._s;
-    delete params._s;
+    const signature = params[this.signatureKey];
+    delete params[this.signatureKey];
     const scope = deepLink ? { botId: 0 } : { botId: ctx.me.id, chatId: ctx.chat?.id };
     return verify(this.secret!, scope, deepLink ? undefined : ctx.from?.id, id, params, signature);
   }

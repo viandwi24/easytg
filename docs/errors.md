@@ -1,4 +1,30 @@
-# Error helpers
+# Errors
+
+## When handling an update fails
+
+When a page, dialogue, menu button or deep link throws while handling an
+update, easytg tells the user (`texts.error`: an alert on a button press, a
+reply to a message), emits the `error` [event](events.md) (or logs it when
+nobody listens) and carries on. `errors` changes that:
+
+```ts
+new EasyTG({
+  errors: {
+    // Who is told: true (default), false, or per error.
+    notify: ({ on }) => on === 'button',   // 'button' | 'message'
+    // Throw the error on to grammY instead of the `error` event: bot.catch,
+    // or your webhook / queue, which can retry the update.
+    rethrow: true,
+  },
+});
+```
+
+With `rethrow`, the state the update changed before the error is still saved;
+a dialogue whose `onFinish` failed keeps its answers. If your queue retries
+updates, turn on [`dedupeUpdates`](scaling.md#updates-delivered-twice) so a
+retried update that already got through isn't taken twice.
+
+## Helpers
 
 ```ts
 import { isChatUnreachable, isMessageNotFound, isTransient, retryAfterMs } from 'easytg';

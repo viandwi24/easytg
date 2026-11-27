@@ -186,7 +186,6 @@ describe('long messages', () => {
     expect(sent.every((m) => visibleLength(m.text, true) <= 4096)).toBe(true);
     expect(sent[0].reply_markup).toBeUndefined();
     expect(sent[1].reply_markup.inline_keyboard).toHaveLength(1);
-    expect(sent[0].reply_parameters).toBeDefined();
     expect(sent[1].reply_parameters).toBeUndefined();
   });
 

@@ -26,10 +26,10 @@ in [Options](options.md). All durations are in milliseconds.
 | `isChatUnreachable`, `isMessageNotFound`, `isTransient`, `retryAfterMs` | [Error helpers](errors.md) |
 | `EasyTGError`, `InvalidParamsError`, `QueueFullError`, `QueueTimeoutError` | errors easytg throws |
 | `easytg/testing` | `createTestBot`, `telegramError`, `verifyStorageAdapter`, `verifyTaskStore` — [Testing](testing.md) |
-| `easytg/simulator` (= `@easytg/simulator`) | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2`, `messageText`, `richPlainText`, `richButtons`, `richHtml` — [Simulator](simulator.md) |
-| `easytg/simulator/load` | `loadBot`, `interceptBotApi`, `trackBots`: your bot file against a simulator (Bun, Node) — [Preview and recorded tests](preview.md) |
+| `@easytg/simulator` (deprecated alias: `easytg/simulator`) | `TelegramSimulator`, `parseHtml`, `parseMarkdownV2`, `messageText`, `richPlainText`, `richButtons`, `richHtml` — [Simulator](simulator.md) |
+| `@easytg/simulator/load` | `loadBot`, `interceptBotApi`, `trackBots`: your bot file against a simulator (Bun, Node) — [Preview and recorded tests](preview.md) |
 | `easytg preview <file>` (CLI) | your bot file in easytg studio (`@easytg/studio`), in the browser — [Studio](preview.md) |
-| `easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |
+| `@easytg/simulator/element` | `mountChat`, `EasyTGChatElement` (`<easytg-chat>`), `defineChatElement` — [Simulator](simulator.md#a-chat-window) |
 
 ## `app` methods
 
@@ -43,6 +43,7 @@ in [Options](options.md). All durations are in milliseconds.
 | `app.syncCommands(bot)` | Telegram's command menu from the commands with a description |
 | `app.flowchart({ direction, observed })` | the bot's pages, dialogues, commands and the buttons seen, as a Mermaid diagram — [Flow map](flowchart.md) |
 | `bot.use(app)` | handle updates; register before your own handlers |
+| `app.before((ctx, next) => …)` | run for every update inside the user's lock, before easytg routes it — [Scaling](scaling.md#before-easytg-routes-an-update) |
 | `app.on(event, listener)` | returns an unsubscribe function — [Events](events.md) |
 
 ### Showing pages

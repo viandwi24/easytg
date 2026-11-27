@@ -90,7 +90,7 @@ export default defineConfig({
           { text: 'Serverless and edge', link: '/docs/serverless' },
           { text: 'Security notes', link: '/docs/security' },
           { text: 'Events', link: '/docs/events' },
-          { text: 'Error helpers', link: '/docs/errors' },
+          { text: 'Errors', link: '/docs/errors' },
           { text: 'Options', link: '/docs/options' },
           { text: 'API reference', link: '/docs/app' },
           { text: 'Testing', link: '/docs/testing' },

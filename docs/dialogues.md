@@ -27,7 +27,7 @@ await app.startDialogue(ctx, signup);
 | `text` | `string`, or the output of `schema` | other message types get a hint |
 | `file` | `DialogueFile` | `accept: ['photo', 'document', …]` |
 | `choice` | option `value` | only listed values are accepted, so forged ones are rejected |
-| `collect` | `{ texts, files }` | collected until the user presses Done; `min`, `max` (default 50), `accept`. A failed `validate` starts the step over |
+| `collect` | `{ texts, files, items }` | collected until the user presses Done; `min`, `max` (default 50), `accept`. `items` has everything in order, texts with their `entities`, files with `captionEntities` and the `mediaGroupId` of an album. A failed `validate` starts the step over |
 | `contact` | `DialogueContact` | "📱 Share my contact" button; only the user's own number unless `allowOthers` |
 | `location` | `DialogueLocation` | "📍 Share my location" button (`button` to relabel) |
 | `webApp` | the data a [Mini App](mini-apps.md) sends (parsed JSON), or the output of `schema` | a button that opens `url`; private chats only |
@@ -134,6 +134,10 @@ bot.start();
   as zod or valibot checks and converts the text; its first issue is the
   error message, and its output is the answer:
   `{ id: 'age', type: 'text', text: 'Age?', schema: z.coerce.number().int().min(18) }`.
+- `expect` (any step) is what to say when the reply is the wrong kind of
+  input: a sticker for a text step, text for a file step, typed text for a
+  choice. A string, or a function of the helpers; the prompt is shown again
+  after it. Default: the built-in `texts.expectText`, `texts.expectFile`, …
 - `actions: [{ id, text, run }]` adds extra buttons such as "Resend code". They
   run without advancing, and a string returned from `run` is shown as a toast.
 - Every step can show media with its prompt (`photo`, `video`, …, like a
@@ -153,12 +157,16 @@ bot.start();
 - The dialogue state is removed when the dialogue finishes or is cancelled.
 - A `/command` sent during a dialogue cancels it and still runs the command
   (`dialogues: { cancelOnCommand: false }` turns this off).
-- `onFinish`'s result (content, a redirect, …) is sent as a new message.
+- `onFinish` is optional: without it the dialogue just ends, and the
+  `dialogueFinish` event carries the answers.
+- `onFinish`'s result (content, a redirect, …) is sent as a new message;
+  `.onFinish(fn, { mode: 'reply' })` makes it a reply to the user's last
+  answer.
 - `onFinish` runs before the dialogue is cleared up: if it throws (a database
   that is down), the dialogue keeps its answers, `dialogueFinish` isn't
   emitted, and the user's next message tries `onFinish` again. It may start
   another dialogue (`app.startDialogue`); that one stays.
-- `.use(...middlewares)` guards the start (like [page middlewares](pages.md#middlewares)),
+- `.use(...guards)` guards the start (like [page guards](pages.md#guards)),
   `.allowDeepLink()` lets a [deep link](deep-links.md) start it, and
   `.loading(...)` shows a placeholder or "typing…" while a slow `onFinish`
   runs (see [slow pages](pages.md#slow-pages)).

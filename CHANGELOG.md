@@ -5,8 +5,33 @@ All notable changes are documented here. Add entries under **Unreleased**;
 
 ## Unreleased
 
+### Added
+
+- **`transformText`**: one function that rewrites every plain string before it is parsed (page text, captions, dialogue prompts, your validation messages), e.g. to convert your own Markdown flavour for `markdownv2`. Not called for `md`/`html` fragments, plain text or built-in messages. See [docs/formatting.md](docs/formatting.md#one-transform-for-every-text).
+- **`parseMode: 'markdownv1'`** for Telegram's legacy Markdown (`parse_mode: 'Markdown'`).
+- **`md`/`html` fragments work in every parse mode.** With `markdownv2` and `markdownv1` they are converted to that mode (values escaped for it) and mix with your raw strings, instead of throwing. New `escapeFor(parseMode, text)`, `escapeMarkdownV1`, `htmlToMarkdownV2` and `htmlToMarkdownV1`. See [docs/formatting.md](docs/formatting.md).
+- **`entities` in page content**: send text (or a caption) with Telegram's own formatting entities instead of a parse mode, e.g. a user's message exactly as it was written. See [docs/formatting.md](docs/formatting.md#entities-a-message-exactly-as-it-was-written).
+- **`errors: { notify, rethrow }`**: choose whether the user is told when a handler fails (per error, button or message), and throw errors on to grammY (`bot.catch`, a retrying queue) instead of the `error` event. See [docs/errors.md](docs/errors.md).
+- **`app.before((ctx, next) => …)`**: runs for every update inside the user's lock, before easytg routes it; session changes made there are saved with the update. See [docs/scaling.md](docs/scaling.md#before-easytg-routes-an-update).
+- **`dedupeUpdates: true`**: an update delivered again (webhook retry, a crash before it was marked done) is skipped; the ids are kept in the session and saved in the same write as the update's changes. New `update` outcome `duplicate`. See [docs/scaling.md](docs/scaling.md#updates-delivered-twice).
+- **Dialogue step `expect`**: the step's own message when the reply is the wrong kind of input (a sticker for a text step, …), instead of the built-in one.
+- **`.onFinish(fn, { mode: 'reply' })`**: the finish message replies to the user's last answer.
+- **`collect` keeps formatting and order**: `Collected.items` lists everything in the order it was sent, texts with their `entities`; `DialogueFile` has `captionEntities` and the album's `mediaGroupId`.
+- **`buttons.reservedPrefix`** (default `_`): the prefix of easytg's own param names; change it when your buttons need `_` names, e.g. to stay identical with buttons an earlier bot sent. See [docs/button-params.md](docs/button-params.md#reserved-param-names).
+
 ### Changed
 
+- **Breaking: pages opened by a message are a new message, not a reply quoting it** (`app.open`'s `auto` mode). `{ mode: 'reply' }` gives the old look.
+- **`nav.close()` sends `p|_ex`; `exit` is a normal page id now.** Close buttons already sent (`p|exit`) keep working unless the app registers an `exit` page or dialogue.
+- **Stored buttons last 365 days** (was 30), so long-lived menus don't expire under the user.
+- **A warning at startup** when `NODE_ENV=production` and no `storage` is given (data would be lost on restart).
+- **`onFinish` is optional**: a dialogue without it just ends; `dialogueFinish` has the answers.
+- **`buttons.whileBusy: 'wait'`**: a button pressed while the user's previous update runs waits its turn instead of being dropped with the busy toast (still the default).
+- **`guards`** is the new name of the `middlewares` option (type `Guard`); `middlewares` still works. The docs explain which hook is for what (guards, `app.before`, grammY's `bot.use`).
+- **Deprecated, removed in 1.0**: `easytg/simulator*` (import `@easytg/simulator*`), `Collected.texts` / `.files` (use `items`), `scopeKeysByBot: false`.
+- `EasyTGTexts` fields added in 0.4 are required in the type (partial texts in `i18n` are unchanged).
+- Docs: easytg's `markdown` is not Telegram's Markdown (`*x*` is italic here, bold there), and sessions never expire without `session.ttlMs`.
+- Types: `Collected` has the new `items`, and `UpdateOutcome` has `duplicate`; see [docs/migration.md](docs/migration.md#05--next).
 - **Studio restarts are quieter.** The chat shows a single "🔄 Restarted" (not one per restart in a row, and no file name); which file changed goes to the Output tab. Changing a test file (`*.test.ts`, `*.spec.js`, `*_test.go`, `test_*.py`, …) no longer restarts the bot.
 
 ## 0.5.0 (2026-11-24)

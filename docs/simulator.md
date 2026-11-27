@@ -1,6 +1,6 @@
 # Simulator
 
-`easytg/simulator` is a Telegram that lives in memory: a Bot API your grammY
+`@easytg/simulator` is a Telegram that lives in memory: a Bot API your grammY
 bot talks to, and simulated users who send messages, press buttons, pay and
 use inline mode. Nothing is sent to Telegram and no token is needed. It runs
 in Bun, Node, Deno and browsers; the [playground](https://viandwi24.github.io/easytg/playground)
@@ -15,11 +15,8 @@ has a token, and for demos.
 It is its own package, [`@easytg/simulator`](../packages/simulator/README.md),
 which works with any grammY bot, with or without easytg. It's only needed for
 tests and tools, so easytg doesn't install it: add it as a dev dependency
-(`bun add -d @easytg/simulator`). easytg re-exports it, so in an easytg
-project `easytg/simulator`,
-`easytg/simulator/element` and `easytg/simulator/load` are the same modules as
-`@easytg/simulator`, `@easytg/simulator/element` and `@easytg/simulator/load`.
-This page uses the `easytg/…` names; without easytg:
+(`bun add -d @easytg/simulator`). Import it as `@easytg/simulator` (the
+`easytg/simulator…` paths still work but are deprecated):
 
 ```bash
 bun add @easytg/simulator grammy    # or npm install
@@ -28,7 +25,7 @@ bun add @easytg/simulator grammy    # or npm install
 ```ts
 import { Bot } from 'grammy';
 import { EasyTG, page } from 'easytg';
-import { TelegramSimulator } from 'easytg/simulator';
+import { TelegramSimulator } from '@easytg/simulator';
 
 const sim = new TelegramSimulator();
 const bot = new Bot(sim.token);
@@ -158,7 +155,7 @@ formulas as text, buttons). Buttons inside the text press like inline
 buttons (`press`, `tap`). For tests:
 
 ```ts
-import { messageText, richButtons } from 'easytg/simulator';
+import { messageText, richButtons } from '@easytg/simulator';
 
 messageText(sim.last()!.message);                    // text, caption, or a rich message as plain text
 richButtons(sim.last()!.message.rich_message);       // its buttons, in order
@@ -274,7 +271,7 @@ it is handling, before the user's action resolves.
 included, gzip too) and `/file/bot<token>/<path>` downloads. Serve it and a
 bot in another process can use it (`new Bot(token, { client: { apiRoot } })`),
 or route a bot's calls to it with `interceptBotApi` from
-`easytg/simulator/load`. Updates then go out through `getUpdates`;
+`@easytg/simulator/load`. Updates then go out through `getUpdates`;
 `sim.waitForPolling()` resolves once a bot asks for them.
 
 ## Watching
@@ -309,15 +306,15 @@ ones). This is how the playground runs unchanged example files.
 
 ## A chat window
 
-`easytg/simulator/element` is a Telegram-like chat for the browser: bubbles
+`@easytg/simulator/element` is a Telegram-like chat for the browser: bubbles
 with formatting, inline and reply keyboards, toasts and alerts, photos and
 albums, invoices, inline results, the command menu (from `setMyCommands`),
 attachments, a chat and user picker when there are several, "Clear history"
 in the ⋮ menu, and a START button in an empty private chat.
 
 ```ts
-import { TelegramSimulator } from 'easytg/simulator';
-import { mountChat } from 'easytg/simulator/element';
+import { TelegramSimulator } from '@easytg/simulator';
+import { mountChat } from '@easytg/simulator/element';
 
 const sim = new TelegramSimulator();
 // … connect your bot …

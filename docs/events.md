@@ -6,7 +6,7 @@ const off = app.on('pageView', ({ ctx, page, params, mode }) => track(ctx.from?.
 
 | event | payload | when |
 |---|---|---|
-| `update` | `{ ctx, durationMs, outcome }` | an update went through `bot.use(app)`. `outcome`: `easytg` (handled by a page, dialogue, menu…), `next` (passed to your handlers; the time includes them), `limited` / `busy` (dropped), `error` |
+| `update` | `{ ctx, durationMs, outcome }` | an update went through `bot.use(app)`. `outcome`: `easytg` (handled by a page, dialogue, menu…), `next` (passed to your handlers; the time includes them), `limited` / `busy` / `duplicate` (dropped; `duplicate`: see [`dedupeUpdates`](scaling.md#updates-delivered-twice)), `error` |
 | `pageView` | `{ ctx, page, params, mode: 'send' \| 'edit', chatId?, userId?, durationMs }` | a page was shown (after redirects); `durationMs` covers render and delivery |
 | `sent` | `{ ctx, chatId, messageIds, page? }` | new messages were sent: all ids of a split page or an album, e.g. to delete them later |
 | `dialogueStart` | `{ ctx, dialogue, params }` | a dialogue started |

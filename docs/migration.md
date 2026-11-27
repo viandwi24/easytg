@@ -1,5 +1,38 @@
 # Migrating
 
+## 0.5 → next
+
+What you may notice:
+
+- **Pages opened by a message are a new message, not a reply.** `app.open`
+  (mode `auto`) used to quote the user's message (`/start` showed above the
+  answer). For the old look: `app.open(ctx, page, params, { mode: 'reply' })`.
+- **`nav.close()` sends `p|_ex`** instead of `p|exit`, and `exit` is no longer
+  a reserved id. Close buttons already in chats keep working, unless you now
+  register a page or dialogue called `exit` (then they open it).
+- **Stored buttons last 365 days** instead of 30 (`buttons.ttlMs`).
+- **`NODE_ENV=production` without `storage`** logs a warning at startup.
+- **`EasyTGTexts.chooseAtLeast`, `chooseAtMost`, `expectNumber` and
+  `expectDate` are required** in the type. Only a full `EasyTGTexts` object
+  you build yourself needs them; `i18n.texts` and `i18n.locales` take partial
+  texts as before.
+
+Renamed or deprecated (the old names still work until 1.0):
+
+| before | now |
+|---|---|
+| `middlewares: [...]` | `guards: [...]` (type `Guard`) |
+| `easytg/simulator`, `…/load`, `…/element` | `@easytg/simulator`, `…/load`, `…/element` |
+| `Collected.texts`, `Collected.files` | `Collected.items` |
+| `scopeKeysByBot: false` | move 0.1 data to the current keys |
+
+Two types grew:
+
+- `Collected` has `items` (everything in order). Code that builds a
+  `Collected` by hand, e.g. in tests, needs it: `{ texts, files, items: [] }`.
+- `UpdateOutcome` has `duplicate` (only with `dedupeUpdates`). An exhaustive
+  `switch` over it needs the new case.
+
 ## 0.4 → 0.5
 
 Your bot's code doesn't change. What changes is how you install the tools

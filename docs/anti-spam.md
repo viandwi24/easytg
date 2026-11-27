@@ -69,7 +69,8 @@ user flooding the bot is stopped whichever process receives their updates, and
 - A second press of the same button that arrives right after the first one
   finished (within `buttons.doubleTapMs`, default 700 ms) is ignored.
 - A press while an earlier update of the same user is still being handled gets
-  a "⏳ Please wait…" toast (`texts.busy`) and is dropped.
+  a "⏳ Please wait…" toast (`texts.busy`) and is dropped. With
+  `buttons: { whileBusy: 'wait' }` it waits its turn instead, like a message.
 
 Other updates of a user wait for the previous one instead, see
 [sequential updates](scaling.md#sequential-updates). Both checks are shared

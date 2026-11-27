@@ -151,6 +151,7 @@ export class Dialogue<A = Auto, P = Params, C extends Context = Context> {
     | readonly DialogueStep<P, C>[]
     | ((args: StepsArgs<A, P, C>) => Awaitable<readonly DialogueStep<P, C>[]>);
   /** @internal */ finishFn?: (args: DialogueEndArgs<AnswersSoFar<A>, P, C>) => Awaitable<RenderResult>;
+  /** @internal */ finishMode: 'send' | 'reply' = 'send';
   /** @internal */ cancelFn?: (args: DialogueEndArgs<Partial<AnswersSoFar<A>>, P, C>) => Awaitable<RenderResult>;
   /** @internal */ backEnabled = true;
   /** @internal */ timeoutMs?: number;
@@ -183,10 +184,16 @@ export class Dialogue<A = Auto, P = Params, C extends Context = Context> {
     return this as never;
   }
 
-  /** Called after the last step; the result is sent as a new message. The dialogue state is then removed. */
-  onFinish(fn: (args: DialogueEndArgs<AnswersSoFar<A>, P, C>) => Awaitable<RenderResult>): this {
+  /**
+   * Called after the last step; the result is sent as a new message. The
+   * dialogue state is then removed. Optional: without it the dialogue just
+   * ends (the `dialogueFinish` event still carries the answers). With `{ mode: 'reply' }` the message
+   * replies to the user's last answer (when that answer was a message).
+   */
+  onFinish(fn: (args: DialogueEndArgs<AnswersSoFar<A>, P, C>) => Awaitable<RenderResult>, options: { mode?: 'send' | 'reply' } = {}): this {
     if (this.finishFn) throw new EasyTGError(`Dialogue "${this.id}" already has onFinish`);
     this.finishFn = fn;
+    this.finishMode = options.mode ?? 'send';
     return this;
   }
 

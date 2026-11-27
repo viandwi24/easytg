@@ -6,13 +6,15 @@ import { EasyTGError } from './errors';
  *   p|<id>|<urlencoded params>   open a page / start a dialogue (params inline)
  *   s|<token>                    same, with params stored server-side
  *   p|_db|<...>                  dialogue control (answers, back, cancel, done)
- *   p|exit                       close the message
+ *   p|_ex                        close the message (`p|exit` before 0.6)
  *
  * Callback data is NOT trusted input: modified clients can send any string.
  */
 export const MAX_CALLBACK_BYTES = 64;
 export const DIALOGUE_BUTTON_ID = '_db';
-export const EXIT_ID = 'exit';
+export const EXIT_ID = '_ex';
+/** What `nav.close()` sent before 0.6: still closes, unless the app has a page or dialogue of that name. */
+export const LEGACY_EXIT_ID = 'exit';
 /** Callback id of `nav.back()`. */
 export const BACK_ID = '_bk';
 
@@ -33,9 +35,9 @@ export function byteLength(value: string): number {
 
 /** Ids of pages and dialogues: letters, digits, `_ . : -`, not starting with `_`, not `exit`. */
 export function assertValidId(kind: string, id: string) {
-  if (!id || !ID_PATTERN.test(id) || id.startsWith('_') || id === EXIT_ID) {
+  if (!id || !ID_PATTERN.test(id) || id.startsWith('_')) {
     throw new EasyTGError(
-      `Invalid ${kind} id "${id}": use letters, digits and _ . : - (not starting with "_", and "exit" is reserved)`,
+      `Invalid ${kind} id "${id}": use letters, digits and _ . : - (not starting with "_")`,
     );
   }
 }

@@ -93,8 +93,8 @@ sends the bot's calls to a simulator while the test calls the Worker's
 repository's `test/serverless.test.ts` does:
 
 ```ts
-import { TelegramSimulator } from 'easytg/simulator';
-import { interceptBotApi } from 'easytg/simulator/load';
+import { TelegramSimulator } from '@easytg/simulator';
+import { interceptBotApi } from '@easytg/simulator/load';
 import worker from './worker';
 
 const sim = new TelegramSimulator();

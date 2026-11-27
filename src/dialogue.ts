@@ -7,7 +7,9 @@ import { sha256, toBase64Url } from './platform/crypto';
 import { addStep, calendar, checkTimeZone, inRange, numberInRange, parseIsoDate, resolveDate, startMonth, validMonth } from './steps';
 import type { EasyTG } from './engine';
 import type { Session } from './session';
+import type { TextInput } from './format';
 import type {
+  Awaitable,
   Collected,
   DeliveryMode,
   DialogueCancelReason,
@@ -57,9 +59,14 @@ type Kind = (typeof Kind)[keyof typeof Kind];
 
 export function extractFile(message: Message): DialogueFile | undefined {
   const caption = message.caption;
+  // Only what is set: the file goes into the session as it is.
+  const extra = {
+    ...(caption !== undefined && message.caption_entities?.length ? { captionEntities: message.caption_entities } : {}),
+    ...(message.media_group_id !== undefined ? { mediaGroupId: message.media_group_id } : {}),
+  };
   if (message.photo?.length) {
     const photo = message.photo[message.photo.length - 1]!; // largest size
-    return { kind: 'photo', fileId: photo.file_id, fileUniqueId: photo.file_unique_id, fileSize: photo.file_size, caption };
+    return { kind: 'photo', fileId: photo.file_id, fileUniqueId: photo.file_unique_id, fileSize: photo.file_size, caption, ...extra };
   }
   // `animation` messages also carry `document`, so check it first.
   const media =
@@ -79,6 +86,7 @@ export function extractFile(message: Message): DialogueFile | undefined {
     fileSize: media.file_size,
     mimeType: 'mime_type' in media ? media.mime_type : undefined,
     caption: media.kind === 'sticker' || media.kind === 'video_note' ? undefined : caption,
+    ...(media.kind === 'sticker' || media.kind === 'video_note' ? {} : extra),
   };
 }
 
@@ -174,34 +182,34 @@ export class DialogueRunner<C extends Context> {
 
     switch (step.type) {
       case 'text':
-        if (text === undefined) return this.reject(ctx, session, def, state, texts.expectText);
+        if (text === undefined) return this.expected(ctx, session, def, state, step, texts.expectText);
         return this.submit(ctx, session, def, state, step, text, step.schema);
       case 'file':
         if (!file || (step.accept && !step.accept.includes(file.kind))) {
-          return this.reject(ctx, session, def, state, texts.expectFile);
+          return this.expected(ctx, session, def, state, step, texts.expectFile);
         }
         return this.submit(ctx, session, def, state, step, file);
       case 'choice':
-        return this.reject(ctx, session, def, state, texts.expectChoice);
+        return this.expected(ctx, session, def, state, step, texts.expectChoice);
       case 'collect':
         return this.collect(ctx, session, def, state, step, text, file);
       case 'contact':
-        return this.reject(ctx, session, def, state, texts.expectContact);
+        return this.expected(ctx, session, def, state, step, texts.expectContact);
       case 'location':
-        return this.reject(ctx, session, def, state, texts.expectLocation);
+        return this.expected(ctx, session, def, state, step, texts.expectLocation);
       case 'webApp':
-        return this.reject(ctx, session, def, state, texts.expectWebApp);
+        return this.expected(ctx, session, def, state, step, texts.expectWebApp);
       case 'multiChoice':
-        return this.reject(ctx, session, def, state, texts.expectChoice);
+        return this.expected(ctx, session, def, state, step, texts.expectChoice);
       case 'number': {
         const value = text === undefined ? NaN : Number(text.trim().replace(',', '.'));
-        if (text === undefined || !text.trim() || !numberInRange(value, step)) return this.reject(ctx, session, def, state, texts.expectNumber!(step));
+        if (text === undefined || !text.trim() || !numberInRange(value, step)) return this.expected(ctx, session, def, state, step, texts.expectNumber(step));
         return this.submit(ctx, session, def, state, step, value);
       }
       case 'date': {
         const { min, max } = this.dateBounds(ctx, state, step);
         const date = text === undefined ? undefined : parseIsoDate(text);
-        if (!date || !inRange(date, min, max)) return this.reject(ctx, session, def, state, texts.expectDate!);
+        if (!date || !inRange(date, min, max)) return this.expected(ctx, session, def, state, step, texts.expectDate);
         return this.submit(ctx, session, def, state, step, date);
       }
     }
@@ -247,7 +255,7 @@ export class DialogueRunner<C extends Context> {
         const selected = this.selection(state, step);
         if (selected.includes(params.v!)) state.selected = selected.filter((v) => v !== params.v);
         else if (step.max !== undefined && selected.length >= step.max) {
-          await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtMost!(step.max), show_alert: true });
+          await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtMost(step.max), show_alert: true });
           return true;
         } else state.selected = [...selected, params.v!];
         this.save(session, state);
@@ -282,7 +290,7 @@ export class DialogueRunner<C extends Context> {
           const selected = this.selection(state, step);
           const min = step.min ?? 1;
           if (selected.length < min) {
-            await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtLeast!(min), show_alert: true });
+            await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).chooseAtLeast(min), show_alert: true });
             return true;
           }
           // In the order of the options, whatever order they were pressed in.
@@ -296,7 +304,7 @@ export class DialogueRunner<C extends Context> {
           return true;
         }
         if (step.type !== 'collect') return false;
-        const items = state.collected ?? { texts: [], files: [] };
+        const items = collected(state);
         const min = step.min ?? 1;
         if (items.texts.length + items.files.length < min) {
           await this.app.answerCallback(ctx, { text: this.app.textsFor(ctx).collectMin(min), show_alert: true });
@@ -595,11 +603,19 @@ export class DialogueRunner<C extends Context> {
   }
 
   /** Show an error, then the prompt again. Built-in texts go out as plain text; the app's own follow its parse mode. */
-  private async reject(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState, error: string, builtIn = true) {
+  private async reject(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState, error: TextInput, builtIn = true) {
     await this.clear(ctx, state);
     await this.sendTracked(ctx, session, state, { text: error, parseMode: builtIn ? 'plain' : undefined });
     await this.show(ctx, session, def, state);
     return true;
+  }
+
+  /** The reply isn't the kind of input the step takes: its `expect` message, or the built-in one. */
+  private async expected(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState, step: AnyStep<C>, builtIn: string) {
+    const expect = step.expect as TextInput | ((helpers: StepHelpers<any, C>) => Awaitable<TextInput>) | undefined;
+    if (expect === undefined) return this.reject(ctx, session, def, state, builtIn);
+    const message = typeof expect === 'function' ? await expect(this.helpers(ctx, session, state)) : expect;
+    return this.reject(ctx, session, def, state, message, false);
   }
 
   private async submit(
@@ -650,10 +666,10 @@ export class DialogueRunner<C extends Context> {
   ) {
     const kind = text !== undefined ? 'text' : file?.kind;
     if (!kind || (step.accept && !step.accept.includes(kind))) {
-      return this.reject(ctx, session, def, state, this.app.textsFor(ctx).invalidInput);
+      return this.expected(ctx, session, def, state, step, this.app.textsFor(ctx).invalidInput);
     }
 
-    const items = (state.collected ??= { texts: [], files: [] });
+    const items = collected(state);
     const max = step.max ?? DEFAULT_MAX_ITEMS;
     const texts = this.app.textsFor(ctx);
     const doneRow = [this.button(ctx, state, step, texts.done, Kind.Done)];
@@ -664,8 +680,14 @@ export class DialogueRunner<C extends Context> {
       await this.sendTracked(ctx, session, state, { text: texts.collectLimit({ max, done: texts.done }), parseMode: 'plain', keyboard });
       return true;
     }
-    if (text !== undefined) items.texts.push(text);
-    else items.files.push(file!);
+    if (text !== undefined) {
+      items.texts.push(text);
+      const entities = ctx.message?.entities;
+      items.items.push({ kind: 'text', text, ...(entities?.length ? { entities } : {}) });
+    } else {
+      items.files.push(file!);
+      items.items.push(file!);
+    }
 
     const count = { total: items.texts.length + items.files.length, texts: items.texts.length, files: items.files.length, done: texts.done };
     await this.sendTracked(ctx, session, state, { text: texts.collectReceived(count), parseMode: 'plain', keyboard }, 'reply');
@@ -674,11 +696,12 @@ export class DialogueRunner<C extends Context> {
 
   private async finish(ctx: C, session: Session, def: AnyDialogue<C>, state: DialogueState) {
     this.app.setFlowSource(ctx, def.id);
-    const finish = () => def.finishFn!(this.endArgs(ctx, session, state));
+    // Without onFinish the dialogue just ends (listen to `dialogueFinish` for the answers).
+    const finish = async () => (def.finishFn ? def.finishFn(this.endArgs(ctx, session, state)) : undefined);
     // onFinish runs before anything is cleared: if it fails (a database that is
     // down), the dialogue keeps its answers and the user's next message tries
     // again, instead of starting over. The placeholder is a new message.
-    const result = def.loadingOptions ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();
+    const result = def.loadingOptions && def.finishFn ? await this.app.withPlaceholder(ctx, def.loadingOptions, finish, true) : await finish();
     // onFinish may have started another dialogue: that one stays.
     const current = session.get<DialogueState>(DIALOGUE_STATE_KEY);
     if (current?.run === state.run) session.delete(DIALOGUE_STATE_KEY);
@@ -686,7 +709,7 @@ export class DialogueRunner<C extends Context> {
     if (state.replyKeyboard) await this.app.restoreKeyboard(ctx, this.app.textsFor(ctx).received);
     this.app.logger.debug(`Dialogue "${def.id}" finished`);
     await this.app.emit('dialogueFinish', { ctx, dialogue: def.id, params: state.params, answers: state.answers });
-    await this.app.showResult(ctx, result, 'send');
+    await this.app.showResult(ctx, result, def.finishMode);
   }
 
   /** Delete tracked messages, optionally keeping one (e.g. the one being edited). */
@@ -706,6 +729,13 @@ export class DialogueRunner<C extends Context> {
       this.app.logger.debug('Failed to delete dialogue messages', error);
     }
   }
+}
+
+/** The step's collected items so far (`items` is missing in state saved before 0.6). */
+function collected(state: DialogueState): Collected {
+  const items = (state.collected ??= { texts: [], files: [], items: [] });
+  items.items ??= [...items.texts.map((text) => ({ kind: 'text' as const, text })), ...items.files];
+  return items;
 }
 
 /** Mini App data: JSON when it is JSON, else the string as sent. */

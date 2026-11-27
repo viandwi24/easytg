@@ -5,6 +5,7 @@
  * - `markdown` (default): a small Markdown dialect, see `markdownToHtml`
  * - `html`: raw Telegram HTML (you escape)
  * - `markdownv2`: raw Telegram MarkdownV2 (you escape)
+ * - `markdownv1`: raw legacy Telegram Markdown (`parse_mode: 'Markdown'`, you escape)
  * - `plain`: no formatting
  *
  * The `md` and `html` tagged templates are safe by default: every interpolated
@@ -12,7 +13,17 @@
  *
  *   md`Hello **${user.name}**`         html`Hello <b>${user.name}</b>`
  */
-export type ParseMode = 'markdown' | 'html' | 'markdownv2' | 'plain';
+import { escapeMarkdownV1, escapeMarkdownV2, htmlToMarkdownV1, htmlToMarkdownV2 } from './format-convert';
+export { escapeMarkdownV1, escapeMarkdownV2, htmlToMarkdownV1, htmlToMarkdownV2 };
+
+export type ParseMode = 'markdown' | 'html' | 'markdownv2' | 'markdownv1' | 'plain';
+
+/**
+ * Rewrites every plain string before it is parsed (`EasyTGOptions.transformText`):
+ * page and dialogue text, captions, validation messages. Not called for
+ * `md`/`html` fragments, `plain` text or easytg's own built-in messages.
+ */
+export type TextTransform = (text: string, info: { parseMode: Exclude<ParseMode, 'plain'> }) => string;
 
 /** Already-formatted text produced by `md` / `html`. */
 export class Formatted {
@@ -35,8 +46,11 @@ export type TextInput = TextPart | TextPart[];
 
 export interface ResolvedText {
   text: string;
-  parse_mode?: 'HTML' | 'MarkdownV2';
+  parse_mode?: TelegramParseMode;
 }
+
+/** The `parse_mode` values easytg sends. */
+export type TelegramParseMode = 'HTML' | 'MarkdownV2' | 'Markdown';
 
 // ---- escaping ---------------------------------------------------------------
 
@@ -47,10 +61,6 @@ export function escapeMarkdown(text: string): string {
   return String(text).replace(MARKDOWN_SPECIAL, '\\$&');
 }
 
-/** Escape text for the `markdownv2` parse mode. */
-export function escapeMarkdownV2(text: string): string {
-  return String(text).replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, '\\$&');
-}
 
 /**
  * Escape text for Rich Markdown (`rich` content, Bot API 10.3): a backslash
@@ -59,6 +69,22 @@ export function escapeMarkdownV2(text: string): string {
  */
 export function escapeRichMarkdown(text: string): string {
   return String(text).replace(/[!-/:-@[-`{-~]/g, '\\$&');
+}
+
+/** Escape `text` so it shows as written in `mode`. */
+export function escapeFor(mode: ParseMode, text: string): string {
+  switch (mode) {
+    case 'markdown':
+      return escapeMarkdown(text);
+    case 'html':
+      return escapeHTML(text);
+    case 'markdownv2':
+      return escapeMarkdownV2(text);
+    case 'markdownv1':
+      return escapeMarkdownV1(text);
+    case 'plain':
+      return String(text);
+  }
 }
 
 /** Escape text for the `html` parse mode. */
@@ -139,9 +165,10 @@ function stringify(value: unknown): string {
  * Plain strings follow `mode`; `md`/`html` fragments carry their own formatting,
  * so any fragment switches the whole message to HTML.
  */
-export function resolveText(input: TextInput | undefined, mode: ParseMode): ResolvedText {
+export function resolveText(input: TextInput | undefined, mode: ParseMode, transform?: TextTransform): ResolvedText {
   if (input === undefined) return { text: '' };
-  const parts = Array.isArray(input) ? input : [input];
+  let parts = Array.isArray(input) ? input : [input];
+  if (transform && mode !== 'plain') parts = parts.map((part) => (typeof part === 'string' ? transform(part, { parseMode: mode }) : part));
 
   if (!parts.some((p) => p instanceof Formatted)) {
     const text = parts.join('\n');
@@ -152,13 +179,18 @@ export function resolveText(input: TextInput | undefined, mode: ParseMode): Reso
         return { text, parse_mode: 'HTML' };
       case 'markdownv2':
         return { text, parse_mode: 'MarkdownV2' };
+      case 'markdownv1':
+        return { text, parse_mode: 'Markdown' };
       case 'plain':
         return { text };
     }
   }
 
-  if (mode === 'markdownv2') {
-    throw new Error('md``/html`` fragments cannot be mixed with plain strings in markdownv2 mode');
+  if (mode === 'markdownv2' || mode === 'markdownv1') {
+    // The fragments are converted to the mode, so they mix with its raw strings.
+    const convert = mode === 'markdownv2' ? htmlToMarkdownV2 : htmlToMarkdownV1;
+    const text = parts.map((part) => (part instanceof Formatted ? convert(part.html) : part)).join('\n');
+    return { text, parse_mode: mode === 'markdownv2' ? 'MarkdownV2' : 'Markdown' };
   }
   const htmlParts = parts.map((part) => {
     if (part instanceof Formatted) return part.html;

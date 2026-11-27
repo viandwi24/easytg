@@ -3,7 +3,7 @@
 import type { Context } from 'grammy';
 import type { Message, ReplyKeyboardMarkup, ReplyKeyboardRemove } from 'grammy/types';
 import type { EasyTG } from '../engine';
-import type { ParseMode } from '../format';
+import type { ParseMode, TextTransform } from '../format';
 import { isProactive, threadIdOf } from '../proactive';
 import {
   deliver,
@@ -41,6 +41,7 @@ export class Delivery<C extends Context> {
     private readonly parseMode: ParseMode,
     private readonly protectContent: boolean,
     media: MediaOptions,
+    private readonly transformText?: TextTransform,
   ) {
     this.cacheFileIds = media.cacheFileIds ?? false;
     this.fileIdTtlMs = media.cacheTtlMs ?? 30 * DAY_MS;
@@ -48,7 +49,7 @@ export class Delivery<C extends Context> {
 
   /** Content prepared for sending with the app's parse mode and `protectContent`. */
   prepare(content: PageContent): PreparedContent | null {
-    return prepareContent(content, this.parseMode, this.protectContent);
+    return prepareContent(content, this.parseMode, this.protectContent, this.transformText);
   }
 
   /** Send/edit content; stored buttons are persisted before the message goes out. */

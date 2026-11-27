@@ -2,7 +2,7 @@
 
 ```ts
 const order = page<{ id: string; tab?: string }>('order')
-  .use(requireLogin) // page middlewares (optional)
+  .use(requireLogin) // page guards (optional)
   .render(async ({ params, session, nav, t, locale, ctx, app, page }) => ({
     text: ['**Order**', `ID: ${params.id}`],   // a string, or lines
     photo: photoFileId,                         // optional: file_id, URL or InputFile
@@ -85,7 +85,7 @@ Outside a render (e.g. in `bot.command`), get one with `app.nav(ctx)`.
 
 | mode | behaviour |
 |---|---|
-| `auto` (default) | `edit` for button presses, `reply` otherwise |
+| `auto` (default) | `edit` for button presses, `send` otherwise |
 | `send` | new message |
 | `reply` | new message replying to the triggering message |
 | `edit` | edit the pressed message; falls back to `send` when it can't |
@@ -173,22 +173,31 @@ message.
   messages. Only the first part is shown there, and dialogues can't start from
   them because there is no chat to talk in.
 
-## Middlewares
+## Guards
 
 ```ts
-const requireLogin: Middleware = ({ target, session, nav }, next) =>
+const requireLogin: Guard = ({ target, session, nav }, next) =>
   target.id === 'login' || session.get('user') ? next() : nav.redirect(login);
 
-new EasyTG({ middlewares: [requireLogin] });  // every page and dialogue, runs first
-page('admin').use(adminOnly).render(...);      // one page
-dialogue('broadcast').use(adminOnly).steps(...); // one dialogue
+new EasyTG({ guards: [requireLogin] });          // every page and dialogue, runs first
+page('admin').use(adminOnly).render(...);         // one page
+dialogue('broadcast').use(adminOnly).steps(...);  // one dialogue
 ```
 
-Middlewares run before a page renders **and before a dialogue starts**, however
+Guards run before a page renders **and before a dialogue starts**, however
 it is started: button, deep link, `nav.startDialogue` or `app.startDialogue`.
-`target` is the page or dialogue. Global middlewares also run for redirect
+`target` is the page or dialogue. Global guards also run for redirect
 targets, so let the login page through as shown above. Redirect loops are
-stopped after 5 hops.
+stopped after 5 hops. (`guards` was called `middlewares` before 0.6; the old
+name still works.)
+
+Which hook for what:
+
+| | runs | for |
+|---|---|---|
+| `guards` / `.use(...)` | before a page renders or a dialogue starts | access rules, redirects |
+| `app.before(fn)` | for every update, inside the user's lock | work that must be ordered with the user's updates ([Scaling](scaling.md#before-easytg-routes-an-update)) |
+| grammY's `bot.use(fn)` | before `bot.use(app)`, outside easytg | anything grammY-wide (logging, plugins) |
 
 ## Back
 

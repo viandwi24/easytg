@@ -3,13 +3,13 @@
 // Each handler returns false for updates that aren't its own.
 import type { Context } from 'grammy';
 import type { PreCheckoutQuery, SuccessfulPayment } from 'grammy/types';
-import { BACK_ID, DIALOGUE_BUTTON_ID, EXIT_ID, decodeInline, decodeStoredToken, normalizeParams } from '../callback';
+import { BACK_ID, DIALOGUE_BUTTON_ID, EXIT_ID, LEGACY_EXIT_ID, decodeInline, decodeStoredToken, normalizeParams } from '../callback';
 import { decodeDeepLink, startPayload } from '../deeplink';
 import { isCommand, parseWebAppData } from '../dialogue';
 import type { EasyTG } from '../engine';
 import { InvalidParamsError, isChatUnreachable, isMessageUnavailable, isNotModified } from '../errors';
 import { INPUT_KEY, type TextInputState } from './scope';
-import type { PaymentArgs, PaymentsOptions, RelayOptions } from './types';
+import type { ErrorsOptions, PaymentArgs, PaymentsOptions, RelayOptions } from './types';
 
 /** @internal */
 export class Handlers<C extends Context> {
@@ -20,6 +20,7 @@ export class Handlers<C extends Context> {
     private readonly payments: PaymentsOptions<C> | undefined,
     private readonly relayFilter: RelayOptions<C>['filter'] | undefined,
     doubleTapMs: number | undefined,
+    private readonly errors: ErrorsOptions<C> = {},
   ) {
     this.doubleTapMs = doubleTapMs ?? 700;
   }
@@ -100,9 +101,10 @@ export class Handlers<C extends Context> {
         }
       }
       // Per-button delivery mode.
-      const sendNew = params._m === 's';
-      const ephemeral = params._m === 'e';
-      delete params._m;
+      const modeKey = app.buttons.modeKey;
+      const sendNew = params[modeKey] === 's';
+      const ephemeral = params[modeKey] === 'e';
+      delete params[modeKey];
 
       if (!(await app.buttons.isMenuOwner(ctx))) {
         await answer(texts.notYourMenu);
@@ -115,7 +117,7 @@ export class Handlers<C extends Context> {
         if (!(await app.dialogues.handleButton(ctx, params))) await answer(texts.buttonExpired);
       } else if (id === BACK_ID) {
         await app.views.goBack(ctx);
-      } else if (id === EXIT_ID) {
+      } else if (id === EXIT_ID || (id === LEGACY_EXIT_ID && !page && !dialogue)) {
         await app.delivery.closeMessage(ctx);
         // The closed message can't take text anymore.
         const session = await app.sessions.state(ctx);
@@ -133,8 +135,8 @@ export class Handlers<C extends Context> {
         app.logger.debug('Rejected params', error);
         await answer(app.textsFor(ctx).pageNotFound);
       } else {
-        await this.reportError(error, ctx);
-        await answer(app.textsFor(ctx).error);
+        if (this.notifies(ctx, error, 'button')) await answer(app.textsFor(ctx).error);
+        await this.reportError(error, ctx); // throws with `errors.rethrow`
       }
     } finally {
       await app.delivery.answerCallback(ctx); // no-op if already answered
@@ -284,7 +286,8 @@ export class Handlers<C extends Context> {
     try {
       answer = this.payments!.preCheckout ? await this.payments!.preCheckout({ ctx, query, payload: query.invoice_payload }) : true;
     } catch (error) {
-      await this.reportError(error, ctx);
+      // Not rethrown: the checkout must be answered within Telegram's 10 seconds.
+      if ((await this.app.emit('error', { error, ctx, source: 'update' })) === 0) this.app.logger.error('Error in payments.preCheckout', error);
       answer = this.app.textsFor(ctx).error;
     }
     await ctx.answerPreCheckoutQuery(answer === true, answer === true ? undefined : { error_message: answer });
@@ -353,15 +356,30 @@ export class Handlers<C extends Context> {
     return true;
   }
 
-  /** Report an error of a message handler and tell the user something went wrong. */
+  /** An error of a message handler: tell the user something went wrong (see `errors.notify`), then report it. */
   private async failed(error: unknown, ctx: C) {
+    if (this.notifies(ctx, error, 'message')) {
+      try {
+        await ctx.reply(this.app.textsFor(ctx).error);
+      } catch {}
+    }
     await this.reportError(error, ctx);
-    try {
-      await ctx.reply(this.app.textsFor(ctx).error);
-    } catch {}
   }
 
+  private notifies(ctx: C, error: unknown, on: 'button' | 'message'): boolean {
+    const notify = this.errors.notify ?? true;
+    if (typeof notify === 'boolean') return notify;
+    try {
+      return notify({ ctx, error, on });
+    } catch (failure) {
+      this.app.logger.error('errors.notify failed', failure);
+      return true;
+    }
+  }
+
+  /** Emit `error` (or log it), or throw it on to grammY with `errors.rethrow`. */
   private async reportError(error: unknown, ctx: C) {
+    if (this.errors.rethrow) throw error;
     if ((await this.app.emit('error', { error, ctx, source: 'update' })) === 0) this.app.logger.error('Error while handling update', error);
   }
 }

@@ -139,7 +139,11 @@ new EasyTG({ session: { ttlMs: 7 * 24 * 3600_000 } }); // whole session: 7 days 
   interaction keeps the session alive (`refreshOnActivity: true`); to save
   writes, the expiry is refreshed once half of the TTL has passed. With
   `refreshOnActivity: false`, only changes extend it.
-- Without `session.ttlMs`, sessions never expire.
+- Without `session.ttlMs`, sessions never expire (like grammY's sessions):
+  easytg never deletes what you stored on its own. Storage then grows with
+  every user who ever wrote to the bot, so in production set a TTL that
+  fits your data, e.g. `ttlMs: 180 * 24 * 3600_000`, and keep what must
+  outlive it (accounts, orders) in your own database.
 
 ## Migrations
 

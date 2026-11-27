@@ -55,13 +55,13 @@ in the [playground](https://viandwi24.github.io/easytg/playground).
 | [Serverless and edge](serverless.md) | Cloudflare Workers, Deno Deploy, Vercel: webhooks, Redis over HTTP, cron for tasks |
 | [Security notes](security.md) | what to trust and what not |
 | [Events](events.md) | `update` (timings), `pageView`, `sent`, `spam`, `error`, `payment`, … |
-| [Error helpers](errors.md) | `isChatUnreachable`, `isTransient`, `retryAfterMs`, `autoRetry` |
+| [Errors](errors.md) | what happens when a handler fails (`errors`), `isChatUnreachable`, `isTransient`, `retryAfterMs`, `autoRetry` |
 | [Options](options.md) | every option of `new EasyTG()` |
 | [API reference](app.md) | every export and `app` method |
 | [Migrating](migration.md) | breaking changes between versions |
 | [Testing](testing.md) | `easytg/testing`: a fake Telegram API for your tests |
 | [Studio, preview and recorded tests](preview.md) | `easytg preview` / `@easytg/studio`: your bot file in a simulated Telegram in the browser; tests recorded from it; `loadBot` |
-| [Simulator](simulator.md) | `easytg/simulator`: an in-memory Telegram with users, groups and a browser chat window; easytg in the browser |
+| [Simulator](simulator.md) | `@easytg/simulator`: an in-memory Telegram with users, groups and a browser chat window; easytg in the browser |
 | [Bot API coverage](bot-api-coverage.md) | which Bot API methods the simulator answers, and which it doesn't (generated) |
 
 ## Examples

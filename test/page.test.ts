@@ -13,7 +13,7 @@ function setup(options: EasyTGOptions = {}) {
 const home = page('home').render(() => ({ text: 'home' }));
 
 describe('pages', () => {
-  test('the same page is a reply for commands and an edit for buttons', async () => {
+  test('the same page is a new message for commands and an edit for buttons', async () => {
     const { app, bot, find, press, message, reset } = setup();
     const counter = page<{ n?: string }>('counter').render(({ params, nav }) => {
         const n = Number(params.n ?? 1);
@@ -28,7 +28,7 @@ describe('pages', () => {
     await message('/start');
     const [sent] = find('sendMessage');
     expect(sent!.payload).toMatchObject({ text: 'Count <b>1</b>\nv1.0!', parse_mode: 'HTML' });
-    expect(sent!.payload.reply_parameters.allow_sending_without_reply).toBe(true);
+    expect(sent!.payload.reply_parameters).toBeUndefined(); // a new message, not a quote
     expect(sent!.payload.reply_markup.inline_keyboard[0][0].callback_data).toBe('p|counter|n=2');
 
     reset();
@@ -199,7 +199,7 @@ describe('pages', () => {
     const { app, press } = setup();
     app.on('error', () => {});
     expect(() => page('a|b').render(() => undefined)).toThrow(EasyTGError);
-    expect(() => page('exit').render(() => undefined)).toThrow(EasyTGError);
+    expect(() => page('exit').render(() => undefined)).not.toThrow(); // no longer reserved
     expect(() => page('_x').render(() => undefined)).toThrow(EasyTGError);
     app.register(home);
     expect(() => app.register(page('home').render(() => undefined))).toThrow(/already registered/);

@@ -35,15 +35,14 @@ export interface EasyTGTexts {
   /** `done` is the label of the Done button (`texts.done`). */
   collectReceived: (count: { total: number; texts: number; files: number; done: string }) => string;
   collectLimit: (limit: { max: number; done: string }) => string;
-  // Added in 0.4, optional so full translations written for 0.3 keep compiling (English is used when missing).
   /** `multiChoice`: Done pressed with fewer than `min` options chosen. */
-  chooseAtLeast?: (min: number) => string;
+  chooseAtLeast: (min: number) => string;
   /** `multiChoice`: an option pressed when `max` are chosen already. */
-  chooseAtMost?: (max: number) => string;
+  chooseAtMost: (max: number) => string;
   /** `number`: the typed text isn't a number in range. */
-  expectNumber?: (range: { min?: number; max?: number }) => string;
+  expectNumber: (range: { min?: number; max?: number }) => string;
   /** `date`: the typed text isn't a date in range. */
-  expectDate?: string;
+  expectDate: string;
 }
 
 export const defaultTexts: EasyTGTexts = {

@@ -186,7 +186,7 @@ export class Sending<C extends Context> {
         if (media.type !== 'photo' || typeof media.source !== 'string') {
           throw new EasyTGError(`Inline result "${page.id}": only text and photo (file id or URL) pages can be inline results`);
         }
-        const caption = { caption: text || undefined, parse_mode: text ? prepared.parse_mode : undefined, reply_markup, title, description };
+        const caption = { caption: text || undefined, ...(text ? (prepared.entities ? { caption_entities: prepared.entities } : { parse_mode: prepared.parse_mode }) : {}), reply_markup, title, description };
         return /^https?:\/\//i.test(media.source)
           ? { type: 'photo', id, photo_url: media.source, thumbnail_url: thumbnailUrl ?? media.source, ...caption }
           : { type: 'photo', id, photo_file_id: media.source, ...caption };
@@ -198,7 +198,7 @@ export class Sending<C extends Context> {
         title,
         description,
         thumbnail_url: thumbnailUrl,
-        input_message_content: { message_text: text, parse_mode: prepared.parse_mode, link_preview_options: prepared.link_preview_options },
+        input_message_content: { message_text: text, ...(prepared.entities ? { entities: prepared.entities } : { parse_mode: prepared.parse_mode }), link_preview_options: prepared.link_preview_options },
         reply_markup,
       };
     } finally {

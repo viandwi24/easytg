@@ -1,5 +1,5 @@
 import type { Api, Context, InlineKeyboard, InputFile } from 'grammy';
-import type { InlineKeyboardButton, InputRichMessage, LabeledPrice } from 'grammy/types';
+import type { InlineKeyboardButton, InputRichMessage, LabeledPrice, MessageEntity } from 'grammy/types';
 import type { ParamValue, ParamsInput } from './callback';
 import type { Dialogue, Page } from './define';
 import type { EasyTG } from './engine';
@@ -140,6 +140,13 @@ export interface PageContent extends MediaFields {
   keyboard?: KeyboardInput | false | null;
   /** How plain strings in `text` are parsed. Defaults to the app's `parseMode`. */
   parseMode?: ParseMode;
+  /**
+   * Telegram's own formatting for `text` (or the caption, under media)
+   * instead of a parse mode: e.g. a message's `entities` to send it again
+   * exactly as it was written. `text` must be plain strings (joined with
+   * newlines) and fit one message or caption; `parseMode` doesn't apply.
+   */
+  entities?: MessageEntity[];
   /** Prevent forwarding and saving of the sent messages. Default: the app's `protectContent`. */
   protectContent?: boolean;
   /** Delete the message(s) after this many ms (a scheduled task: needs `app.startScheduler`). */
@@ -247,12 +254,16 @@ export type Middleware<C extends Context = Context> = (
   next: () => Promise<RenderResult>,
 ) => Awaitable<RenderResult>;
 
+/** A guard: what `guards`, `page.use(...)` and `dialogue.use(...)` take (also called `Middleware`). */
+export type Guard<C extends Context = Context> = Middleware<C>;
+export type GuardArgs<C extends Context = Context> = MiddlewareArgs<C>;
+
 /**
  * How content reaches the chat:
  * - `send`  — new message
  * - `reply` — new message replying to the triggering message (if any)
  * - `edit`  — edit the pressed message; falls back to `send` if it can't
- * - `auto`  — `edit` for button presses, `reply` otherwise
+ * - `auto`  — `edit` for button presses, `send` otherwise
  */
 /**
  * - `ephemeral`: in groups, a message only the user who pressed (or sent the
@@ -273,11 +284,29 @@ export interface DialogueFile {
   fileSize?: number;
   mimeType?: string;
   caption?: string;
+  /** The caption's formatting (bold, links, …), to send it again as it was written. */
+  captionEntities?: MessageEntity[];
+  /** Set for photos and videos sent together as an album: the same for each of them. */
+  mediaGroupId?: string;
+}
+
+/** A text the user sent in a `collect` step, with its formatting. */
+export interface CollectedText {
+  kind: 'text';
+  text: string;
+  entities?: MessageEntity[];
 }
 
 export interface Collected {
+  /** @deprecated Use `items` (in order, with formatting). */
   texts: string[];
+  /** @deprecated Use `items` (in order, with formatting). */
   files: DialogueFile[];
+  /**
+   * Everything in the order it was sent, texts with their formatting (files
+   * of one album are next to each other, see `DialogueFile.mediaGroupId`).
+   */
+  items: (CollectedText | DialogueFile)[];
 }
 
 export interface DialogueContact {
@@ -330,6 +359,13 @@ interface StepBase<P, C extends Context> extends MediaFields {
    * inferred answers type.
    */
   when?: (helpers: StepHelpers<P, C>) => Awaitable<boolean>;
+  /**
+   * What to say when the reply isn't the kind of input this step takes: a
+   * sticker or photo for a text step, text for a file step, a typed message
+   * for a choice step, … The prompt is shown again after it. Default:
+   * easytg's built-in message (`texts.expectText`, `texts.expectFile`, …).
+   */
+  expect?: TextInput | ((helpers: StepHelpers<P, C>) => Awaitable<TextInput>);
 }
 
 export type DialogueStep<P = Params, C extends Context = Context> =

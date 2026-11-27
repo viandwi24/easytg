@@ -6,7 +6,7 @@ import { decodeInline, decodeStoredToken } from '../callback';
 import { Locks, type AtomicStorage, type Release } from '../coordination';
 import { isCommand } from '../dialogue';
 import type { EasyTG } from '../engine';
-import { flows, userKey } from './scope';
+import { UPDATES_KEY, flows, userKey } from './scope';
 import type { UpdateOutcome } from './types';
 
 /** @internal */
@@ -17,6 +17,8 @@ export class Pipeline<C extends Context> {
   /** Updates being handled in this process, by `userKey`. */
   private readonly liveUpdates = new Map<string, C>();
   private readonly sequentialTimeoutMs?: number;
+  private readonly dedupe: boolean;
+  private readonly waitWhileBusy: boolean;
 
   constructor(
     private readonly app: EasyTG<C>,
@@ -24,11 +26,18 @@ export class Pipeline<C extends Context> {
     coordination: AtomicStorage,
     /** Set with `cluster`: locks are shared between processes. */
     shared: AtomicStorage | undefined,
-    options: { antiSpam?: AntiSpamOptions<C> | false; sequential?: boolean | { timeoutMs?: number } },
+    options: {
+      antiSpam?: AntiSpamOptions<C> | false;
+      sequential?: boolean | { timeoutMs?: number };
+      dedupeUpdates?: boolean;
+      buttons?: { whileBusy?: 'drop' | 'wait' };
+    },
   ) {
+    this.dedupe = options.dedupeUpdates ?? false;
+    this.waitWhileBusy = options.buttons?.whileBusy === 'wait';
     this.locks = new Locks(shared);
     const sequential = options.sequential ?? true;
-    if (sequential) this.sequentialTimeoutMs = (sequential === true ? undefined : sequential.timeoutMs) ?? 8_000;
+    if (sequential) this.sequentialTimeoutMs = (sequential === true ? undefined : sequential.timeoutMs) ?? DEFAULT_WAIT_MS;
     const antiSpam = options.antiSpam === false ? undefined : options.antiSpam ?? {};
     this.antiSpam = antiSpam && { warn: true, ...antiSpam };
     this.spamGuard = new SpamGuard(coordination, antiSpam?.limit ?? 20, antiSpam?.windowMs ?? 10_000, antiSpam?.cooldownMs ?? 30_000);
@@ -86,25 +95,33 @@ export class Pipeline<C extends Context> {
       return 'busy';
     }
     let passedOn = false;
+    let duplicate = false;
     try {
-      await this.handleUpdate(ctx, async () => {
+      duplicate = !(await this.handleUpdate(ctx, async () => {
         passedOn = true;
         await next();
-      });
+      }));
     } finally {
       await this.app.queues.releaseHeld(ctx);
       await release?.();
     }
-    return passedOn ? 'next' : 'easytg';
+    return duplicate ? 'duplicate' : passedOn ? 'next' : 'easytg';
   }
 
-  private async handleUpdate(ctx: C, next: () => Promise<void>) {
+  /** False when the update was skipped: handled before (`dedupeUpdates`). */
+  private async handleUpdate(ctx: C, next: () => Promise<void>): Promise<boolean> {
     this.app.scopes.get(ctx).inUpdate = true;
     const live = userKey(ctx);
     if (live !== undefined) this.liveUpdates.set(live, ctx);
     let failed = false;
     try {
-      await this.app.handlers.handle(ctx, next);
+      if (this.dedupe && (await this.seenBefore(ctx))) {
+        this.app.logger.debug(`Skipped update ${ctx.update.update_id}: handled before`);
+        if (ctx.callbackQuery) await this.app.delivery.answerCallback(ctx);
+        return false;
+      }
+      await this.app.runBefore(ctx, () => this.app.handlers.handle(ctx, next));
+      return true;
     } catch (error) {
       failed = true;
       throw error;
@@ -122,6 +139,22 @@ export class Pipeline<C extends Context> {
   }
 
   /**
+   * Whether this update was handled before; if not, it is recorded in the
+   * session, saved at the end of the update with everything else. Ids, not
+   * "the last id": Telegram may start counting anew after a week of silence.
+   */
+  private async seenBefore(ctx: C): Promise<boolean> {
+    if (!ctx.chat || !ctx.from || (!ctx.message && !ctx.callbackQuery)) return false;
+    const session = await this.app.sessions.state(ctx);
+    const id = ctx.update.update_id;
+    const seen = session.get<number[]>(UPDATES_KEY);
+    const ids = Array.isArray(seen) ? seen : [];
+    if (ids.includes(id)) return true;
+    session.set(UPDATES_KEY, [...ids, id].slice(-RECENT_UPDATES));
+    return false;
+  }
+
+  /**
    * The per-user lock of an update: undefined = no lock needed (or waited too
    * long), 'busy' = a button pressed while the user's previous update runs.
    */
@@ -130,13 +163,16 @@ export class Pipeline<C extends Context> {
     if (userId === undefined || (!ctx.message && !ctx.callbackQuery)) return undefined;
     const key = userKey(ctx)!;
     const data = ctx.callbackQuery?.data;
-    if (data !== undefined && (decodeStoredToken(data) || decodeInline(data))) {
+    const press = data !== undefined && !!(decodeStoredToken(data) || decodeInline(data));
+    if (press && !this.waitWhileBusy) {
       // One button press per user at a time: a press while busy is answered, not queued.
       return (await this.locks.tryAcquire(key)) ?? 'busy';
     }
-    if (this.sequentialTimeoutMs === undefined) return undefined;
-    const release = await this.locks.acquire(key, this.sequentialTimeoutMs, signal);
-    if (!release && !signal.aborted) this.app.logger.debug(`Update of user ${userId} waited ${this.sequentialTimeoutMs} ms for the previous one; handling it anyway`);
+    // Presses wait even with `sequential: false` (they always took the lock).
+    const timeoutMs = this.sequentialTimeoutMs ?? (press ? DEFAULT_WAIT_MS : undefined);
+    if (timeoutMs === undefined) return undefined;
+    const release = await this.locks.acquire(key, timeoutMs, signal);
+    if (!release && !signal.aborted) this.app.logger.debug(`Update of user ${userId} waited ${timeoutMs} ms for the previous one; handling it anyway`);
     return release ?? undefined;
   }
 
@@ -189,6 +225,12 @@ export class Pipeline<C extends Context> {
     return false;
   }
 }
+
+/** How long an update waits for the user's previous one by default. */
+const DEFAULT_WAIT_MS = 8_000;
+
+/** How many update ids `dedupeUpdates` remembers per user and chat. */
+const RECENT_UPDATES = 20;
 
 /** Default anti-spam scope: button presses, and messages with content in private chats or /commands in groups. */
 function isInteraction(ctx: Context): boolean {

@@ -6,7 +6,7 @@ import type { BroadcastResult, BroadcastSettings } from '../broadcast';
 import type { CallbackParamsMode } from '../callback-store';
 import type { QueueOptions } from '../coordination';
 import type { EasyTG } from '../engine';
-import type { ParseMode } from '../format';
+import type { ParseMode, TextTransform } from '../format';
 import type { Messages, Translate } from '../i18n';
 import type { Logger } from '../logger';
 import type { ReplyMenu } from '../menu';
@@ -27,9 +27,24 @@ export interface EasyTGOptions<C extends Context = Context> {
   keyPrefix?: string;
   /** How plain-string text is parsed. Default `markdown`. */
   parseMode?: ParseMode;
+  /**
+   * Rewrite every plain string before it is parsed: page and dialogue text,
+   * captions, prompts and your validation messages (not `md`/`html`
+   * fragments, `plain` text, or easytg's built-in messages). One place to
+   * escape or convert text for `markdownv2`, apply a house style, …
+   *
+   *   transformText: (text, { parseMode }) => (parseMode === 'markdownv2' ? convert(text) : text)
+   */
+  transformText?: TextTransform;
   /** Id of the page `nav.home()` opens. Default `home`. */
   homePage?: string;
-  /** Middlewares for every page render and dialogue start, outermost first. */
+  /**
+   * Guards for every page render and dialogue start, outermost first: they
+   * can let it through (`next()`), redirect, or show something else. For
+   * work on every update (not only renders), see `app.before`.
+   */
+  guards?: Middleware<C>[];
+  /** @deprecated The old name of `guards`. */
   middlewares?: Middleware<C>[];
   /** Custom logger, or `false` to silence easytg. Default: warnings and errors to the console. */
   logger?: Logger | false;
@@ -43,6 +58,9 @@ export interface EasyTGOptions<C extends Context = Context> {
    * Include the bot id in storage keys (sessions, buttons, message metadata),
    * so several bots can share one storage. Deep links are never bot-specific.
    * Default true; `false` keeps the 0.1 key format.
+   *
+   * @deprecated Only `false` changes anything, for data stored by 0.1. It goes
+   * away in 1.0: move such data to the current keys before then.
    */
   scopeKeysByBot?: boolean;
   /**
@@ -61,6 +79,16 @@ export interface EasyTGOptions<C extends Context = Context> {
    * Default false.
    */
   emitProactiveErrors?: boolean;
+  /**
+   * Skip an update that was handled already: the ids of a user's last
+   * updates in a chat are kept in their session and saved with it, in the
+   * same write, so an update delivered again after a crash or a webhook
+   * retry isn't taken twice (e.g. as the answer to the next dialogue step).
+   * For messages and button presses. Default false.
+   */
+  dedupeUpdates?: boolean;
+  /** What happens when handling an update fails (a page, dialogue, menu button, …). */
+  errors?: ErrorsOptions<C>;
   /** Rate limit per user. Default on (20 updates / 10 s); `false` disables. */
   antiSpam?: AntiSpamOptions<C> | false;
   /**
@@ -87,6 +115,21 @@ export interface EasyTGOptions<C extends Context = Context> {
   /** Handle checkout and successful payments of `invoice` content. Without it, both go to your own handlers. */
   payments?: PaymentsOptions<C>;
   i18n?: I18nOptions<C>;
+}
+
+export interface ErrorsOptions<C extends Context = Context> {
+  /**
+   * Tell the user (`texts.error`): as an alert on a button press, as a reply
+   * to a message. `false` stays silent; a function decides per error. Default true.
+   */
+  notify?: boolean | ((args: { ctx: C; error: unknown; on: 'button' | 'message' }) => boolean);
+  /**
+   * Throw the error on to grammY (`bot.catch`, or your webhook / queue, which
+   * may retry the update) instead of emitting `error` and logging it. The
+   * user is still notified as `notify` says, and the state changed so far is
+   * still saved. Default false.
+   */
+  rethrow?: boolean;
 }
 
 export interface PaymentsOptions<C extends Context = Context> {
@@ -160,7 +203,7 @@ export interface ButtonsOptions {
    * Per button, `{ mode: 'send' }` leaves the pressed message completely untouched.
    */
   mediaToText?: 'replace' | 'keep';
-  /** How long stored button params stay valid. Default 30 days. */
+  /** How long stored button params stay valid. Default 365 days. */
   ttlMs?: number;
   /**
    * Ignore a repeated press of the same button within this many ms after the
@@ -169,6 +212,23 @@ export interface ButtonsOptions {
   doubleTapMs?: number;
   /** In groups, only the user a menu was sent to can press its buttons. Default true. */
   ownerOnly?: boolean;
+  /**
+   * A button pressed while the user's previous update is still running:
+   * `drop` answers it with the `busy` toast ("⏳ Please wait…") and ignores
+   * it; `wait` handles it after the previous update, like a message (up to
+   * `sequential.timeoutMs`). Default `drop`: a second press is usually
+   * impatience, not a new choice.
+   */
+  whileBusy?: 'drop' | 'wait';
+  /**
+   * Param names starting with this belong to easytg (a button's delivery
+   * mode, its signature): yours can't start with it. Default `_`. Change it
+   * when your buttons need such names, e.g. to stay byte-identical with
+   * buttons an earlier bot sent (`{ _page: 2 }` with `reservedPrefix: '~'`).
+   * Changing it later breaks buttons already sent with `{ mode }` or a
+   * signature: they lose them.
+   */
+  reservedPrefix?: string;
 }
 
 export interface DeepLinksOptions {
@@ -243,7 +303,8 @@ export interface EasyTGEvents<C extends Context = Context> {
    * a page, dialogue, menu…), `next` (passed on to your handlers; the time
    * includes them), `limited` (dropped: rate limit) or `busy` (dropped: a
    * button pressed while the user's previous update was running) or `error`
-   * (an error was thrown to grammY).
+   * (an error was thrown to grammY) or `duplicate` (dropped: handled before,
+   * see `dedupeUpdates`).
    */
   update: { ctx: C; durationMs: number; outcome: UpdateOutcome };
   /** A payment succeeded (only with the `payments` option). Keep `payment.telegram_payment_charge_id` for refunds. */
@@ -339,12 +400,12 @@ export type InlineResultOptions<P> = {
   id?: string;
 } & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
 
-export type UpdateOutcome = 'easytg' | 'next' | 'limited' | 'busy' | 'error';
+export type UpdateOutcome = 'easytg' | 'next' | 'limited' | 'busy' | 'error' | 'duplicate';
 
 export type BroadcastOptions<P> = BroadcastSettings & ({} extends P ? { params?: ParamsInputOf<P> } : { params: ParamsInputOf<P> });
 
 export interface OpenOptions {
-  /** How the page reaches the chat. Default `auto`: edit on button presses, reply otherwise. */
+  /** How the page reaches the chat. Default `auto`: edit on button presses, a new message otherwise. */
   mode?: DeliveryMode;
 }
 

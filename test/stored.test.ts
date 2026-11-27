@@ -99,7 +99,7 @@ describe('callbackParams: stored', () => {
     await press('p|order');
     const [next, homeBtn, close, start] = buttons(find('editMessageText')[0]!.payload);
     expect(next).toMatch(/^s\|/);
-    expect([homeBtn, close, start]).toEqual(['p|home', 'p|exit', 'p|d']);
+    expect([homeBtn, close, start]).toEqual(['p|home', 'p|_ex', 'p|d']);
     await press(next!);
     expect(seen.at(-1)).toEqual({ id: '2' });
 

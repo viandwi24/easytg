@@ -32,4 +32,19 @@ new EasyTG({ buttons: { params: 'signed', secret: process.env.BUTTON_SECRET } })
 The signature covers the bot, the chat, the target, the params and, for
 owner-only menus, the user. Deep links are signed too, but without a user or
 bot, so they can be shared. Keep the secret stable: changing it invalidates the
-buttons already in chats. Param names starting with `_` are reserved.
+buttons already in chats.
+
+## Reserved param names
+
+Param names starting with `_` belong to easytg (a button's `{ mode }`, its
+signature) and are refused in yours. When your buttons need such names, for
+instance to stay byte-identical with buttons an earlier bot already sent
+(`p|list|_page=2`), pick another prefix for easytg's own:
+
+```ts
+new EasyTG({ buttons: { reservedPrefix: '~' } });
+nav.button('➡️', list, { _page: 3 }); // p|list|_page=3
+```
+
+Buttons already sent with `{ mode }` or a signature lose them when the prefix
+changes, so set it once, before going live.

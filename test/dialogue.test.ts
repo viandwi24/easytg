@@ -227,7 +227,11 @@ describe('file, collect and actions', () => {
     expect(t.result).toEqual({
       otp: '1234',
       avatar: expect.objectContaining({ kind: 'photo', fileId: 'BIG' }),
-      docs: { texts: ['note'], files: [expect.objectContaining({ kind: 'document', fileId: 'DOC', fileName: 'a.pdf' })] },
+      docs: {
+        texts: ['note'],
+        files: [expect.objectContaining({ kind: 'document', fileId: 'DOC', fileName: 'a.pdf' })],
+        items: [{ kind: 'text', text: 'note' }, expect.objectContaining({ kind: 'document', fileId: 'DOC' })],
+      },
     });
   });
 });

@@ -50,7 +50,7 @@ one database.
 | sessions (incl. dialogue state) | `session:<bot>:<chat>:<user>` | `session.storage` | `session.ttlMs` (default: none) |
 | chat sessions | `chatsession:<bot>:<chat>` | `session.storage` | `session.ttlMs` |
 | user sessions (across chats) | `usersession:<bot>:<user>` | `session.storage` | `session.ttlMs` |
-| stored button params | `cb:<bot>:<token>` | `buttons.storage` | `buttons.ttlMs` (default 30 days) |
+| stored button params | `cb:<bot>:<token>` | `buttons.storage` | `buttons.ttlMs` (default 365 days) |
 | stored deep-link params | `dl:<token>` | `buttons.storage` | `deepLinks.ttlMs` (default 365 days) |
 | cached file ids (`media.cacheFileIds`) | `fileid:<bot>:…` | `buttons.storage` | `media.cacheTtlMs` (default 30 days) |
 | group menu owners, split messages | `msgowner:<bot>:…`, `msggroup:<bot>:…` | `buttons.storage` | 7 days |

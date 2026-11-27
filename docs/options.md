@@ -7,9 +7,10 @@ milliseconds.
 new EasyTG<MyContext>({
   storage: new MemoryStorage(),    // default for everything easytg persists (see storage.md)
   keyPrefix: '',
-  parseMode: 'markdown',           // 'markdown' | 'html' | 'markdownv2' | 'plain'
+  parseMode: 'markdown',           // 'markdown' | 'html' | 'markdownv2' | 'markdownv1' | 'plain'
+  transformText: undefined,        // (text, { parseMode }) => text, for every plain string
   homePage: 'home',                // page id used by nav.home()
-  middlewares: [],                 // run before every page render and dialogue start
+  guards: [],                      // run before every page render and dialogue start (old name: middlewares)
   logger: console,                 // warnings and errors; a Logger, or false for none; EASYTG_DEBUG=1 adds debug logs
   menu: undefined,                 // replyMenu([...])
   protectContent: false,           // protect_content on everything
@@ -17,6 +18,8 @@ new EasyTG<MyContext>({
   prepareProactive: undefined,     // (ctx) => … for contexts easytg creates (sendTo, edit, broadcast, tasks, withUser…)
   emitProactiveErrors: false,      // also emit sendTo / edit errors as 'error' events
   sequential: { timeoutMs: 8_000 },// one update per user and chat at a time; or false
+  dedupeUpdates: false,            // skip an update delivered again (ids kept in the session)
+  errors: { notify: true, rethrow: false }, // when handling an update fails
   cluster: false,                  // true / a StorageAdapter: share limits, locks and queues between processes
   queues: {},                      // { name: { concurrency, perUser?, maxWaiting?, timeoutMs? } }
   loading: undefined,              // { afterMs, action, text, toast } for every page
@@ -24,7 +27,7 @@ new EasyTG<MyContext>({
   relay: undefined,                // { filter? } for relayed messages
 
   session:   { storage, ttlMs: undefined, refreshOnActivity: true, version: undefined, migrate: undefined },
-  buttons:   { storage, params: 'auto', secret, ttlMs: 30 days, doubleTapMs: 700, ownerOnly: true, mediaToText: 'replace' },
+  buttons:   { storage, params: 'auto', secret, ttlMs: 365 days, doubleTapMs: 700, ownerOnly: true, mediaToText: 'replace', reservedPrefix: '_', whileBusy: 'drop' },
   deepLinks: { ttlMs: 365 days },
   dialogues: { cancelOnCommand: true, timeoutMs: undefined, timeZone: undefined }, // timeZone: 'Asia/Jakarta' for date steps
   media:     { cacheFileIds: false, cacheTtlMs: 30 days },
@@ -37,8 +40,10 @@ new EasyTG<MyContext>({
 | option | see |
 |---|---|
 | `storage`, `keyPrefix`, `scopeKeysByBot`, `session.storage`, `buttons.storage` | [Storage](storage.md) |
-| `parseMode` | [Text formatting](formatting.md) |
-| `homePage`, `middlewares` | [Pages](pages.md#nav), [middlewares](pages.md#middlewares) |
+| `parseMode`, `transformText` | [Text formatting](formatting.md) |
+| `errors` | [Errors](errors.md#when-handling-an-update-fails) |
+| `dedupeUpdates` | [Scaling](scaling.md#updates-delivered-twice) |
+| `homePage`, `guards` | [Pages](pages.md#nav), [guards](pages.md#guards) |
 | `protectContent` | [Media](media.md) |
 | `logger` | an object with `debug`, `info`, `warn` and `error` (e.g. pino or console); `false` silences easytg |
 | `session` | [Sessions](sessions.md) |

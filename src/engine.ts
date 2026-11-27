@@ -71,6 +71,7 @@ import type {
 
 export type {
   EasyTGOptions,
+  ErrorsOptions,
   PaymentsOptions,
   PaymentArgs,
   SessionOptions,
@@ -95,6 +96,12 @@ export type {
   BroadcastLaterOptions,
   EditMessageTarget,
 } from './engine/types';
+
+/** `NODE_ENV=production`, where the runtime has a `process` (Node, Bun, Deno's compatibility layer). */
+function isProduction(): boolean {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  return env?.NODE_ENV === 'production';
+}
 
 type Registrable<C extends Context> = Page<any, C, any> | Dialogue<any, any, C> | Task<any, C>;
 
@@ -139,6 +146,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** @internal */ readonly pipeline: Pipeline<C>;
 
   private readonly listeners = new Map<keyof EasyTGEvents<C>, Set<(event: any) => unknown>>();
+  private readonly beforeHooks: MiddlewareFn<C>[] = [];
   private readonly flow = new FlowRecorder();
 
   constructor(options: EasyTGOptions<C> = {}) {
@@ -146,6 +154,9 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const scoped = (adapter?: StorageAdapter) => withPrefix(adapter ?? storage, options.keyPrefix ?? '');
     const { session = {}, buttons = {}, deepLinks = {}, dialogues = {}, i18n = {}, media = {} } = options;
     this.logger = options.logger === false ? silentLogger : options.logger ?? createConsoleLogger();
+    if (!options.storage && isProduction()) {
+      this.logger.warn('easytg: no `storage` given, so sessions, dialogues and buttons are kept in memory and lost on restart. Pass SqliteStorage, RedisStorage or your own adapter in production.');
+    }
     this.scopes = new Scopes(options.scopeKeysByBot ?? true);
 
     this.sessions = new Sessions(this, scoped(session.storage), session);
@@ -174,7 +185,7 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     );
     this.sending = new Sending(this, options.prepareProactive, options.emitProactiveErrors ?? false);
     this.sending.defineTasks();
-    this.handlers = new Handlers(this, options.payments, options.relay?.filter, buttons.doubleTapMs);
+    this.handlers = new Handlers(this, options.payments, options.relay?.filter, buttons.doubleTapMs, options.errors);
 
     this.locales = new Locales(this, i18n);
     this.texts = this.locales.texts;
@@ -183,11 +194,12 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
     const registry = ((globalThis as Record<symbol, unknown>)[Symbol.for('easytg.apps')] ??= new Set<WeakRef<object>>()) as Set<WeakRef<object>>;
     registry.add(new WeakRef(this));
 
-    this.delivery = new Delivery(this, options.parseMode ?? 'markdown', options.protectContent ?? false, media);
+    this.delivery = new Delivery(this, options.parseMode ?? 'markdown', options.protectContent ?? false, media, options.transformText);
     this.views = new Views(this, options.loading);
     this.loading = new Loading(this);
     this.homePage = options.homePage ?? 'home';
-    this.middlewares = options.middlewares ?? [];
+    if (options.guards && options.middlewares) throw new EasyTGError('Give `guards` or its old name `middlewares`, not both');
+    this.middlewares = options.guards ?? options.middlewares ?? [];
     this.menu = options.menu;
   }
 
@@ -209,8 +221,8 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
         if (!item.renderFn) throw new EasyTGError(`Page "${item.id}" has no render: call .render(...) before registering`);
         this.pages.set(item.id, item);
       } else {
-        if (!item.stepsDef || !item.finishFn) {
-          throw new EasyTGError(`Dialogue "${item.id}" needs .steps(...) and .onFinish(...) before registering`);
+        if (!item.stepsDef) {
+          throw new EasyTGError(`Dialogue "${item.id}" needs .steps(...) before registering`);
         }
         this.dialogueDefs.set(item.id, item);
       }
@@ -350,6 +362,33 @@ export class EasyTG<C extends Context = Context> implements MiddlewareObj<C> {
   /** Use as `bot.use(app)`, before your other handlers. */
   middleware(): MiddlewareFn<C> {
     return this.pipeline.middleware();
+  }
+
+  /**
+   * Run `fn` for every update that goes through `bot.use(app)`, after the
+   * user's lock is taken and before easytg routes the update (pages,
+   * dialogues, menus, then your own handlers). Changes to sessions made here
+   * are saved with the rest of the update, once. Call `next()` to go on;
+   * without it, the update ends here. Several run in the order added.
+   *
+   *   app.before(async (ctx, next) => {
+   *     if (await isBanned(ctx.from?.id)) return; // dropped, inside the lock
+   *     await next();
+   *   });
+   */
+  before(fn: MiddlewareFn<C>): this {
+    this.beforeHooks.push(fn);
+    return this;
+  }
+
+  /** @internal Run the `before` hooks, then `route`. */
+  runBefore(ctx: C, route: () => Promise<void>): Promise<void> {
+    const run = async (i: number): Promise<void> => {
+      const hook = this.beforeHooks[i];
+      if (!hook) return route();
+      await hook(ctx, () => run(i + 1));
+    };
+    return run(0);
   }
 
   /** Render a page into the chat (see `DeliveryMode`, default `auto`). */

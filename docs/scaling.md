@@ -27,12 +27,54 @@ new EasyTG({ sequential: { timeoutMs: 8_000 } }); // or `sequential: false`
 ```
 
 With `sequential: false`, updates run in parallel, but a button pressed while
-the same user's previous press still runs still gets the "Please wait" toast.
+the same user's previous press still runs still gets the "Please wait" toast
+(or waits, with `buttons: { whileBusy: 'wait' }`).
 
 With webhooks, Telegram sends an update again when it isn't answered in time
 (grammY's webhook timeout is 10 s by default), which is why the default wait
 is 8 s. Keep handlers short there: long work belongs in a [queue](queues.md)
 (with runner) or a [scheduled task](scheduler.md).
+
+## Updates delivered twice
+
+Webhooks, queues in front of the bot and restarts can deliver an update
+again: Telegram retries a webhook that didn't answer in time, and a process
+that crashed after handling an update but before marking it done gets it
+again. In a dialogue, the repeated message would be taken as the answer to
+the *next* step. `dedupeUpdates` skips it:
+
+```ts
+new EasyTG({ dedupeUpdates: true });
+```
+
+The ids of a user's last 20 updates in a chat are kept in their session and
+saved with it, in the same write as the update's own changes. So an update
+counts as handled exactly when its changes were saved: one that failed
+before saving runs again. Skipped updates show as `outcome: 'duplicate'` in
+the [`update` event](events.md). Only messages and button presses are
+checked.
+
+## Before easytg routes an update
+
+`app.before(fn)` runs for every update, after the user's lock is taken (see
+above) and before easytg routes it to pages, dialogues, menus and your own
+handlers. What it changes in sessions is saved with the rest of the update,
+once:
+
+```ts
+app.before(async (ctx, next) => {
+  const session = await app.session(ctx);
+  if (session.get('capturing')) {
+    session.set('items', [...(session.get<unknown[]>('items') ?? []), ctx.message]);
+    return; // handled: nothing else runs
+  }
+  await next();
+});
+```
+
+Middleware registered with `bot.use` before `bot.use(app)` runs outside the
+lock and saves separately; use `app.before` for work that must be ordered
+with the user's other updates.
 
 ## Several processes (`cluster`)
 

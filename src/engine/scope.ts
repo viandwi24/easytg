@@ -11,7 +11,8 @@ import type { Translate } from '../i18n';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const OWNER_TTL_MS = 7 * DAY_MS;
-export const CALLBACK_TTL_MS = 30 * DAY_MS;
+/** Long: a menu stays usable while it is in the chat (each render stores new tokens anyway). */
+export const CALLBACK_TTL_MS = 365 * DAY_MS;
 export const DEEP_LINK_TTL_MS = 365 * DAY_MS;
 export const MAX_REDIRECTS = 5;
 export const MAX_BACK_STEPS = 10;
@@ -26,6 +27,8 @@ export const LAST_LANGUAGE_KEY = '_easytg:lang';
 export const AUTODELETE_KEY = '_easytg:autodelete';
 /** Session key of the page that receives the user's text (`page.onText`). */
 export const INPUT_KEY = '_easytg:input';
+/** Session key: ids of the user's last updates in the chat (`dedupeUpdates`). */
+export const UPDATES_KEY = '_easytg:updates';
 
 /** Built-in tasks behind `deleteLater` / `sendLater` / `deleteAfterMs`. */
 export const DELETE_TASK = '_easytg:delete';
