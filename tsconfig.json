@@ -19,6 +19,8 @@
 
     // The workspace packages, from source (their builds point "types" at dist/).
     "paths": {
+      // easytg itself, as code outside src/ imports it (scripts/hero/bot.ts), so it resolves without a build.
+      "easytg": ["./src/index.ts"],
       "@easytg/simulator": ["./packages/simulator/src/index.ts"],
       "@easytg/simulator/*": ["./packages/simulator/src/*.ts"],
       "@easytg/studio": ["./packages/studio/src/index.ts"]
